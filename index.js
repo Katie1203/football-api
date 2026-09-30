@@ -27,7 +27,7 @@ function checkKeoRungLogic(match) {
     // 2. Điều kiện AI Score > 60
     if (aiScore <= 60) return false;
 
-    // --- LẤY THỐNG KÊ CHI TIẾT ---
+    // Thống kê chi tiết
     const redHome = match.stats?.redCards?.home || match.red_cards_home || 0;
     const redAway = match.stats?.redCards?.away || match.red_cards_away || 0;
     const hasRedCard = (redHome + redAway) > 0;
@@ -49,31 +49,27 @@ function checkKeoRungLogic(match) {
 
     const isFavoriteTrailed = match.isFavoriteTrailed || false;
 
-    // --- ĐIỀU KIỆN MỚI ---
-
-    // A. Điều kiện Ép sân (1 đội áp đảo hoàn toàn)
+    // Điều kiện Ép sân
     const isEpSan = (posHome >= 60 || posAway >= 60) || 
                     (attacksHome >= 35 || attacksAway >= 35) || 
                     (totalDangerousAttacks >= 55);
 
-    // B. Điều kiện Đôi công 2 đội (Cả 2 đội cùng dâng cao)
+    // Điều kiện Đôi công 2 đội
     const isDoiCong = (attacksHome >= 25 && attacksAway >= 25) && 
                       (totalShots >= 12 || totalShotsOnTarget > 8);
 
-    // C. Điều kiện Sút trúng đích / Cửa trên bị dẫn
+    // Điều kiện Sút trúng đích / Cửa trên bị dẫn
     const meetsShotsCondition = (totalShotsOnTarget > 8) || isFavoriteTrailed;
 
-    // D. Điều kiện Thẻ đỏ (Nếu có thẻ đỏ, chỉ số kích hoạt sẽ nhạy hơn)
+    // Xử lý Thẻ đỏ
     if (hasRedCard) {
-        // Có thẻ đỏ -> Chỉ cần có ép sân hoặc đôi công là đủ điều kiện nổ tài
         return (isEpSan || isDoiCong || meetsShotsCondition);
     }
 
-    // Kết hợp tổng thể khi KHÔNG có thẻ đỏ: Bắt buộc thỏa mãn Sút trúng đích + (Ép sân HOẶC Đôi công)
     return meetsShotsCondition && (isEpSan || isDoiCong);
 }
 
-// Dữ liệu giả lập mẫu thỏa mãn tất cả tiêu chí
+// Dữ liệu mẫu (Mock Matches)
 const mockMatches = [
     {
         id: 1001,
@@ -96,10 +92,10 @@ const mockMatches = [
         score_ai: 78,
         isFavoriteTrailed: true,
         stats: {
-            redCards: { home: 1, away: 0 },         // Có 1 thẻ đỏ
-            shotsOnTarget: { home: 4, away: 5 },    // Tổng sút trúng đích = 9 (>8)
-            totalShots: { home: 8, away: 9 },       // Tổng sút = 17 (>12)
-            dangerousAttacks: { home: 38, away: 32 },// Đôi công ép sân (38 & 32)
+            redCards: { home: 1, away: 0 },
+            shotsOnTarget: { home: 4, away: 5 },
+            totalShots: { home: 8, away: 9 },
+            dangerousAttacks: { home: 38, away: 32 },
             possession: { home: 42, away: 58 }
         }
     },
@@ -125,19 +121,17 @@ const mockMatches = [
         isFavoriteTrailed: false,
         stats: {
             redCards: { home: 0, away: 0 },
-            shotsOnTarget: { home: 6, away: 4 },    // Tổng = 10 (>8)
+            shotsOnTarget: { home: 6, away: 4 },
             totalShots: { home: 10, away: 7 },
-            dangerousAttacks: { home: 45, away: 30 },// Real Madrid ép sân mạnh (45)
-            possession: { home: 63, away: 37 }       // Kiểm soát bóng 63%
+            dangerousAttacks: { home: 45, away: 30 },
+            possession: { home: 63, away: 37 }
         }
     }
 ];
 
-// Endpoint live matches
+// Endpoint live matches (Đã sửa đối tượng trả về chuẩn Object)
 app.get('/api/matches/live', (req, res) => {
     const keoRungMatches = mockMatches.filter(match => checkKeoRungLogic(match));
-
-    // Thêm trực tiếp biến url vào đối tượng trả về để Frontend không bị xót undefined
     const currentUrl = 'https://football-api-5i9a.onrender.com/api/matches/live';
 
     res.json({
@@ -149,4 +143,13 @@ app.get('/api/matches/live', (req, res) => {
         data: keoRungMatches,
         response: keoRungMatches
     });
+});
+
+// Telegram Webhook
+app.post('/bot:token', (req, res) => {
+    res.status(200).json({ success: true, message: 'Telegram Webhook active' });
+});
+
+app.listen(PORT, () => {
+    console.log(`Server Keo Rung dang chay tai port ${PORT}`);
 });
