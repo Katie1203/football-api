@@ -14,7 +14,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTral
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 
 // API Key từ RapidAPI (Thay key của bạn vào đây)
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'ĐIỀN_RAPIDAPI_KEY_CỦA_BẠN_VÀO_ĐÂY';
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'e1a3c154a4ff849a5ca51d30f6e1b20b';
 
 const alertedMatches = new Set();
 let liveMatchesCache = []; // Lưu danh sách trận thật đang diễn ra
