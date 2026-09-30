@@ -20,7 +20,14 @@ const alertedMatches = new Set();
 let liveMatchesCache = []; // Lưu danh sách trận thật đang diễn ra
 
 // Hàm gửi tin nhắn Telegram chuẩn mẫu
-async function sendTelegramAlert(match, winRate, nSample = 154) {
+async function runAutoScanner() {
+    // Lấy thời gian chuẩn múi giờ Việt Nam (Asia/Ho_Chi_Minh)
+    const gioVietNam = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+    console.log(`[Auto-Scan] Đang tải danh sách trận đấu THỰC TẾ... (${gioVietNam})`);
+    
+    const realMatches = await fetchRealLiveMatches();
+    liveMatchesCache = realMatches;
+    ... {
     if (!TELEGRAM_CHAT_ID) return;
 
     const dienBien = match.eventsText || 'Chưa có thông tin diễn biến';
