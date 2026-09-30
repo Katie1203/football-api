@@ -1,144 +1,179 @@
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios'); // Dùng để gửi tin nhắn Telegram
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.use(cors());
+// Bật CORS cho phép tất cả origin và custom header từ Canva
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'X-Requested-With']
+}));
+
 app.use(express.json());
 
-// Health Check
-app.get('/', (req, res) => {
-    res.json({ message: 'API Football Proxy & Keo Rung Service active!' });
-});
+// Cấu hình Telegram Bot Token & Chat ID của bạn
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTralILZmGJ9Ynm35M1DXa_S5tJ4eyAEs';
+const TELEGRAM_CHAT_ID = process.env.7795416740|| ''; // Nhập Chat ID Telegram của bạn vào file .env hoặc thay trực tiếp ở đây
 
-// Hàm kiểm tra Logic Kèo Rung
-function checkKeoRungLogic(match) {
+// Hàm tự động gửi thông báo về Telegram
+async function sendTelegramAlert(match, winRate) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.log('Chưa cấu hình TELEGRAM_CHAT_ID hoặc TELEGRAM_BOT_TOKEN');
+        return;
+    }
+
+    const message = `
+🔥 **CẢNH BÁO KÈO RUNG H2 (SẮP CÓ BÀN THẮNG)** 🔥
+
+⚽ **Trận đấu:** ${match.homeTeam} VS ${match.awayTeam}
+🏆 **Giải đấu:** ${match.league?.name || 'N/A'}
+⏱ **Thời gian:** Phút ${match.time}' (Hiệp 2)
+📊 **Tỉ số hiện tại:** ${match.homeScore} - ${match.awayScore}
+🎯 **Dự đoán nổ bàn:** **${winRate}%** (AI Score: ${match.aiScore})
+
+📌 **Thống kê nổi bật:**
+- 🔴 Thẻ đỏ: ${match.stats.redCards.home} - ${match.stats.redCards.away}
+- 🎯 Sút trúng đích: ${match.stats.shotsOnTarget.home} - ${match.stats.shotsOnTarget.away}
+- ⚡ Tấn công nguy hiểm: ${match.stats.dangerousAttacks.home} - ${match.stats.dangerousAttacks.away}
+- ⚽ Kiểm soát bóng: ${match.stats.possession.home}% - ${match.stats.possession.away}%
+
+🚀 *Khuyến nghị: Theo dõi vào kèo Rung Tài!*
+    `;
+
+    try {
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown'
+        });
+        console.log(`[Telegram] Đã gửi thông báo trận ${match.homeTeam} vs ${match.awayTeam}`);
+    } catch (error) {
+        console.error('[Telegram] Lỗi gửi tin nhắn:', error.message);
+    }
+}
+
+// Hàm phân tích Rule Kèo Rung từ phút 60 & Tính Tỷ lệ bàn thắng (%)
+function analyzeKeoRungH2(match) {
     const elapsed = match.fixture?.status?.elapsed || parseInt(match.time) || 0;
     const status = match.fixture?.status?.short || match.status || '';
     const aiScore = match.aiScore || match.score_ai || match.ai_score || 0;
 
-    const isH1 = (status === '1H' || status === 'HT') && (elapsed >= 15 && elapsed <= 38);
-    const isH2 = (status === '2H') && (elapsed >= 55 && elapsed <= 80);
-    if (!isH1 && !isH2) return false;
+    // 1. Chỉ quét từ phút 60 đến phút 85 của Hiệp 2 (2H)
+    if (status !== '2H' || elapsed < 60 || elapsed > 85) {
+        return { isQualified: false, winRate: 0 };
+    }
 
-    if (aiScore <= 60) return false;
+    // 2. Yêu cầu AI Score > 60
+    if (aiScore <= 60) {
+        return { isQualified: false, winRate: 0 };
+    }
 
+    // Trích xuất chỉ số
     const redHome = match.stats?.redCards?.home || match.red_cards_home || 0;
     const redAway = match.stats?.redCards?.away || match.red_cards_away || 0;
     const hasRedCard = (redHome + redAway) > 0;
 
-    const shotsHome = match.stats?.shotsOnTarget?.home || match.shots_on_target_home || 0;
-    const shotsAway = match.stats?.shotsOnTarget?.away || match.shots_on_target_away || 0;
-    const totalShotsOnTarget = shotsHome + shotsAway;
+    const shotsOnTargetHome = match.stats?.shotsOnTarget?.home || 0;
+    const shotsOnTargetAway = match.stats?.shotsOnTarget?.away || 0;
+    const totalShotsOnTarget = shotsOnTargetHome + shotsOnTargetAway;
 
-    const totalShotsHome = match.stats?.totalShots?.home || 8;
-    const totalShotsAway = match.stats?.totalShots?.away || 7;
+    const totalShotsHome = match.stats?.totalShots?.home || 0;
+    const totalShotsAway = match.stats?.totalShots?.away || 0;
     const totalShots = totalShotsHome + totalShotsAway;
 
-    const attacksHome = match.stats?.dangerousAttacks?.home || match.dangerous_attacks_home || 0;
-    const attacksAway = match.stats?.dangerousAttacks?.away || match.dangerous_attacks_away || 0;
+    const attacksHome = match.stats?.dangerousAttacks?.home || 0;
+    const attacksAway = match.stats?.dangerousAttacks?.away || 0;
     const totalDangerousAttacks = attacksHome + attacksAway;
 
     const posHome = match.stats?.possession?.home || 50;
     const posAway = match.stats?.possession?.away || 50;
 
-    const isFavoriteTrailed = match.isFavoriteTrailed || false;
+    // --- KIỂM TRA ĐIỀU KIỆN ---
+    const isEpSan = (posHome >= 60 || posAway >= 60) || (attacksHome >= 35 || attacksAway >= 35) || (totalDangerousAttacks >= 55);
+    const isDoiCong = (attacksHome >= 25 && attacksAway >= 25) && (totalShots >= 12 || totalShotsOnTarget > 8);
+    
+    // Hiệu suất dứt điểm trúng đích (Shots on Target / Total Shots)
+    const accuracyRate = totalShots > 0 ? (totalShotsOnTarget / totalShots) : 0;
+    const isHighEfficiency = accuracyRate >= 0.40; // Tỷ lệ trúng đích >= 40%
 
-    const isEpSan = (posHome >= 60 || posAway >= 60) || 
-                    (attacksHome >= 35 || attacksAway >= 35) || 
-                    (totalDangerousAttacks >= 55);
+    // --- TÍNH TOÁN XÁC SUẤT NỔ BÀN THẮNG (%) ---
+    let winRate = 50; // Điểm nền khởi điểm
 
-    const isDoiCong = (attacksHome >= 25 && attacksAway >= 25) && 
-                      (totalShots >= 12 || totalShotsOnTarget > 8);
+    if (aiScore > 75) winRate += 10;
+    if (hasRedCard) winRate += 15; // Có thẻ đỏ tăng xác suất rất cao
+    if (isEpSan) winRate += 10;
+    if (isDoiCong) winRate += 10;
+    if (isHighEfficiency) winRate += 10;
+    if (totalShotsOnTarget >= 8) winRate += 10;
 
-    const meetsShotsCondition = (totalShotsOnTarget > 8) || isFavoriteTrailed;
+    // Giới hạn xác suất tối đa 98%
+    winRate = Math.min(winRate, 98);
 
-    if (hasRedCard) {
-        return (isEpSan || isDoiCong || meetsShotsCondition);
-    }
+    // Bắt buộc tỷ lệ nổ bàn > 60% VÀ thỏa mãn (Ép sân HOẶC Đôi công HOẶC Thẻ đỏ)
+    const isQualified = winRate > 60 && (isEpSan || isDoiCong || hasRedCard);
 
-    return meetsShotsCondition && (isEpSan || isDoiCong);
+    return { isQualified, winRate };
 }
 
-// Dữ liệu mẫu (Bổ sung tất cả các trường text mà Frontend Dashboard có thể render)
+// Dữ liệu mẫu kiểm thử từ phút 60 trở đi
 const mockMatches = [
     {
-        id: 1001,
-        match_id: 1001,
-        fixture: { id: 1001, status: { short: '1H', elapsed: 28 } },
+        id: 2001,
+        match_id: 2001,
+        fixture: { id: 2001, status: { short: '2H', elapsed: 68 } },
         league: { id: 39, name: 'Premier League', country: 'England' },
         teams: {
-            home: { id: 33, name: 'Manchester United', logo: '' },
-            away: { id: 40, name: 'Liverpool', logo: '' }
+            home: { id: 33, name: 'Arsenal', logo: '' },
+            away: { id: 40, name: 'Chelsea', logo: '' }
         },
-        homeTeam: 'Manchester United',
-        awayTeam: 'Liverpool',
-        home_team: 'Manchester United',
-        away_team: 'Liverpool',
-        homeScore: 0,
-        awayScore: 1,
-        home_score: 0,
-        away_score: 1,
-        goals: { home: 0, away: 1 },
-        score: '0 - 1',
-        status: '1H',
-        time: '28',
-        elapsed: 28,
-        minute: '28\'',
-        aiScore: 78,
-        ai_score: 78,
-        score_ai: 78,
-        isFavoriteTrailed: true,
-        stats: {
-            redCards: { home: 1, away: 0 },
-            shotsOnTarget: { home: 4, away: 5 },
-            totalShots: { home: 8, away: 9 },
-            dangerousAttacks: { home: 38, away: 32 },
-            possession: { home: 42, away: 58 }
-        }
-    },
-    {
-        id: 1002,
-        match_id: 1002,
-        fixture: { id: 1002, status: { short: '2H', elapsed: 65 } },
-        league: { id: 140, name: 'La Liga', country: 'Spain' },
-        teams: {
-            home: { id: 541, name: 'Real Madrid', logo: '' },
-            away: { id: 529, name: 'Barcelona', logo: '' }
-        },
-        homeTeam: 'Real Madrid',
-        awayTeam: 'Barcelona',
-        home_team: 'Real Madrid',
-        away_team: 'Barcelona',
+        homeTeam: 'Arsenal',
+        awayTeam: 'Chelsea',
+        home_team: 'Arsenal',
+        away_team: 'Chelsea',
         homeScore: 1,
-        awayScore: 2,
+        awayScore: 1,
         home_score: 1,
-        away_score: 2,
-        goals: { home: 1, away: 2 },
-        score: '1 - 2',
+        away_score: 1,
+        goals: { home: 1, away: 1 },
+        score: '1 - 1',
         status: '2H',
-        time: '65',
-        elapsed: 65,
-        minute: '65\'',
-        aiScore: 85,
-        ai_score: 85,
-        score_ai: 85,
-        isFavoriteTrailed: false,
+        time: '68',
+        elapsed: 68,
+        minute: '68\'',
+        aiScore: 82,
+        ai_score: 82,
+        score_ai: 82,
         stats: {
-            redCards: { home: 0, away: 0 },
-            shotsOnTarget: { home: 6, away: 4 },
-            totalShots: { home: 10, away: 7 },
-            dangerousAttacks: { home: 45, away: 30 },
-            possession: { home: 63, away: 37 }
+            redCards: { home: 1, away: 0 },         // Có thẻ đỏ
+            shotsOnTarget: { home: 6, away: 4 },    // 10 cú sút trúng đích
+            totalShots: { home: 12, away: 8 },      // Tổng 20 cú sút
+            dangerousAttacks: { home: 42, away: 35 },// Đôi công ép sân mạnh
+            possession: { home: 58, away: 42 }
         }
     }
 ];
 
-// Endpoint live matches
-app.get('/api/matches/live', (req, res) => {
-    const keoRungMatches = mockMatches.filter(match => checkKeoRungLogic(match));
+// Endpoint live matches cho Dashboard & Tự động báo Telegram
+app.get('/api/matches/live', async (req, res) => {
+    const qualifiedMatches = [];
+
+    for (const match of mockMatches) {
+        const { isQualified, winRate } = analyzeKeoRungH2(match);
+        if (isQualified) {
+            match.winRate = winRate;
+            match.win_rate = winRate;
+            match.prediction = `Xác suất nổ bàn: ${winRate}%`;
+            qualifiedMatches.push(match);
+
+            // Tự động bắn tin nhắn về Telegram
+            await sendTelegramAlert(match, winRate);
+        }
+    }
+
     const currentUrl = 'https://football-api-5i9a.onrender.com/api/matches/live';
 
     res.json({
@@ -146,20 +181,20 @@ app.get('/api/matches/live', (req, res) => {
         status: 'success',
         url: currentUrl,
         endpoint: currentUrl,
-        count: keoRungMatches.length,
-        results: keoRungMatches.length,
-        total: keoRungMatches.length,
-        data: keoRungMatches,
-        response: keoRungMatches,
-        matches: keoRungMatches
+        count: qualifiedMatches.length,
+        results: qualifiedMatches.length,
+        total: qualifiedMatches.length,
+        data: qualifiedMatches,
+        response: qualifiedMatches,
+        matches: qualifiedMatches
     });
 });
 
-// Telegram Webhook
+// Telegram Webhook Endpoint
 app.post('/bot:token', (req, res) => {
     res.status(200).json({ success: true, message: 'Telegram Webhook active' });
 });
 
 app.listen(PORT, () => {
-    console.log(`Server Keo Rung dang chay tai port ${PORT}`);
+    console.log(`Server Keo Rung H2 dang chay tai port ${PORT}`);
 });
