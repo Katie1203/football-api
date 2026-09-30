@@ -137,21 +137,16 @@ const mockMatches = [
 app.get('/api/matches/live', (req, res) => {
     const keoRungMatches = mockMatches.filter(match => checkKeoRungLogic(match));
 
-    const responseData = keoRungMatches;
-    responseData.success = true;
-    responseData.total = keoRungMatches.length;
-    responseData.results = keoRungMatches.length;
-    responseData.data = keoRungMatches;
-    responseData.response = keoRungMatches;
+    // Thêm trực tiếp biến url vào đối tượng trả về để Frontend không bị xót undefined
+    const currentUrl = 'https://football-api-5i9a.onrender.com/api/matches/live';
 
-    res.json(responseData);
-});
-
-// Telegram Webhook Endpoint
-app.post('/bot:token', (req, res) => {
-    res.status(200).json({ success: true, message: 'Telegram Webhook active' });
-});
-
-app.listen(PORT, () => {
-    console.log(`Server Keo Rung dang chay tai port ${PORT}`);
+    res.json({
+        success: true,
+        url: currentUrl,
+        endpoint: currentUrl,
+        results: keoRungMatches.length,
+        total: keoRungMatches.length,
+        data: keoRungMatches,
+        response: keoRungMatches
+    });
 });
