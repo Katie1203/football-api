@@ -13,21 +13,18 @@ app.get('/', (req, res) => {
     res.json({ message: 'API Football Proxy & Keo Rung Service active!' });
 });
 
-// Hàm kiểm tra Logic Kèo Rung nâng cao
+// Hàm kiểm tra Logic Kèo Rung
 function checkKeoRungLogic(match) {
     const elapsed = match.fixture?.status?.elapsed || parseInt(match.time) || 0;
     const status = match.fixture?.status?.short || match.status || '';
     const aiScore = match.aiScore || match.score_ai || match.ai_score || 0;
 
-    // 1. Điều kiện thời gian: Phút 15-38 (H1) hoặc 55-80 (H2)
     const isH1 = (status === '1H' || status === 'HT') && (elapsed >= 15 && elapsed <= 38);
     const isH2 = (status === '2H') && (elapsed >= 55 && elapsed <= 80);
     if (!isH1 && !isH2) return false;
 
-    // 2. Điều kiện AI Score > 60
     if (aiScore <= 60) return false;
 
-    // Thống kê chi tiết
     const redHome = match.stats?.redCards?.home || match.red_cards_home || 0;
     const redAway = match.stats?.redCards?.away || match.red_cards_away || 0;
     const hasRedCard = (redHome + redAway) > 0;
@@ -49,19 +46,15 @@ function checkKeoRungLogic(match) {
 
     const isFavoriteTrailed = match.isFavoriteTrailed || false;
 
-    // Điều kiện Ép sân
     const isEpSan = (posHome >= 60 || posAway >= 60) || 
                     (attacksHome >= 35 || attacksAway >= 35) || 
                     (totalDangerousAttacks >= 55);
 
-    // Điều kiện Đôi công 2 đội
     const isDoiCong = (attacksHome >= 25 && attacksAway >= 25) && 
                       (totalShots >= 12 || totalShotsOnTarget > 8);
 
-    // Điều kiện Sút trúng đích / Cửa trên bị dẫn
     const meetsShotsCondition = (totalShotsOnTarget > 8) || isFavoriteTrailed;
 
-    // Xử lý Thẻ đỏ
     if (hasRedCard) {
         return (isEpSan || isDoiCong || meetsShotsCondition);
     }
@@ -69,7 +62,7 @@ function checkKeoRungLogic(match) {
     return meetsShotsCondition && (isEpSan || isDoiCong);
 }
 
-// Dữ liệu mẫu (Mock Matches)
+// Dữ liệu mẫu (Bổ sung tất cả các trường text mà Frontend Dashboard có thể render)
 const mockMatches = [
     {
         id: 1001,
@@ -77,16 +70,23 @@ const mockMatches = [
         fixture: { id: 1001, status: { short: '1H', elapsed: 28 } },
         league: { id: 39, name: 'Premier League', country: 'England' },
         teams: {
-            home: { id: 33, name: 'Manchester United' },
-            away: { id: 40, name: 'Liverpool' }
+            home: { id: 33, name: 'Manchester United', logo: '' },
+            away: { id: 40, name: 'Liverpool', logo: '' }
         },
         homeTeam: 'Manchester United',
         awayTeam: 'Liverpool',
+        home_team: 'Manchester United',
+        away_team: 'Liverpool',
         homeScore: 0,
         awayScore: 1,
+        home_score: 0,
+        away_score: 1,
         goals: { home: 0, away: 1 },
+        score: '0 - 1',
         status: '1H',
         time: '28',
+        elapsed: 28,
+        minute: '28\'',
         aiScore: 78,
         ai_score: 78,
         score_ai: 78,
@@ -105,16 +105,23 @@ const mockMatches = [
         fixture: { id: 1002, status: { short: '2H', elapsed: 65 } },
         league: { id: 140, name: 'La Liga', country: 'Spain' },
         teams: {
-            home: { id: 541, name: 'Real Madrid' },
-            away: { id: 529, name: 'Barcelona' }
+            home: { id: 541, name: 'Real Madrid', logo: '' },
+            away: { id: 529, name: 'Barcelona', logo: '' }
         },
         homeTeam: 'Real Madrid',
         awayTeam: 'Barcelona',
+        home_team: 'Real Madrid',
+        away_team: 'Barcelona',
         homeScore: 1,
         awayScore: 2,
+        home_score: 1,
+        away_score: 2,
         goals: { home: 1, away: 2 },
+        score: '1 - 2',
         status: '2H',
         time: '65',
+        elapsed: 65,
+        minute: '65\'',
         aiScore: 85,
         ai_score: 85,
         score_ai: 85,
@@ -129,19 +136,22 @@ const mockMatches = [
     }
 ];
 
-// Endpoint live matches (Đã sửa đối tượng trả về chuẩn Object)
+// Endpoint live matches
 app.get('/api/matches/live', (req, res) => {
     const keoRungMatches = mockMatches.filter(match => checkKeoRungLogic(match));
     const currentUrl = 'https://football-api-5i9a.onrender.com/api/matches/live';
 
     res.json({
         success: true,
+        status: 'success',
         url: currentUrl,
         endpoint: currentUrl,
+        count: keoRungMatches.length,
         results: keoRungMatches.length,
         total: keoRungMatches.length,
         data: keoRungMatches,
-        response: keoRungMatches
+        response: keoRungMatches,
+        matches: keoRungMatches
     });
 });
 
