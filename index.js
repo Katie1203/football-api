@@ -17,7 +17,7 @@ app.use(express.json());
 
 // Cấu hình Telegram Bot Token & Chat ID của bạn
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTralILZmGJ9Ynm35M1DXa_S5tJ4eyAEs';
-const TELEGRAM_CHAT_ID = process.env.7795416740|| ''; // Nhập Chat ID Telegram của bạn vào file .env hoặc thay trực tiếp ở đây
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 
 // Hàm tự động gửi thông báo về Telegram
 async function sendTelegramAlert(match, winRate) {
