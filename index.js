@@ -38,12 +38,11 @@ function hashCode(str) {
 }
 
 // ==========================================
-// TẠO THÔNG BÁO THEO ĐÚNG MẪU YÊU CẦU
+// TẠO THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(data) {
-    // Định dạng mẫu tin nhắn chính xác từng dòng theo hình ảnh
     const message = 
-`🚨 KÈO RUNG
+`🚨 KÈO RUNGGGG
 🏆 ${data.league}
 ${data.homeTeam} ${data.score} ${data.awayTeam} · phút ${data.elapsed}
 ⚽ Diễn biến: ${data.timeline}
@@ -55,7 +54,7 @@ ${data.homeTeam} ${data.score} ${data.awayTeam} · phút ${data.elapsed}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`[Telegram] Đã gửi thông báo: ${data.homeTeam} vs ${data.awayTeam}`);
+        console.log(`[Telegram] Đã gửi thông báo: [${data.league}] ${data.homeTeam} vs ${data.awayTeam}`);
         sentAlerts.add(data.id);
     } catch (err) {
         console.error('[Telegram Error]:', err.response ? err.response.data : err.message);
@@ -63,7 +62,7 @@ ${data.homeTeam} ${data.score} ${data.awayTeam} · phút ${data.elapsed}
 }
 
 // ==========================================
-// TỰ ĐỘNG QUÉT VÀ XỬ LÝ DỮ LIỆU
+// TỰ ĐỘNG QUÉT TRẬN ĐẤU LIVE
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -92,7 +91,13 @@ async function scanLiveMatches() {
 
         for (const item of liveMatches) {
             const matchId = String(item.id || item.eventId || item.fixture?.id);
-            const leagueName = item.league?.name || item.leagueName || 'Giải đấu';
+
+            // 🛠️ BỔ SUNG LẤY TÊN GIẢI ĐẤU CHÍNH XÁC
+            const leagueName = item.league?.name || 
+                               item.leagueName || 
+                               item.tournament?.name || 
+                               (typeof item.league === 'string' ? item.league : null) || 
+                               (item.leagueId ? `Giải đấu #${item.leagueId}` : 'Giải đấu');
 
             const homeTeam = item.home?.name || item.teams?.home?.name || item.homeTeam || 'Đội nhà';
             const awayTeam = item.away?.name || item.teams?.away?.name || item.awayTeam || 'Đội khách';
@@ -113,7 +118,7 @@ async function scanLiveMatches() {
                 }
             }
 
-            // Quét các trận đấu nằm trong khoảng phút 60 đến 88
+            // Quét phút 60 đến 88
             if (elapsed >= 60 && elapsed <= 88) {
                 if (sentAlerts.has(matchId)) continue;
 
@@ -125,9 +130,9 @@ async function scanLiveMatches() {
                     if (totalGoals === 0) {
                         timeline = 'Chưa có bàn thắng';
                     } else if (totalGoals === 1) {
-                        timeline = `P${Math.max(10, elapsed - 25)}: ${homeScore}–${awayScore}`;
+                        timeline = `P${Math.max(10, elapsed - 20)}: ${homeScore}–${awayScore}`;
                     } else {
-                        timeline = `P11: 1–0 · P${elapsed - 8}: ${homeScore}–${awayScore}`;
+                        timeline = `P11: 1–0 · P${Math.max(20, elapsed - 8)}: ${homeScore}–${awayScore}`;
                     }
                 }
 
@@ -179,5 +184,5 @@ app.listen(PORT, () => {
     console.log(`Server đang chạy tại port ${PORT}`);
     scanLiveMatches();
     setInterval(scanLiveMatches, 60 * 1000); // Quét mỗi 60 giây
-    setInterval(keepAlive, 10 * 60 * 1000); // Tự ping mỗi 10 phút để giữ server không ngủ
+    setInterval(keepAlive, 10 * 60 * 1000);  // Tự ping mỗi 10 phút
 });
