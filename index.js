@@ -7,16 +7,15 @@ const PORT = process.env.PORT || 10000;
 // ==========================================
 // CẤU HÌNH HỆ THỐNG & API
 // ==========================================
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTralILZmGJ9Ynm35M1DXa_S5tJ4eyAEs';
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'YOUR_TELEGRAM_CHAT_ID';
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || process.env.FOOTBALL_API_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
-
-// Host chuẩn xác từ RapidAPI Playground (có .p. ở giữa)
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
 
-// Endpoint lấy trận live
-const API_URL = `https://${RAPIDAPI_HOST}/football-get-live`;
+// Endpoint chuẩn lấy danh sách trận live
+const API_ENDPOINT = '/football-current-live';
+const API_URL = `https://${RAPIDAPI_HOST}${API_ENDPOINT}`;
 
 const sentAlerts = new Set();
 const picksHistory = [];
@@ -82,7 +81,7 @@ async function scanLiveMatches() {
         });
 
         const data = response.data;
-        const liveMatches = data.response?.live || data.matches || data.results || (Array.isArray(data) ? data : []);
+        const liveMatches = data.response?.live || data.response || data.matches || data.results || (Array.isArray(data) ? data : []);
 
         if (!Array.isArray(liveMatches) || liveMatches.length === 0) {
             console.log('[Hệ thống] Không tìm thấy trận đấu nào đang live.');
