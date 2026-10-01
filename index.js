@@ -11,8 +11,11 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTral
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || process.env.FOOTBALL_API_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
-const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.rapidapi.com';
 
+// Host chuẩn xác từ RapidAPI Playground (có .p. ở giữa)
+const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
+
+// Endpoint lấy trận live
 const API_URL = `https://${RAPIDAPI_HOST}/football-get-live`;
 
 const sentAlerts = new Set();
@@ -156,12 +159,10 @@ async function scanLiveMatches() {
     }
 }
 
-// Route kiểm tra trạng thái dịch vụ (Keep-alive endpoint)
 app.get('/', (req, res) => {
-    res.send('Football Live API Scanner is running!');
+    res.send('Football API Service is running!');
 });
 
-// Khởi chạy Web Server để đáp ứng yêu cầu port của Render
 app.listen(PORT, () => {
     console.log(`Server đang chạy tại port ${PORT}`);
     scanLiveMatches();
