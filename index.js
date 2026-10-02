@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 10000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || 'YOUR_TELEGRAM_CHAT_ID';
 
-// Ưu tiên đọc key mới từ biến môi trường hoặc key mặc định bên dưới
 const RAPIDAPI_KEY = process.env.FOOTBALL_API_KEY || process.env.RAPIDAPI_KEY || 'f00cdf8303msh374792a917698bbp1f02cbjsn3bc6445978c1';
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
 
@@ -39,7 +38,7 @@ function hashCode(str) {
 }
 
 // ==========================================
-// TẠO THÔNG BÁO THEO ĐÚNG MẪU YÊU CẦU
+// TẠO THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(data) {
     const message = 
@@ -55,7 +54,7 @@ ${data.homeTeam} ${data.score} ${data.awayTeam} · phút ${data.elapsed}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`[Telegram] Đã gửi thông báo: ${data.homeTeam} vs ${data.awayTeam}`);
+        console.log(`[Telegram] Đã gửi thông báo thành công: ${data.homeTeam} vs ${data.awayTeam}`);
         sentAlerts.add(data.id);
     } catch (err) {
         console.error('[Telegram Error]:', err.response ? err.response.data : err.message);
@@ -63,7 +62,7 @@ ${data.homeTeam} ${data.score} ${data.awayTeam} · phút ${data.elapsed}
 }
 
 // ==========================================
-// TỰ ĐỘNG QUÉT VÀ XỬ LÝ DỮ LIỆU
+// QUÉT VÀ HIỂN THỊ CHI TIẾT TỪNG TRẬN
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -100,8 +99,9 @@ async function scanLiveMatches() {
             const homeScore = Number(item.home?.score ?? item.goals?.home ?? 0);
             const awayScore = Number(item.away?.score ?? item.goals?.away ?? 0);
 
-            const liveTimeObj = item.status?.liveTime || {};
-            const timeShort = liveTimeObj.short || item.status?.short || String(item.elapsed || '');
+            // Bắt chính xác phút thi đấu từ các cấu trúc JSON khác nhau của API
+            const rawTime = item.status?.elapsed || item.elapsed || item.status?.reason?.short || item.status?.liveTime?.short || item.minute || '';
+            const timeShort = String(rawTime);
 
             let elapsed = 0;
             if (timeShort === 'HT' || timeShort.toUpperCase().includes('HALF')) {
@@ -113,13 +113,15 @@ async function scanLiveMatches() {
                 }
             }
 
-            // Quét các trận đấu nằm trong khoảng phút 60 đến 88
+            // In log chi tiết từng phút của từng trận đấu ra màn hình (Console/Render Log)
+            console.log(`[LIVE MATCH] [Phút: ${timeShort || elapsed}' (${elapsed}')] ${homeTeam} ${homeScore}-${awayScore} ${awayTeam}`);
+
+            // Điều kiện lọc trận nằm trong khoảng phút 60 đến 88
             if (elapsed >= 60 && elapsed <= 88) {
                 if (sentAlerts.has(matchId)) continue;
 
                 const totalGoals = homeScore + awayScore;
 
-                // Xử lý chuỗi diễn biến bàn thắng (Timeline)
                 let timeline = item.eventsTimeline || item.timeline || '';
                 if (!timeline) {
                     if (totalGoals === 0) {
@@ -131,7 +133,6 @@ async function scanLiveMatches() {
                     }
                 }
 
-                // Tính toán chỉ số Hiệu quả rule (%) và Số mẫu n
                 const sampleN = 110 + (hashCode(matchId) % 50);
                 let ruleEfficiency = (55.0 + (totalGoals * 2.1) + ((90 - elapsed) * 0.15)).toFixed(1);
                 if (parseFloat(ruleEfficiency) > 85.0) ruleEfficiency = '85.0';
@@ -163,7 +164,7 @@ async function scanLiveMatches() {
 }
 
 // ==========================================
-// TỰ PING GIỮ SERVER CHẠY NGẦM 24/7 (SELF-PING)
+// TỰ PING GIỮ SERVER CHẠY 24/7
 // ==========================================
 function keepAlive() {
     axios.get(RENDER_EXTERNAL_URL)
@@ -179,9 +180,7 @@ app.listen(PORT, () => {
     console.log(`Server đang chạy tại port ${PORT}`);
     scanLiveMatches();
     
-    // Đặt thời gian quét 8 phút/lần (nằm trong khoảng 5 - 10 phút theo yêu cầu)
+    // Đặt thời gian quét 8 phút/lần (từ 5 đến 10 phút theo yêu cầu)
     setInterval(scanLiveMatches, 8 * 60 * 1000); 
-    
-    // Tự ping giữ server không bị ngủ mỗi 10 phút
     setInterval(keepAlive, 10 * 60 * 1000); 
 });
