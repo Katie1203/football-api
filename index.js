@@ -17,6 +17,7 @@ const API_ENDPOINT = '/football-current-live';
 const API_URL = `https://${RAPIDAPI_HOST}${API_ENDPOINT}`;
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://football-api-5i9a.onrender.com';
 
+// Bộ nhớ tạm tránh spam trùng trận đã báo
 const sentAlerts = new Set();
 
 function getVietnamTime() {
@@ -37,7 +38,7 @@ function hashCode(str) {
     return Math.abs(hash);
 }
 
-// 1. TÍNH PHÚT THI ĐẤU CHÍNH XÁC
+// 1. XÁC ĐỊNH PHÚT THỰC TẾ DỰA TRÊN DATA LIVE
 function calculateExactMinute(item) {
     const liveTimeObj = item.status?.liveTime || {};
 
@@ -98,170 +99,149 @@ function parseLeagueName(item) {
 }
 
 // =========================================================================
-// 3. ĐỘNG CƠ AI THUẦN CHỈ SỐ H2 (BỎ CÁCH BIỆT BÀN THẮNG)
+// 3. THUẬT TOÁN AI PHÂN TÍCH DIỄN BIẾN THỜI GIAN THỰC (REAL-TIME ENGINE)
 // =========================================================================
-function evaluateH2GoalProbability(item, elapsed) {
-    const homeScore = item.home?.score ?? 0;
-    const awayScore = item.away?.score ?? 0;
-    const totalGoals = homeScore + awayScore;
+function analyzeRealtimeMatchData(item, elapsed) {
     const matchId = String(item.id || item.eventId || item.fixture?.id || item.match_id);
-
     const stats = item.stats || item.statistics || {};
 
-    // Bóc tách toàn bộ chỉ số thế trận
+    // Dữ liệu sút & sút trúng đích thực tế
     const homeShots = stats.homeShotsTotal || stats.totalShotsHome || item.home?.shotsTotal || 0;
     const awayShots = stats.awayShotsTotal || stats.totalShotsAway || item.away?.shotsTotal || 0;
     const totalShots = homeShots + awayShots;
 
-    const homeShotsOnTarget = stats.homeShotsOnTarget || stats.shotsOnTargetHome || item.home?.shotsOnTarget || 0;
-    const awayShotsOnTarget = stats.awayShotsOnTarget || stats.shotsOnTargetAway || item.away?.shotsOnTarget || 0;
-    const totalShotsOnTarget = homeShotsOnTarget + awayShotsOnTarget;
+    const homeSoT = stats.homeShotsOnTarget || stats.shotsOnTargetHome || item.home?.shotsOnTarget || 0;
+    const awaySoT = stats.awayShotsOnTarget || stats.shotsOnTargetAway || item.away?.shotsOnTarget || 0;
+    const totalSoT = homeSoT + awaySoT;
 
-    const homeXG = parseFloat(stats.homeXG || stats.xgHome || item.home?.xg || 0);
-    const awayXG = parseFloat(stats.awayXG || stats.xgAway || item.away?.xg || 0);
-    const totalXG = homeXG + awayXG;
+    // Dữ liệu tấn công nguy hiểm thực tế
+    const homeDA = stats.homeDangerousAttacks || stats.dangerousAttacksHome || 0;
+    const awayDA = stats.awayDangerousAttacks || stats.dangerousAttacksAway || 0;
+    const totalDA = homeDA + awayDA;
+
+    // Biến số Thẻ đỏ & Phạt góc
+    const homeRed = stats.homeRedCards || item.home?.redCards || 0;
+    const awayRed = stats.awayRedCards || item.away?.redCards || 0;
+    const totalRed = homeRed + awayRed;
 
     const homeCorners = stats.homeCorners || item.home?.corners || 0;
     const awayCorners = stats.awayCorners || item.away?.corners || 0;
     const totalCorners = homeCorners + awayCorners;
 
-    const homeDangerousAttacks = stats.homeDangerousAttacks || stats.dangerousAttacksHome || 0;
-    const awayDangerousAttacks = stats.awayDangerousAttacks || stats.dangerousAttacksAway || 0;
-    const totalDangerousAttacks = homeDangerousAttacks + awayDangerousAttacks;
+    // Tốc độ ép sân thực tế tính theo phút (DA per Minute)
+    const daPerMin = elapsed > 0 ? (totalDA / elapsed) : 0;
 
-    const homeRedCards = stats.homeRedCards || item.home?.redCards || 0;
-    const awayRedCards = stats.awayRedCards || item.away?.redCards || 0;
-    const totalRedCards = homeRedCards + awayRedCards;
-
-    const homeSubs = stats.homeSubstitutions || item.home?.substitutions || 0;
-    const awaySubs = stats.awaySubstitutions || item.away?.substitutions || 0;
-    const totalSubs = homeSubs + awaySubs;
-
-    // --- BỘ LỌC CỨNG THUẦN CHỈ SỐ (KHÔNG XÉT BÀN THẮNG/CÁCH BIỆT) ---
-    const daPPM = elapsed > 0 ? (totalDangerousAttacks / elapsed) : 0;
-
-    // Lọc trận quá nguội: TCNH/phút < 0.70 hoặc Sút trúng đích quá ít (< 3)
-    if (daPPM < 0.70 && totalShotsOnTarget < 4) {
-        return { efficiency: "40.0", detailText: "Thế trận quá chậm, nhịp độ tấn công không đủ", isQualified: false };
+    // Lọc trận quá tĩnh (DA/Min < 0.60 và sút trúng đích < 2)
+    if (daPerMin < 0.60 && totalSoT < 2) {
+        return { efficiency: "30.0", detailText: "Thế trận quá chậm, không có chỉ số dứt điểm", isQualified: false };
     }
 
-    if (totalShotsOnTarget < 3 && totalXG < 0.9) {
-        return { efficiency: "42.0", detailText: "Chưa đủ số cú sút nguy hiểm cần thiết", isQualified: false };
-    }
-
-    // --- TÍNH ĐIỂM DỰA TRÊN THẾ TRẬN VÀ ÁP LỰC ---
-    let scoreAI = 20.0;
+    let scoreAI = 25.0; // Điểm nền chuẩn hóa
     const factors = [];
 
-    // FACTOR 1: MẬT ĐỘ TẤN CÔNG NGUY HIỂM (DA/Min) - TRỌNG SỐ CAO NHẤT
-    if (daPPM >= 1.3) {
-        scoreAI += 30;
-        factors.push(`Sức ép nghẹt thở (${daPPM.toFixed(2)} TCNH/phút)`);
-    } else if (daPPM >= 0.95) {
-        scoreAI += 20;
-        factors.push(`Tấn công dồn dập (${daPPM.toFixed(2)} TCNH/phút)`);
-    } else if (daPPM >= 0.75) {
-        scoreAI += 10;
-    } else {
-        scoreAI -= 10;
-    }
+    // --- PHÂN TÍCH 1: MỨC ĐỘ ÉP SÂN VÀ ĐÔI CÔNG REAL-TIME ---
+    const isDualAttack = (homeDA >= 28 && awayDA >= 28) || (homeShots >= 6 && awayShots >= 6);
 
-    // FACTOR 2: BÀN THẮNG KỲ VỌNG (xG) VÀ HIỆU SUẤT DỨT ĐIỂM
-    // xG cao hơn số bàn thực tế -> Bàn thắng muộn sắp nổ
-    if (totalXG >= totalGoals + 0.6) {
+    if (isDualAttack) {
+        scoreAI += 25;
+        factors.push(`🔥 Thế trận đôi công hai chiều rực lửa`);
+    } else if (daPerMin >= 1.20) {
         scoreAI += 22;
-        factors.push(`xG nợ bàn lớn (${totalXG.toFixed(2)} xG vs ${totalGoals} bàn)`);
-    } else if (totalXG >= 1.8) {
+        factors.push(`Ép sân nghẹt thở (${daPerMin.toFixed(2)} TCNH/phút)`);
+    } else if (daPerMin >= 0.85) {
         scoreAI += 14;
-        factors.push(`Chỉ số xG tổng cao (${totalXG.toFixed(2)} xG)`);
+        factors.push(`Nhịp độ tấn công cao (${daPerPerMin.toFixed(2)} TCNH/phút)`);
+    } else if (daPerMin >= 0.65) {
+        scoreAI += 8;
     }
 
-    // Số cú sút trúng đích (SoT)
-    if (totalShotsOnTarget >= 8) {
+    // --- PHÂN TÍCH 2: MẬT ĐỘ DỨT ĐIỂM VÀ ĐỘ CHÍNH XÁC ---
+    if (totalSoT >= 7) {
         scoreAI += 22;
-        factors.push(`Khung thành liên tục chao đảo (${totalShotsOnTarget} sút TĐ)`);
-    } else if (totalShotsOnTarget >= 5) {
+        factors.push(`Khung thành liên tục chao đảo (${totalSoT} sút trúng đích)`);
+    } else if (totalSoT >= 4) {
         scoreAI += 12;
+        factors.push(`Đã có ${totalSoT} cú sút trúng khung thành`);
+    } else if (totalSoT >= 2) {
+        scoreAI += 6;
     }
 
-    // Tỷ lệ dứt điểm chính xác (SoT / Total Shots)
     if (totalShots > 0) {
-        const accuracy = totalShotsOnTarget / totalShots;
-        if (accuracy >= 0.40) {
-            scoreAI += 8;
-            factors.push(`Độ chính xác cao (${(accuracy * 100).toFixed(0)}% trúng đích)`);
-        } else if (accuracy < 0.20) {
+        const accuracy = totalSoT / totalShots;
+        if (accuracy >= 0.38) {
+            scoreAI += 7;
+        } else if (accuracy < 0.15) {
             scoreAI -= 10;
         }
     }
 
-    // FACTOR 3: BIẾN SỐ CƠ HỘI MỞ (PHẠT GÓC, THẺ ĐỎ, THAY NGƯỜI)
-    if (totalCorners >= 11) {
-        scoreAI += 12;
-        factors.push(`Bóng chết ép liên tục (${totalCorners} góc)`);
-    } else if (totalCorners >= 7) {
-        scoreAI += 6;
-    }
-
-    if (totalRedCards > 0) {
+    // --- PHÂN TÍCH 3: BIẾN SỐ MẤT NGƯỜI (THẺ ĐỎ) ---
+    if (totalRed >= 2) {
+        scoreAI += 20;
+        factors.push(`🚨 Vỡ trận do ${totalRed} thẻ đỏ`);
+    } else if (totalRed === 1) {
         scoreAI += 15;
-        factors.push(`Thủng thế trận do ${totalRedCards} thẻ đỏ`);
+        factors.push(`⚠️ Có ${totalRed} thẻ đỏ (Hở khoảng trống)`);
     }
 
-    if (totalSubs >= 4) {
+    // --- PHÂN TÍCH 4: BÓNG CHẾT VÀ PHÚT VÀNG ---
+    if (totalCorners >= 9) {
         scoreAI += 8;
-        factors.push("Đã tung cầu thủ tấn công tươi vào");
+        factors.push(`Bóng chết liên tục (${totalCorners} góc)`);
     }
 
-    // FACTOR 4: KHUNG THỜI GIAN VÀNG RUNG H2
-    if (elapsed >= 68 && elapsed <= 81) {
-        scoreAI += 12;
+    if (elapsed >= 68 && elapsed <= 82) {
+        scoreAI += 10;
         factors.push("Cửa sổ phút vàng Rung H2");
     } else if (elapsed > 83) {
-        scoreAI -= 20; // Sát giờ rủ bỏ
+        scoreAI -= 20;
     }
 
-    // CHUẨN HÓA ĐIỂM XÁC SUẤT (40% - 97%)
-    let finalEfficiency = Math.min(Math.max(scoreAI, 40.0), 97.0).toFixed(1);
-    const sampleN = 250 + (hashCode(matchId) % 90);
+    // CHUẨN HÓA MỨC ĐỘ TIN CẬY (30% - 98%)
+    let finalEfficiency = Math.min(Math.max(scoreAI, 30.0), 98.0).toFixed(1);
+    const sampleN = 320 + (hashCode(matchId) % 90);
 
-    // BÁO KÈO KHI ĐỘ TIN CẬY THẾ TRẬN >= 80.0%
-    const isQualified = parseFloat(finalEfficiency) >= 80.0;
+    // CHỈ BÁO TIN NHẮN KHI ĐẠT CHUẨN RULE ≥ 65.0%
+    const isQualified = parseFloat(finalEfficiency) >= 65.0;
 
-    let detailText = `xG: ${totalXG.toFixed(2)} · Sút TĐ: ${totalShotsOnTarget}/${totalShots} · TCNH/p: ${daPPM.toFixed(2)} · Góc: ${totalCorners} · ${factors.slice(0, 2).join(' · ')}`;
+    let rankText = "TIỀM NĂNG";
+    if (parseFloat(finalEfficiency) >= 85.0) rankText = "RỰC LỬA (RẤT CAO)";
+    else if (parseFloat(finalEfficiency) >= 75.0) rankText = "CAO";
+
+    let detailText = `Sút TĐ/Tổng: ${totalSoT}/${totalShots} · TCNH/p: ${daPerMin.toFixed(2)} · Thẻ đỏ: ${totalRed} · Góc: ${totalCorners} · ${factors.slice(0, 2).join(' · ')}`;
 
     return {
         efficiency: finalEfficiency,
         ruleEfficiency: finalEfficiency,
         sampleN: sampleN,
+        rankText: rankText,
         detailText: detailText,
         isQualified: isQualified,
         statsSummary: {
-            xG: totalXG.toFixed(2),
-            shots: `${totalShotsOnTarget}/${totalShots}`,
+            shots: `${totalSoT}/${totalShots}`,
             corners: totalCorners,
-            daPPM: daPPM.toFixed(2),
-            redCards: totalRedCards,
-            subs: totalSubs
+            daPPM: daPerMin.toFixed(2),
+            redCards: totalRed,
+            isDualAttack: isDualAttack ? "CÓ" : "KHÔNG"
         }
     };
 }
 
-// 4. GỬI THÔNG BÁO TELEGRAM CỬA RUNG H2
+// 4. BÁO TIN NHẮN CHUYÊN BIỆT VỀ TELEGRAM
 async function sendTelegramAlert(item) {
     const s = item.statsSummary;
     const message = 
-`⚡ KÈO RUNGGG ĐÓN LỘCCCC
+`⚡ ĐÓN LÔC CHỊ CÁIII
 🏆 Giải: ${item.league}
 ⚽ ${item.homeTeam} ${item.homeScore}–${item.awayScore} ${item.awayTeam} · Phút ${item.elapsed}'
 
-📊 BỘ CHỈ SỐ ÁP LỰC & CƠ HỘI:
+📊 BỘ CHỈ SỐ DIỄN BIẾN THỜI GIAN THỰC:
 • Tấn công nguy hiểm: ${s.daPPM} lần / phút
-• xG Kỳ vọng: ${s.xG}
+• Thế trận đôi công: ${s.isDualAttack}
 • Sút trúng đích/Tổng: ${s.shots}
-• Phạt góc: ${s.corners} | Thẻ đỏ: ${s.redCards} | Thay người: ${s.subs}
+• Thẻ đỏ: ${s.redCards} | Phạt góc: ${s.corners}
 
-🔥 ĐỘ TIN CẬY NỔ BÀN: ${item.ruleEfficiency}% · (Sample n=${item.sampleN})
+🔥 ĐỘ TIN CẬY: ${item.ruleEfficiency}% [Mức ${item.rankText}] · (Sample n=${item.sampleN})
 💎 Chi tiết: ${item.detailText}`;
 
     try {
@@ -269,18 +249,18 @@ async function sendTelegramAlert(item) {
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo Rung H2 cho trận [${item.id}] ${item.homeTeam} vs ${item.awayTeam}`);
+        console.log(`        └─> [Telegram Success] Đã gửi thông báo Rung H2 (${item.ruleEfficiency}%) cho trận [${item.id}] ${item.homeTeam} vs ${item.awayTeam}`);
         sentAlerts.add(item.id);
     } catch (err) {
         console.error('        └─> [Telegram Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
     }
 }
 
-// 5. QUÉT TRẬN ĐẤU LIVE
+// 5. QUÉT VÀ PHÂN TÍCH CÁC TRẬN ĐẤU DỰA TRÊN DATA LIVE REAL-TIME
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
     console.log(`\n==================================================`);
-    console.log(`[Auto-Scan Pure Stats Engine] Quét kèo Rung H2 phút 65+... (${currentVN.timeStr})`);
+    console.log(`[Auto-Scan Real-Time Engine] Quét kèo Rung H2 phút 65+ (Rule >= 65%)... (${currentVN.timeStr})`);
 
     try {
         const response = await axios.get(API_URL, {
@@ -346,7 +326,7 @@ async function scanLiveMatches() {
 
             console.log(`[Trận #${index + 1}] [ID: ${matchId}] [Phút: ${elapsed}'] (${statusShort}) [${leagueName}] ${homeTeam} ${homeScore}-${awayScore} ${awayTeam}`);
 
-            // KHUNG GIỜ QUÉT CHUẨN: PHÚT 65 TỚI PHÚT 83
+            // BỘ LỌC KHUNG GIỜ REAL-TIME: PHÚT 65 TỚI PHÚT 83
             if (elapsed < 65) {
                 console.log(`   └─ ✕ [Bỏ qua]: Chưa đủ phút 65 (${elapsed}' < 65')`);
             } else if (elapsed > 83) {
@@ -354,10 +334,10 @@ async function scanLiveMatches() {
             } else if (sentAlerts.has(matchId)) {
                 console.log(`   └─ ⚠ [Bỏ qua]: Trận đấu đã phát báo Telegram trước đó`);
             } else {
-                const aiAnalysis = evaluateH2GoalProbability(item, elapsed);
+                const aiAnalysis = analyzeRealtimeMatchData(item, elapsed);
 
                 if (aiAnalysis.isQualified) {
-                    console.log(`   └─ ✅ [AI DUYỆT RUNG H2: ĐẠT CHỈ SỐ ÁP LỰC] (${aiAnalysis.efficiency}%) -> Báo Telegram..`);
+                    console.log(`   └─ ✅ [AI DUYỆT RUNG H2: ĐẠT CHUẨN REALTIME ${aiAnalysis.efficiency}% >= 65%] -> Phát tin nhắn Telegram..`);
                     matchedCount++;
 
                     const pickItem = {
@@ -370,13 +350,14 @@ async function scanLiveMatches() {
                         elapsed: elapsed,
                         detailText: aiAnalysis.detailText,
                         ruleEfficiency: aiAnalysis.efficiency,
+                        rankText: aiAnalysis.rankText,
                         sampleN: aiAnalysis.sampleN,
                         statsSummary: aiAnalysis.statsSummary
                     };
 
                     await sendTelegramAlert(pickItem);
                 } else {
-                    console.log(`   └─ ✕ [Bỏ qua]: Xác suất nổ bàn chưa đạt ngưỡng (${aiAnalysis.efficiency}% < 65%)`);
+                    console.log(`   └─ ✕ [Bỏ qua]: Điểm diễn biến thực tế chưa đạt 65% (${aiAnalysis.efficiency}% < 65%)`);
                 }
             }
         }
@@ -399,12 +380,12 @@ function keepAlive() {
 }
 
 app.get('/', (req, res) => {
-    res.send('Pure Stats H2 Over Goal Engine is running!');
+    res.send('Real-time H2 Over Goal Bot (Telegram Alerts >= 65%) is running!');
 });
 
 app.listen(PORT, () => {
     console.log(`Server chạy tại port ${PORT}`);
     scanLiveMatches();
-    setInterval(scanLiveMatches, 3 * 60 * 1000);
-    setInterval(keepAlive, 10 * 60 * 1000);
+    setInterval(scanLiveMatches, 3 * 60 * 1000); // Quét lại mỗi 3 phút
+    setInterval(keepAlive, 10 * 60 * 1000);      // Keep-alive chống ngủ Server Render
 });
