@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hiệu quả Soi Kèo</title>
+    <style>
+        body {
+            background-color: #0b130e;
+            color: #e0e0e0;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h2 { text-align: center; color: #ffffff; }
+        .subtitle { text-align: center; color: #888; font-size: 14px; margin-bottom: 20px; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .card {
+            background: #142219;
+            border: 1px solid #1e3827;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .badge {
+            background: #00e676;
+            color: #000;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .league { color: #88c0d0; font-size: 13px; margin-bottom: 5px; }
+        .match { font-size: 16px; font-weight: bold; }
+        .time { color: #ff5252; font-weight: bold; }
+        .eff { text-align: right; }
+        .eff-val { font-size: 18px; color: #00e676; font-weight: bold; }
+        .no-data { text-align: center; color: #777; margin-top: 50px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Hiệu quả Soi Kèo</h2>
+        <div class="subtitle" id="status-text">Đang quét tìm các trận từ phút 60+ thỏa Rule ≥ 60%...</div>
+        
+        <div id="picks-list">
+            <div class="no-data">Đang đồng bộ dữ liệu live từ Server...</div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchPicks() {
+            try {
+                const res = await fetch('/api/picks');
+                const data = await res.json();
+                
+                const listContainer = document.getElementById('picks-list');
+                const statusText = document.getElementById('status-text');
+
+                // Hiển thị tất cả các trận có Rule >= 50% (hoặc bỏ lọc để hiện 100% trận)
+                const filtered = data.filter(item => item.ruleEfficiency >= 50.0);
+
+                if (filtered.length === 0) {
+                    listContainer.innerHTML = '<div class="no-data">Chưa tìm thấy trận nào ở phút 60-90 thỏa điều kiện rule.</div>';
+                    return;
+                }
+
+                statusText.innerText = `Đã tìm thấy ${filtered.length} trận Live đạt điều kiện`;
+
+                listContainer.innerHTML = filtered.map(item => `
+                    <div class="card">
+                        <div>
+                            <div class="league">🏆 ${item.league}</div>
+                            <div class="match">${item.homeTeam} <span style="color:#00e676">${item.score}</span> ${item.awayTeam}</div>
+                        </div>
+                        <div class="eff">
+                            <div class="time">⏱️ Phút ${item.elapsed}'</div>
+                            <div class="eff-val">${item.ruleEfficiency}%</div>
+                            <small style="color:#aaa">n=${item.sampleN}</small>
+                        </div>
+                    </div>
+                `).join('');
+
+            } catch (err) {
+                console.error('Lỗi tải dữ liệu:', err);
+            }
+        }
+
+        // Tự động đồng bộ lên giao diện mỗi 5 giây
+        setInterval(fetchPicks, 5000);
+        fetchPicks();
+    </script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soi Kèo Rung App</title>
+    <style>
+        body {
+            background-color: #0b1411;
+            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            margin: 0;
+            padding-bottom: 70px;
+        }
+        .header-title {
+            text-align: center;
+            padding: 15px;
+            font-weight: bold;
+            font-size: 18px;
+            border-bottom: 1px solid #1a2923;
+        }
+        .card {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            border-bottom: 1px solid #16241f;
+        }
+        .info { flex: 1; }
+        .meta { font-size: 11px; color: #7a8f85; margin-bottom: 4px; }
+        .teams { font-size: 15px; font-weight: bold; color: #ffffff; margin-bottom: 4px; }
+        .sub-tag { font-size: 11px; color: #5a7065; }
+        .badge-box { text-align: right; }
+        .badge-thang {
+            background-color: #122b20;
+            color: #2ed573;
+            font-weight: bold;
+            padding: 8px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        .badge-ft { font-size: 10px; color: #5a7065; margin-top: 4px; text-align: center; }
+        
+        /* Bottom Navigation Bar */
+        .navbar {
+            position: fixed;
+            bottom: 0;
+            left: 0; right: 0;
+            background-color: #0d1a15;
+            display: flex;
+            justify-content: space-around;
+            padding: 10px 0;
+            border-top: 1px solid #1a2e25;
+        }
+        .nav-item {
+            color: #5a7065;
+            font-size: 11px;
+            text-align: center;
+            text-decoration: none;
+        }
+        .nav-item.active { color: #2ed573; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="header-title">Hiệu quả Soi Kèo</div>
+    <div id="list-container"></div>
+
+    <!-- Thanh Điều Hướng Dưới Cùng -->
+    <div class="navbar">
+        <div class="nav-item">◆<br>Picks</div>
+        <div class="nav-item active">▥<br>Hiệu quả</div>
+        <div class="nav-item">◇<br>Rule Lab</div>
+        <div class="nav-item">●<br>Health</div>
+        <div class="nav-item">⇆<br>Thoát</div>
+    </div>
+
+    <script>
+        async function loadPicks() {
+            try {
+                const res = await fetch('/api/picks');
+                const data = await res.json();
+                const container = document.getElementById('list-container');
+                
+                if (data.length === 0) {
+                    container.innerHTML = '<div style="text-align:center; padding:30px; color:#5a7065;">Đang quét trận đấu...</div>';
+                    return;
+                }
+
+                container.innerHTML = data.map(item => `
+                    <div class="card">
+                        <div class="info">
+                            <div class="meta">${item.time} ${item.date} · phút ${item.elapsed} · ${item.rule}</div>
+                            <div class="teams">${item.teams}</div>
+                            <div class="sub-tag">${item.tag}</div>
+                        </div>
+                        <div class="badge-box">
+                            <div class="badge-thang">${item.status}</div>
+                            <div class="badge-ft">${item.ftResult}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        loadPicks();
+        setInterval(loadPicks, 10000); // Tự động cập nhật danh sách mỗi 10 giây
+    </script>
+</body>
+</html>
