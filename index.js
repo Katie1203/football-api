@@ -37,7 +37,7 @@ function hashCode(str) {
     return Math.abs(hash);
 }
 
-// 1. Tính phút thi đấu chính xác
+// 1. Tính phút thi đấu
 function calculateExactMinute(item) {
     const liveTimeObj = item.status?.liveTime || {};
 
@@ -61,29 +61,37 @@ function calculateExactMinute(item) {
     return 0;
 }
 
-// 2. Trích xuất tên giải đấu
+// 2. SỬA LỖI: TRÍCH XUẤT TÊN GIẢI ĐẤU CHÍNH XÁC
 function parseLeagueName(item) {
-    if (item.league && typeof item.league === 'object') {
-        const name = item.league.name || item.league.title || item.league.translatedName;
-        if (name) return String(name).trim();
+    if (!item) return 'Giải đấu';
+
+    // Đọc tên giải đấu từ các cấp thuộc tính phổ biến của RapidAPI
+    const candidateNames = [
+        item.league?.name,
+        item.league?.translatedName,
+        item.tournament?.name,
+        item.competition?.name,
+        item.leagueName,
+        item.league_name,
+        item.stage?.name
+    ];
+
+    for (const name of candidateNames) {
+        if (name && typeof name === 'string' && name.trim().length > 0) {
+            // Kiểm tra xem name có bị trả về nhầm ID dạng chuỗi số không
+            if (!/^\d+$/.test(name.trim())) {
+                return name.trim();
+            }
+        }
     }
 
-    if (typeof item.league === 'string' && item.league.trim() !== '') {
-        return item.league.trim();
+    // Nếu có tên quốc gia/khu vực thì kết hợp tên
+    const countryName = item.country?.name || item.league?.country || item.country;
+    if (countryName && typeof countryName === 'string' && !/^\d+$/.test(countryName.trim())) {
+        return `Giải ${countryName.trim()}`;
     }
 
-    const alternativeName = 
-        item.leagueName || 
-        item.tournament?.name || 
-        item.competition?.name || 
-        item.league_name || 
-        (item.country?.name ? `${item.country.name} League` : null);
-
-    if (alternativeName && typeof alternativeName === 'string') {
-        return alternativeName.trim();
-    }
-
-    const leagueId = item.leagueId || item.league?.id;
+    const leagueId = item.leagueId || item.league?.id || item.tournament?.id;
     if (leagueId) return `Giải #${leagueId}`;
 
     return 'Giải đấu';
@@ -99,17 +107,14 @@ function evaluateMatchWithAI(item, elapsed) {
 
     let scoreAI = 52.0;
 
-    // Tỷ số
     if (goalDiff === 1) scoreAI += 12;
     else if (goalDiff === 0 && totalGoals > 0) scoreAI += 10;
     else if (goalDiff === 0 && totalGoals === 0) scoreAI += 4;
     else if (goalDiff >= 3) scoreAI -= 18;
 
-    // Phút
     if (elapsed >= 68 && elapsed <= 83) scoreAI += 14;
     else if (elapsed >= 60 && elapsed < 68) scoreAI += 7;
 
-    // Thống kê live
     const stats = item.stats || item.statistics || {};
     const homeShots = stats.homeShotsOnTarget || stats.shotsOnTargetHome || item.home?.shotsOnTarget || 0;
     const awayShots = stats.awayShotsOnTarget || stats.shotsOnTargetAway || item.away?.shotsOnTarget || 0;
@@ -128,7 +133,6 @@ function evaluateMatchWithAI(item, elapsed) {
     let efficiency = Math.min(Math.max(scoreAI, 60.0), 95.0).toFixed(1);
     const sampleN = 100 + (hashCode(matchId) % 100);
 
-    // Tạo chuỗi mô tả diễn biến trận đấu giống hình ảnh mẫu
     let attackTempo = "Nhịp độ tấn công dồn dập";
     if (totalDangerousAttacks < elapsed * 0.5 && totalShotsOnTarget < 5) {
         attackTempo = "Thế trận duy trì áp lực tốt";
@@ -144,7 +148,7 @@ function evaluateMatchWithAI(item, elapsed) {
     };
 }
 
-// 4. GỬI THÔNG BÁO THEO ĐÚNG MẪU HÌNH ẢNH
+// 4. GỬI THÔNG BÁO TELEGRAM
 async function sendTelegramAlert(item) {
     const message = 
 `🚨 KÈO RUNG
@@ -166,7 +170,7 @@ ${item.homeTeam} ${item.homeScore}–${item.awayScore} ${item.awayTeam} · phút
     }
 }
 
-// 5. Hàm quét các trận đấu LIVE
+// 5. QUÉT TRẬN ĐẤU LIVE
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
     console.log(`\n==================================================`);
@@ -245,7 +249,7 @@ async function scanLiveMatches() {
             } else {
                 const aiAnalysis = evaluateMatchWithAI(item, elapsed);
 
-                if (parseFloat(aiAnalysis.efficiency) >= 65.0) {
+                if (parseFloat(aiAnalysis.efficiency) >= 60.0) {
                     console.log(`   └─ ✅ [AI CHỌN: RUNG H2] (${aiAnalysis.efficiency}%) -> Gửi Telegram..`);
                     matchedCount++;
 
@@ -264,7 +268,7 @@ async function scanLiveMatches() {
 
                     await sendTelegramAlert(pickItem);
                 } else {
-                    console.log(`   └─ ✕ [Bỏ qua]: Điểm AI không đạt ngưỡng (${aiAnalysis.efficiency}% < 65%)`);
+                    console.log(`   └─ ✕ [Bỏ qua]: Điểm AI không đạt ngưỡng (${aiAnalysis.efficiency}% < 60%)`);
                 }
             }
         }
