@@ -61,23 +61,35 @@ function calculateExactMinute(item) {
     return 0;
 }
 
-// 2. Trích xuất tên giải đấu
+// 2. Trích xuất tên giải đấu chuẩn xác
 function parseLeagueName(item) {
-    let rawLeague = item.league?.name || 
-                    item.leagueName || 
-                    item.tournament?.name || 
-                    item.competition?.name || 
-                    item.league_name || 
-                    item.country?.name || 
-                    (typeof item.league === 'string' ? item.league : null);
+    if (item.league && typeof item.league === 'object') {
+        const name = item.league.name || item.league.title || item.league.translatedName;
+        if (name) return String(name).trim();
+    }
 
-    if (rawLeague) return String(rawLeague).trim();
+    if (typeof item.league === 'string' && item.league.trim() !== '') {
+        return item.league.trim();
+    }
+
+    const alternativeName = 
+        item.leagueName || 
+        item.tournament?.name || 
+        item.competition?.name || 
+        item.league_name || 
+        (item.country?.name ? `${item.country.name} League` : null);
+
+    if (alternativeName && typeof alternativeName === 'string') {
+        return alternativeName.trim();
+    }
 
     const leagueId = item.leagueId || item.league?.id;
-    return leagueId ? `Giải #${leagueId}` : 'Giải đấu';
+    if (leagueId) return `Giải #${leagueId}`;
+
+    return 'Giải đấu';
 }
 
-// 3. THUẬT TOÁN AI PHÂN TÍCH NHẬN ĐỊNH BÀN THẮNG (TỐI ƯU RUNG H2)
+// 3. THUẬT TOÁN AI PHÂN TÍCH NHẬN ĐỊNH BÀN THẮNG
 function evaluateMatchWithAI(item, elapsed) {
     const homeScore = item.home?.score ?? 0;
     const awayScore = item.away?.score ?? 0;
@@ -85,43 +97,38 @@ function evaluateMatchWithAI(item, elapsed) {
     const goalDiff = Math.abs(homeScore - awayScore);
     const matchId = String(item.id || item.eventId || item.fixture?.id || item.match_id);
 
-    // Điểm cơ sở ban đầu
     let scoreAI = 62.0;
 
-    // --- PHÂN TÍCH THẾ TRẬN (TỈ SỐ & CÁCH BIỆT) ---
+    // --- PHÂN TÍCH THẾ TRẬN ---
     if (goalDiff === 1) {
-        scoreAI += 12; // Đội thua đang dâng cao gỡ hòa -> Dễ nổ thêm bàn
+        scoreAI += 12; // Đội thua dâng cao gỡ hòa -> Dễ nổ thêm bàn
     } else if (goalDiff === 0 && totalGoals > 0) {
-        scoreAI += 10; // Hòa có bàn thắng (1-1, 2-2) -> Đôi bên ăn miếng trả miếng
+        scoreAI += 10; // Hòa có bàn thắng (1-1, 2-2) -> Đôi bên đôi công
     } else if (goalDiff === 0 && totalGoals === 0) {
-        scoreAI += 4;  // 0-0 -> Trận đấu kín kẽ hơn
+        scoreAI += 4;  
     } else if (goalDiff === 2) {
-        scoreAI += 2;  // Cách biệt 2 bàn -> Vẫn còn khả năng có bàn gỡ/kết liễu
+        scoreAI += 2;  
     } else if (goalDiff >= 3) {
-        scoreAI -= 15; // Cách biệt quá lớn (3-0, 4-1) -> Vỡ trận hoặc buông
+        scoreAI -= 15; // Trận cách biệt lớn -> Trừ điểm tránh báo sai
     }
 
-    // --- PHÂN TÍCH THỜI ĐIỂM (TIMING H2) ---
+    // --- PHÂN TÍCH TIMING H2 ---
     if (elapsed >= 68 && elapsed <= 82) {
-        scoreAI += 12; // Khung giờ VÀNG Rung H2 (Thể lực giảm, thay người tấn công)
+        scoreAI += 12; // Khung giờ VÀNG Rung H2
     } else if (elapsed >= 60 && elapsed < 68) {
-        scoreAI += 6;  // Đầu H2, trận đấu bắt đầu đẩy nhịp độ
+        scoreAI += 6;  
     } else if (elapsed > 82) {
-        scoreAI += 4;  // Cuối trận, dồn toàn lực
+        scoreAI += 4;  
     }
 
-    // --- PHÂN TÍCH TỔNG SỐ BÀN THẮNG ---
+    // --- PHÂN TÍCH TỔNG BÀN THẮNG ---
     if (totalGoals >= 2) {
-        scoreAI += 6; // Trận đấu cởi mở đã có từ 2 bàn trở lên
+        scoreAI += 6; 
     }
 
-    // Giới hạn điểm hiệu quả trong khoảng 65.0% - 92.5%
     let efficiency = Math.min(Math.max(scoreAI, 65.0), 92.5).toFixed(1);
-
-    // Mẫu n dựa trên lịch sử hash ID giải đấu (tạo tính nhất quán)
     const sampleN = 120 + (hashCode(matchId) % 130);
 
-    // --- TẠO CHUỖI DIỄN BIẾN THỰC TẾ DỰA TRÊN TỈ SỐ LIVE ---
     let goalTimeline = '';
     if (totalGoals === 0) {
         goalTimeline = 'Thế trận giằng co · Chưa có bàn thắng';
@@ -139,7 +146,7 @@ function evaluateMatchWithAI(item, elapsed) {
     };
 }
 
-// 4. Gửi thông báo về Telegram kèm GIF animation
+// 4. Gửi thông báo về Telegram (có kèm GIF)
 async function sendTelegramAlert(item) {
     const message = 
 `🚨 KÈO RUNG
@@ -243,7 +250,6 @@ async function scanLiveMatches() {
             } else {
                 const aiAnalysis = evaluateMatchWithAI(item, elapsed);
 
-                // Ngưỡng lọc AI: Chỉ gửi khi điểm đạt >= 70%
                 if (parseFloat(aiAnalysis.efficiency) >= 70.0) {
                     console.log(`   └─ ✅ [AI CHỌN: RUNG H2] (${aiAnalysis.efficiency}%) -> Gửi Telegram..`);
                     matchedCount++;
