@@ -61,7 +61,7 @@ function calculateExactMinute(item) {
     return 0;
 }
 
-// 2. Trích xuất tên giải đấu chuẩn xác
+// 2. Trích xuất tên giải đấu
 function parseLeagueName(item) {
     if (item.league && typeof item.league === 'object') {
         const name = item.league.name || item.league.title || item.league.translatedName;
@@ -84,12 +84,12 @@ function parseLeagueName(item) {
     }
 
     const leagueId = item.leagueId || item.league?.id;
-    if (leagueId) return `Giải #${leagueId}`;
+    if (leagueId) return `Giải đấu #${leagueId}`;
 
     return 'Giải đấu';
 }
 
-// 3. THUẬT TOÁN AI PHÂN TÍCH NHẬN ĐỊNH BÀN THẮNG
+// 3. THUẬT TOÁN AI PHÂN TÍCH BÀN THẮNG
 function evaluateMatchWithAI(item, elapsed) {
     const homeScore = item.home?.score ?? 0;
     const awayScore = item.away?.score ?? 0;
@@ -99,29 +99,26 @@ function evaluateMatchWithAI(item, elapsed) {
 
     let scoreAI = 62.0;
 
-    // --- PHÂN TÍCH THẾ TRẬN ---
     if (goalDiff === 1) {
-        scoreAI += 12; // Đội thua dâng cao gỡ hòa -> Dễ nổ thêm bàn
+        scoreAI += 12;
     } else if (goalDiff === 0 && totalGoals > 0) {
-        scoreAI += 10; // Hòa có bàn thắng (1-1, 2-2) -> Đôi bên đôi công
+        scoreAI += 10;
     } else if (goalDiff === 0 && totalGoals === 0) {
         scoreAI += 4;  
     } else if (goalDiff === 2) {
         scoreAI += 2;  
     } else if (goalDiff >= 3) {
-        scoreAI -= 15; // Trận cách biệt lớn -> Trừ điểm tránh báo sai
+        scoreAI -= 15;
     }
 
-    // --- PHÂN TÍCH TIMING H2 ---
     if (elapsed >= 68 && elapsed <= 82) {
-        scoreAI += 12; // Khung giờ VÀNG Rung H2
+        scoreAI += 12;
     } else if (elapsed >= 60 && elapsed < 68) {
         scoreAI += 6;  
     } else if (elapsed > 82) {
         scoreAI += 4;  
     }
 
-    // --- PHÂN TÍCH TỔNG BÀN THẮNG ---
     if (totalGoals >= 2) {
         scoreAI += 6; 
     }
@@ -129,42 +126,35 @@ function evaluateMatchWithAI(item, elapsed) {
     let efficiency = Math.min(Math.max(scoreAI, 65.0), 92.5).toFixed(1);
     const sampleN = 120 + (hashCode(matchId) % 130);
 
-    let goalTimeline = '';
-    if (totalGoals === 0) {
-        goalTimeline = 'Thế trận giằng co · Chưa có bàn thắng';
-    } else if (totalGoals === 1) {
-        goalTimeline = `Bàn mở tỉ số H1/H2 · Trận đấu đang đẩy cao nhịp độ`;
-    } else {
-        goalTimeline = `Đã có ${totalGoals} bàn thắng (${homeScore}–${awayScore}) · Nhịp độ tấn công dồn dập`;
-    }
+    // Chuỗi timeline theo định dạng mẫu: "P[Phút]: [Home]–[Away]"
+    const timeline = `P${elapsed}: ${homeScore}–${awayScore}`;
 
     return {
         efficiency: efficiency,
         ruleEfficiency: efficiency,
         sampleN: sampleN,
-        goalTimeline: goalTimeline
+        timeline: timeline
     };
 }
 
-// 4. Gửi thông báo về Telegram (có kèm GIF)
+// 4. Gửi thông báo về Telegram (Đã bỏ GIF, đúng form mẫu)
 async function sendTelegramAlert(item) {
     const message = 
-`🚨 KÈO RUNG
-🏆 ${item.league}
-${item.homeTeam} ${item.homeScore}–${item.awayScore} ${item.awayTeam} · phút ${item.elapsed}'
-⚽ Diễn biến: ${item.goalTimeline}
-🎯 Nhận định AI: Trận đấu xác suất cao CÒN BÀN THẮNG
-📊 Hiệu quả rule: ${item.ruleEfficiency}% · n=${item.sampleN}`;
-
-    const gifUrl = "https://media.giphy.com/media/l0HlBO7eyXzSZkJri/giphy.gif"; 
+`🚨 KÈO RUNGGGG 🚨
+-----------------------------------
+🏆 Giải đấu: ${item.league}
+⚔️ Trận đấu: ${item.homeTeam} vs ${item.awayTeam}
+⏱️ Phút thi đấu: ${item.elapsed}'
+⚽ Tỷ số hiện tại: ${item.homeScore}–${item.awayScore}
+📊 Timeline: ${item.timeline}
+🔥 Hiệu suất quy tắc: ${item.ruleEfficiency}% (N=${item.sampleN})`;
 
     try {
-        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAnimation`, {
+        await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
             chat_id: TELEGRAM_CHAT_ID,
-            animation: gifUrl,
-            caption: message
+            text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi GIF + AI Alert cho trận [${item.id}] ${item.homeTeam} vs ${item.awayTeam}`);
+        console.log(`        └─> [Telegram Success] Đã gửi thông báo cho trận [${item.id}] ${item.homeTeam} vs ${item.awayTeam}`);
         sentAlerts.add(item.id);
     } catch (err) {
         console.error('        └─> [Telegram Error]:', err.response ? JSON.stringify(err.response.data) : err.message);
@@ -246,7 +236,7 @@ async function scanLiveMatches() {
             } else if (elapsed > 90) {
                 console.log(`   └─ ✕ [Bỏ qua]: Đã quá phút Rung H2 (${elapsed}' > 90')`);
             } else if (sentAlerts.has(matchId)) {
-                console.log(`   └─ ⚠️ [Bỏ qua]: Trận đấu đã được gửi Telegram trước đó`);
+                console.log(`   └─ ⚠️️ [Bỏ qua]: Trận đấu đã được gửi Telegram trước đó`);
             } else {
                 const aiAnalysis = evaluateMatchWithAI(item, elapsed);
 
@@ -262,7 +252,7 @@ async function scanLiveMatches() {
                         homeScore: homeScore,
                         awayScore: awayScore,
                         elapsed: elapsed,
-                        goalTimeline: aiAnalysis.goalTimeline,
+                        timeline: aiAnalysis.timeline,
                         ruleEfficiency: aiAnalysis.efficiency,
                         sampleN: aiAnalysis.sampleN
                     };
