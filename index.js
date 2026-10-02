@@ -255,7 +255,7 @@ function evaluateMatchWithAI(item, elapsed) {
         factors.push(`Áp đảo thời lượng bóng (${Math.max(homePos, awayPos)}%)`);
     }
 
-    if (elapsed >= 68 && elapsed <= 82) {
+    if (elapsed >= 72 && elapsed <= 85) {
         scoreAI += 10;
         factors.push("Cửa sổ phút vàng Rung H2");
     }
@@ -293,7 +293,7 @@ function evaluateMatchWithAI(item, elapsed) {
 async function sendTelegramAlert(item) {
     const s = item.statsSummary;
     const message = 
-`⚡ AI BÁO ĐỘNG BÀN THẮNG H2 (RULE ≥ 80%)
+`⚡ AI BÁO ĐỘNG BÀN THẮNG H2 (RULE ≥ 65%)
 🏆 Giải: ${item.league}
 ⚽ ${item.homeTeam} ${item.homeScore}–${item.awayScore} ${item.awayTeam} · Phút ${item.elapsed}'
 
@@ -329,7 +329,7 @@ ${item.goalTimeline}
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
     console.log(`\n==================================================`);
-    console.log(`[Auto-Scan Real-Time Engine] Quét kèo Rung H2 phút 60+ (Rule >= 80%)... (${currentVN.timeStr})`);
+    console.log(`[Auto-Scan Real-Time Engine] Quét kèo Rung H2 phút 70+ (Rule >= 65%)... (${currentVN.timeStr})`);
 
     try {
         const response = await axios.get(API_URL, {
@@ -395,9 +395,9 @@ async function scanLiveMatches() {
 
             console.log(`[Trận #${index + 1}] [ID: ${matchId}] [Phút: ${elapsed}'] (${statusShort}) [${leagueName}] ${homeTeam} ${homeScore}-${awayScore} ${awayTeam}`);
 
-            // CẬP NHẬT ĐÚNG THEO ĐOẠN ẢNH YÊU CẦU
-            if (elapsed < 65) {
-                console.log(`   └─ ✕ [Bỏ qua]: Chưa đủ phút Rung H2 (${elapsed}' < 65')`);
+            // CẬP NHẬT ĐỔI KHUNG GIỜ TỪ PHÚT 70 TRỞ ĐI (70 -> 90)
+            if (elapsed < 70) {
+                console.log(`   └─ ✕ [Bỏ qua]: Chưa đủ phút Rung H2 (${elapsed}' < 70')`);
             } else if (elapsed > 90) {
                 console.log(`   └─ ✕ [Bỏ qua]: Đã quá phút Rung H2 (${elapsed}' > 90')`);
             } else if (sentAlerts.has(matchId)) {
@@ -405,8 +405,7 @@ async function scanLiveMatches() {
             } else {
                 const aiAnalysis = evaluateMatchWithAI(item, elapsed);
 
-                // Tăng ngưỡng lọc lên >= 80.0% để tăng xác suất thắng kèo
-                if (parseFloat(aiAnalysis.efficiency) >= 80.0) {
+                if (parseFloat(aiAnalysis.efficiency) >= 65.0) {
                     console.log(`   └─ ✅ [AI CHỌN: RUNG H2] (${aiAnalysis.efficiency}% >= 65.0%) -> Báo Telegram..`);
                     matchedCount++;
 
@@ -430,7 +429,7 @@ async function scanLiveMatches() {
 
                     await sendTelegramAlert(pickItem);
                 } else {
-                    console.log(`   └─ ✕ [Bỏ qua]: Điểm chỉ số chưa đạt 80% (${aiAnalysis.efficiency}% < 65%)`);
+                    console.log(`   └─ ✕ [Bỏ qua]: Điểm chỉ số chưa đạt 65% (${aiAnalysis.efficiency}% < 65%)`);
                 }
             }
         }
