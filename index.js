@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// CẤU HÌNH HỆ THỐNG & API (ĐÃ TÍCH HỢP KEY MẶC ĐỊNH)
+// CẤU HÌNH HỆ THỐNG & API
 // ==========================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTralILZmGJ9Ynm35M1DXa_S5tJ4eyAEs';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1802951478';
@@ -13,24 +13,21 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '1802951478';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'f00cdf8303msh374792a917698bbp1f02cbjsn3bc6445978c1';
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
 
-const API_ENDPOINT = '/football-current-live';
-const API_URL = `https://${RAPIDAPI_HOST}${API_ENDPOINT}`;
 const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://football-api-5i9a.onrender.com';
 
 const sentAlerts = new Set();
 const picksHistory = [];
 
-// Hàm lấy thời gian Việt Nam (UTC+7)
 function getVietnamTime() {
     const now = new Date();
     const vnTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
     return {
-        dateStr: vnTime.toISOString().slice(0, 10),
+        dateStr: vnTime.toISOString().slice(0, 10).replace(/-/g, ''), // YYYYMMDD cho API
+        dateDisplay: vnTime.toISOString().slice(0, 10),
         timeStr: vnTime.toISOString().slice(11, 19)
     };
 }
 
-// Hàm băm tạo mã ngẫu nhiên cố định theo trận
 function hashCode(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -40,7 +37,6 @@ function hashCode(str) {
     return Math.abs(hash);
 }
 
-// Hàm mã hóa ký tự đặc biệt tránh lỗi Telegram HTML
 function escapeHtml(text) {
     if (!text) return '';
     return String(text)
@@ -50,14 +46,14 @@ function escapeHtml(text) {
 }
 
 // ==========================================
-// THÔNG BÁO TELEGRAM (PARSE MODE HTML)
+// THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     const message = 
 `🚨 <b>KÈO RUNGGGG</b> 🚨
 ------------------------------------
 🏆 <b>Giải đấu:</b> ${escapeHtml(item.league)}
-⚔️ <b>Trận đấu:</b> ${escapeHtml(item.homeTeam)} vs ${escapeHtml(item.awayTeam)}
+⚔️️ <b>Trận đấu:</b> ${escapeHtml(item.homeTeam)} vs ${escapeHtml(item.awayTeam)}
 ⏱ <b>Phút thi đấu:</b> ${item.elapsed}'
 ⚽ <b>Tỷ số hiện tại:</b> ${item.score}
 📊 <b>Timeline:</b> ${item.goalTimeline}
@@ -79,52 +75,83 @@ async function sendTelegramAlert(item) {
 }
 
 // ==========================================
+// LẤY DỮ LIỆU BẰNG NHIỀU ENDPOINT (ĐẢM BẢO QUÉT ĐỦ)
+// ==========================================
+async function fetchAllLiveMatches() {
+    const vnTime = getVietnamTime();
+    let allMatches = [];
+
+    // Endpoint 1: Trận Live trực tiếp
+    try {
+        const res1 = await axios.get(`https://${RAPIDAPI_HOST}/football-current-live`, {
+            headers: { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': RAPIDAPI_HOST },
+            timeout: 15000
+        });
+        const list1 = res1.data?.response?.live || res1.data?.response || res1.data?.data || (Array.isArray(res1.data) ? res1.data : []);
+        if (Array.isArray(list1)) allMatches.push(...list1);
+    } catch (e) {
+        console.log(`[Fetch Endpoint 1 Error]: ${e.message}`);
+    }
+
+    // Endpoint 2: Quét tất cả trận trong ngày để không bỏ sót các giải nhỏ/giao hữu
+    try {
+        const res2 = await axios.get(`https://${RAPIDAPI_HOST}/football-get-matches-by-date?date=${vnTime.dateStr}`, {
+            headers: { 'x-rapidapi-key': RAPIDAPI_KEY, 'x-rapidapi-host': RAPIDAPI_HOST },
+            timeout: 15000
+        });
+        const list2 = res2.data?.response?.matches || res2.data?.response || res2.data?.data || [];
+        if (Array.isArray(list2)) {
+            // Lọc ra các trận có trạng thái đang diễn ra (In Play / Live / HT / FT...)
+            const liveFromDate = list2.filter(m => {
+                const status = String(m.status?.short || m.status || m.time || '').toUpperCase();
+                return ['1H', '2H', 'HT', 'LIVE', 'INPLAY', 'IN PLAY', 'PAUSED'].some(s => status.includes(s)) ||
+                       (parseInt(status, 10) > 0 && parseInt(status, 10) <= 120);
+            });
+            allMatches.push(...liveFromDate);
+        }
+    } catch (e) {
+        // Bỏ qua nếu endpoint 2 không hỗ trợ trên gói API
+    }
+
+    // Lọc trùng lặp trận đấu theo ID hoặc tên Đội
+    const uniqueMatchesMap = new Map();
+    allMatches.forEach(item => {
+        const home = item.home?.name || item.homeTeam || item.teams?.home?.name || '';
+        const away = item.away?.name || item.awayTeam || item.teams?.away?.name || '';
+        const key = item.id || item.eventId || `${home}-${away}`;
+        if (key && !uniqueMatchesMap.has(key)) {
+            uniqueMatchesMap.set(key, item);
+        }
+    });
+
+    return Array.from(uniqueMatchesMap.values());
+}
+
+// ==========================================
 // QUÉT TRẬN ĐẤU REAL-TIME & LOG CHI TIẾT
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
     console.log(`\n==================================================`);
-    console.log(`[Auto-Scan] Bắt đầu quét lúc: ${currentVN.dateStr} ${currentVN.timeStr}`);
-    console.log(`[Target URL]: ${API_URL}`);
+    console.log(`[Auto-Scan] Bắt đầu quét lúc: ${currentVN.dateDisplay} ${currentVN.timeStr}`);
 
     try {
-        const response = await axios.get(API_URL, {
-            headers: {
-                'x-rapidapi-key': RAPIDAPI_KEY,
-                'x-rapidapi-host': RAPIDAPI_HOST,
-                'accept': 'application/json'
-            },
-            timeout: 20000
-        });
+        const liveMatches = await fetchAllLiveMatches();
 
-        const data = response.data;
-
-        console.log(`[API Response Status]: ${response.status} ${response.statusText}`);
-        if (data) {
-            console.log(`[API Raw Preview]: ${JSON.stringify(data).slice(0, 200)}...`);
-        }
-
-        // Bóc tách dữ liệu hỗ trợ nhiều chuẩn JSON khác nhau từ API
-        const liveMatches = data.response?.live || 
-                            data.response || 
-                            data.data || 
-                            data.result || 
-                            data.matches || 
-                            data.results || 
-                            (Array.isArray(data) ? data : []);
-
-        if (!Array.isArray(liveMatches) || liveMatches.length === 0) {
+        if (liveMatches.length === 0) {
             console.log('[Hệ thống] ⚠️ Không nhận được trận đấu nào đang LIVE từ API.');
             return;
         }
 
-        console.log(`[Hệ thống] Tổng số trận đang LIVE nhận từ API: ${liveMatches.length}`);
+        console.log(`[Hệ thống] Tổng số trận đang LIVE thu thập được: ${liveMatches.length}`);
         console.log(`--------------------------------------------------`);
 
         let matchedCount = 0;
 
         liveMatches.forEach((item, index) => {
-            const matchId = String(item.id || item.eventId || item.fixture?.id || hashCode(`${item.homeTeam}-${item.awayTeam}`));
+            const homeTeam = item.home?.name || item.teams?.home?.name || item.homeTeam || item.home_team || 'Đội nhà';
+            const awayTeam = item.away?.name || item.teams?.away?.name || item.awayTeam || item.away_team || 'Đội khách';
+            const matchId = String(item.id || item.eventId || item.fixture?.id || hashCode(`${homeTeam}-${awayTeam}`));
 
             let rawLeague = item.league?.name || 
                             item.leagueName || 
@@ -135,14 +162,11 @@ async function scanLiveMatches() {
 
             let leagueName = rawLeague ? String(rawLeague).trim() : 'Giải đấu';
 
-            const homeTeam = item.home?.name || item.teams?.home?.name || item.homeTeam || item.home_team || 'Đội nhà';
-            const awayTeam = item.away?.name || item.teams?.away?.name || item.awayTeam || item.away_team || 'Đội khách';
-
             const homeScore = item.home?.score ?? item.goals?.home ?? item.homeScore ?? 0;
             const awayScore = item.away?.score ?? item.goals?.away ?? item.awayScore ?? 0;
 
             const liveTimeObj = item.status?.liveTime || {};
-            const timeShort = String(liveTimeObj.short || item.status?.short || item.elapsed || item.minute || '');
+            const timeShort = String(liveTimeObj.short || item.status?.short || item.status || item.elapsed || item.minute || item.time || '');
 
             let elapsed = 0;
             if (timeShort === 'HT' || timeShort.toUpperCase().includes('HALF')) {
@@ -154,10 +178,8 @@ async function scanLiveMatches() {
                 }
             }
 
-            // In Log chi tiết trạng thái từng trận
             console.log(`[Trận #${index + 1}] [ID: ${matchId}] [Phút: ${timeShort} (${elapsed}')] [${leagueName}] ${homeTeam} ${homeScore}-${awayScore} ${awayTeam}`);
 
-            // Kiểm tra điều kiện lọc Rung H2 (Phút 60 đến 90)
             if (elapsed < 60) {
                 console.log(`   └─ ❌ [Bỏ qua]: Chưa đủ phút Rung H2 (Phút hiện tại ${elapsed}' < 60')`);
             } else if (elapsed > 90) {
@@ -197,17 +219,12 @@ async function scanLiveMatches() {
         console.log(`---> [KẾT QUẢ QUÉT] ${matchedCount}/${liveMatches.length} trận thỏa điều kiện Rung H2.`);
 
     } catch (err) {
-        if (err.response) {
-            console.error(`[API Fetch Error] HTTP Status: ${err.response.status}`);
-            console.error(`[API Fetch Error Data]:`, JSON.stringify(err.response.data));
-        } else {
-            console.error(`[API Fetch Error Message]:`, err.message);
-        }
+        console.error(`[Scan Error Message]:`, err.message);
     }
 }
 
 // ==========================================
-// KEEP-ALIVE DUY TRÌ SERVER 24/7
+// KEEP-ALIVE DUY TRÌ SERVER
 // ==========================================
 function keepAlive() {
     axios.get(RENDER_EXTERNAL_URL)
@@ -222,6 +239,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server đang khởi chạy tại port ${PORT}`);
     scanLiveMatches();
-    setInterval(scanLiveMatches, 8 * 60 * 1000); // Quét lại mỗi 8 phút
-    setInterval(keepAlive, 10 * 60 * 1000);     // Self-ping mỗi 10 phút
+    setInterval(scanLiveMatches, 5 * 60 * 1000); // Quét rút ngắn xuống mỗi 5 phút/lần
+    setInterval(keepAlive, 10 * 60 * 1000);
 });
