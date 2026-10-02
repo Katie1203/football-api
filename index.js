@@ -198,6 +198,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server đang chạy tại port ${PORT}`);
     scanLiveMatches();
-    setInterval(scanLiveMatches, 60 * 1000);
+    setInterval(scanLiveMatches,8 * 60 * 1000);
     setInterval(keepAlive, 10 * 60 * 1000);
 });
