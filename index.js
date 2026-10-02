@@ -123,7 +123,7 @@ function evaluateMatchWithAI(item, elapsed) {
         scoreAI += 6; 
     }
 
-    let efficiency = Math.min(Math.max(scoreAI, 65.0), 92.5).toFixed(1);
+    let efficiency = Math.min(Math.max(scoreAI, 60.0), 92.5).toFixed(1);
     const sampleN = 120 + (hashCode(matchId) % 130);
 
     // Chuỗi timeline theo định dạng mẫu: "P[Phút]: [Home]–[Away]"
