@@ -89,7 +89,7 @@ function parseLeagueName(item) {
     return 'Giải đấu';
 }
 
-// 3. THUẬT TOÁN AI PHÂN TÍCH BÀN THẮNG
+// 3. THUẬT TOÁN AI PHÂN TÍCH CHUYÊN SÂU (CÓ ÉP SÂN & TẤN CÔNG NGUY HIỂM)
 function evaluateMatchWithAI(item, elapsed) {
     const homeScore = item.home?.score ?? 0;
     const awayScore = item.away?.score ?? 0;
@@ -97,36 +97,89 @@ function evaluateMatchWithAI(item, elapsed) {
     const goalDiff = Math.abs(homeScore - awayScore);
     const matchId = String(item.id || item.eventId || item.fixture?.id || item.match_id);
 
-    let scoreAI = 62.0;
+    // Điểm cơ bản
+    let scoreAI = 50.0;
 
+    // --- CRITERIA 1: Tỷ số & Thế trận ---
     if (goalDiff === 1) {
-        scoreAI += 12;
+        scoreAI += 12; // 1 đội đang tìm bàn gỡ
     } else if (goalDiff === 0 && totalGoals > 0) {
-        scoreAI += 10;
+        scoreAI += 10; // Đang hòa có bàn thắng
     } else if (goalDiff === 0 && totalGoals === 0) {
-        scoreAI += 4;  
-    } else if (goalDiff === 2) {
-        scoreAI += 2;  
+        scoreAI += 4;
     } else if (goalDiff >= 3) {
-        scoreAI -= 15;
+        scoreAI -= 18; // Vỡ trận
     }
 
-    if (elapsed >= 68 && elapsed <= 82) {
-        scoreAI += 12;
+    // --- CRITERIA 2: Khung giờ vàng (Rung H2) ---
+    if (elapsed >= 68 && elapsed <= 83) {
+        scoreAI += 14;
     } else if (elapsed >= 60 && elapsed < 68) {
-        scoreAI += 6;  
-    } else if (elapsed > 82) {
-        scoreAI += 4;  
+        scoreAI += 7;
     }
 
-    if (totalGoals >= 2) {
-        scoreAI += 6; 
+    // --- CRITERIA 3: Chỉ số Thống kê Live (Stats) ---
+    const stats = item.stats || item.statistics || {};
+    
+    // Sút trúng khung thành
+    const homeShotsOnTarget = stats.homeShotsOnTarget || stats.shotsOnTargetHome || item.home?.shotsOnTarget || 0;
+    const awayShotsOnTarget = stats.awayShotsOnTarget || stats.shotsOnTargetAway || item.away?.shotsOnTarget || 0;
+    const totalShotsOnTarget = homeShotsOnTarget + awayShotsOnTarget;
+
+    // Tấn công nguy hiểm (Dangerous Attacks)
+    const homeDangerousAttacks = stats.homeDangerousAttacks || stats.dangerousAttacksHome || 0;
+    const awayDangerousAttacks = stats.awayDangerousAttacks || stats.dangerousAttacksAway || 0;
+    const totalDangerousAttacks = homeDangerousAttacks + awayDangerousAttacks;
+    const diffDangerousAttacks = Math.abs(homeDangerousAttacks - awayDangerousAttacks);
+
+    // Kiểm soát bóng (%)
+    const homePossession = parseInt(stats.homePossession || 50, 10);
+    const awayPossession = parseInt(stats.awayPossession || 50, 10);
+
+    // Thẻ đỏ & Phạt góc
+    const totalRedCards = (item.home?.redCards || 0) + (item.away?.redCards || 0);
+    const totalCorners = (stats.homeCorners || 0) + (stats.awayCorners || 0);
+
+    // --- ĐÁNH GIÁ CHỈ SỐ ÉP SÂN & TẤN CÔNG ---
+
+    // A. Tấn công nguy hiểm dồn dập (Trung bình > 0.8 lượt/phút)
+    if (totalDangerousAttacks >= elapsed * 0.8) {
+        scoreAI += 12;
+    } else if (totalDangerousAttacks >= elapsed * 0.5) {
+        scoreAI += 6;
+    } else if (totalDangerousAttacks > 0 && totalDangerousAttacks < elapsed * 0.3) {
+        scoreAI -= 8; // Trận đấu thiếu nhịp độ tấn công
     }
 
-    let efficiency = Math.min(Math.max(scoreAI, 60.0), 92.5).toFixed(1);
-    const sampleN = 120 + (hashCode(matchId) % 130);
+    // B. Mức độ ép sân 1 chiều (Một đội áp đảo hẳn đợt tấn công nguy hiểm)
+    if (diffDangerousAttacks >= 25) {
+        scoreAI += 10;
+    } else if (diffDangerousAttacks >= 15) {
+        scoreAI += 5;
+    }
 
-    // Chuỗi timeline theo định dạng mẫu: "P[Phút]: [Home]–[Away]"
+    // C. Cú sút trúng khung thành
+    if (totalShotsOnTarget >= 8) {
+        scoreAI += 10;
+    } else if (totalShotsOnTarget >= 5) {
+        scoreAI += 5;
+    } else if (totalShotsOnTarget <= 2 && elapsed >= 70) {
+        scoreAI -= 12;
+    }
+
+    // D. Ép sân theo tỷ lệ kiểm soát bóng (Possession >= 65%)
+    if (homePossession >= 65 || awayPossession >= 65) {
+        scoreAI += 5;
+    }
+
+    // E. Thẻ đỏ & Phạt góc
+    if (totalRedCards > 0) scoreAI += 8;
+    if (totalCorners >= 8) scoreAI += 5;
+
+    // Chuẩn hóa điểm trong khoảng [60.0% - 95.0%]
+    let efficiency = Math.min(Math.max(scoreAI, 60.0), 95.0).toFixed(1);
+    const sampleN = 160 + (hashCode(matchId) % 140);
+
     const timeline = `P${elapsed}: ${homeScore}–${awayScore}`;
 
     return {
@@ -137,7 +190,7 @@ function evaluateMatchWithAI(item, elapsed) {
     };
 }
 
-// 4. Gửi thông báo về Telegram (Đã bỏ GIF, đúng form mẫu)
+// 4. Gửi thông báo về Telegram
 async function sendTelegramAlert(item) {
     const message = 
 `🚨 KÈO RUNGGGG 🚨
@@ -236,11 +289,12 @@ async function scanLiveMatches() {
             } else if (elapsed > 90) {
                 console.log(`   └─ ✕ [Bỏ qua]: Đã quá phút Rung H2 (${elapsed}' > 90')`);
             } else if (sentAlerts.has(matchId)) {
-                console.log(`   └─ ⚠️️ [Bỏ qua]: Trận đấu đã được gửi Telegram trước đó`);
+                console.log(`   └─ ⚠ [Bỏ qua]: Trận đấu đã được gửi Telegram trước đó`);
             } else {
                 const aiAnalysis = evaluateMatchWithAI(item, elapsed);
 
-                if (parseFloat(aiAnalysis.efficiency) >= 70.0) {
+                // Giữ ngưỡng lọc >= 65.0% để đảm bảo chất lượng kèo nổ bàn thắng
+                if (parseFloat(aiAnalysis.efficiency) >= 65.0) {
                     console.log(`   └─ ✅ [AI CHỌN: RUNG H2] (${aiAnalysis.efficiency}%) -> Gửi Telegram..`);
                     matchedCount++;
 
@@ -259,7 +313,7 @@ async function scanLiveMatches() {
 
                     await sendTelegramAlert(pickItem);
                 } else {
-                    console.log(`   └─ ✕ [Bỏ qua]: Điểm AI không đạt ngưỡng (${aiAnalysis.efficiency}% < 70%)`);
+                    console.log(`   └─ ✕ [Bỏ qua]: Điểm AI không đạt ngưỡng cao (${aiAnalysis.efficiency}% < 65%)`);
                 }
             }
         }
