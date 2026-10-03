@@ -97,9 +97,7 @@ const LEAGUE_NAME_MAP = {
     'V-League 1': 'V-League Việt Nam',
 
     'U20 World Cup': 'World Cup U20',
-    'U19 European Championship': 'Vô Địch U19 Châu Âu',
-    'U21 European Championship': 'Vô Địch U21 Châu Âu',
-    'AFC U20 Asian Cup': 'Cúp U20 Châu Á'
+    'U21 European Championship': 'Vô Địch U21 Châu Âu'
 };
 
 function parseLeagueName(item) {
@@ -125,8 +123,7 @@ function parseLeagueName(item) {
         .replace(/\bPro League\b/gi, 'VĐQG')
         .replace(/\bCup\b/gi, 'Cúp')
         .replace(/\bU21\b/gi, 'Giải U21')
-        .replace(/\bU20\b/gi, 'Giải U20')
-        .replace(/\bU19\b/gi, 'Giải U19');
+        .replace(/\bU20\b/gi, 'Giải U20');
 
     if (translatedCategory && translatedTournament) {
         if (translatedTournament.toLowerCase().includes(translatedCategory.toLowerCase())) {
@@ -139,14 +136,13 @@ function parseLeagueName(item) {
 }
 
 // ==========================================
-// 2. BỘ LỌC CÁC GIẢI TRẺ TỪ U18 TRỞ XUỐNG (U10 ĐẾN U18)
+// 2. BỘ LỌC CÁC GIẢI TRẺ DƯỚI U19 (U10 ĐẾN U19)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    // Lọc bỏ tất cả các giải từ U10 đến U18 (U18, U17, U16, U15...)
-    const youthUnder18Regex = /\b(u-?1[0-8]|sub-?1[0-8]|under-?1[0-8])\b/i;
-    if (youthUnder18Regex.test(textToTest)) return true;
+    const youthUnder19Regex = /\b(u-?1[0-9]|sub-?1[0-9]|under-?1[0-9])\b/i;
+    if (youthUnder19Regex.test(textToTest)) return true;
 
     const filterKeywords = [
         'academy', 'cadete', 'juvenil', 'juniors', 'junior',
@@ -394,11 +390,11 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 6. THUẬT TOÁN AI CHẤM ĐIỂM CHUYÊN MÔN (RULE >= 60.0%)
+// 6. THUẬT TOÁN AI CHẤM ĐIỂM THẾ TRẬN ÉP SÂN (BASE SCORE 35.0%, RULE >= 60.0%)
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiScore = 40.0;
+    let aiScore = 35.0; // Mốc điểm cơ sở 35.0%
 
     const sofaStats = metrics.sofaStats || { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 };
     const rapidStats = metrics.rapidStats || { rapidShotsTarget: 0, rapidCorners: 0 };
@@ -409,47 +405,51 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     let hasTacticalData = false;
 
-    // 1. Thẻ đỏ
+    // 1. Thẻ đỏ (Mất người gây xáo trộn cực mạnh)
     if (sofaStats.redCards > 0) {
         aiScore += 20;
         matchAnalysis.push(`🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
         hasTacticalData = true;
     }
 
-    // 2. Cú sút trúng đích
+    // 2. Sút trúng đích (Sức ép sát thương trực tiếp lên khung thành)
     if (maxShotsTarget >= 5) {
-        aiScore += 25;
-        matchAnalysis.push(`⚡ Sức ép sát thương cao: ${maxShotsTarget} cú sút trúng khung thành`);
+        aiScore += 30; // Dồn ép dứt điểm liên tục
+        matchAnalysis.push(`⚡ Sức ép dồn dập cực cao: ${maxShotsTarget} cú sút trúng khung thành`);
         hasTacticalData = true;
-    } else if (maxShotsTarget >= 1) {
-        aiScore += 15;
-        matchAnalysis.push(`🎯 Tần suất hãm thành tốt: ${maxShotsTarget} cú sút trúng đích`);
+    } else if (maxShotsTarget >= 2) {
+        aiScore += 20;
+        matchAnalysis.push(`🎯 Tần suất hãm thành nguy hiểm: ${maxShotsTarget} cú sút trúng đích`);
+        hasTacticalData = true;
+    } else if (maxShotsTarget === 1) {
+        aiScore += 12;
+        matchAnalysis.push(`🎯 Đã có tín hiệu sút trúng cầu môn`);
         hasTacticalData = true;
     }
 
-    // 3. Đôi công (Tổng số cú sút)
+    // 3. Đôi công / Sút tổng (Sự sôi nổi trong lối chơi)
     if (totalShots >= 12) {
-        aiScore += 18;
+        aiScore += 20;
         matchAnalysis.push(`🔥 Thế trận đôi công cởi mở: Tổng ${totalShots} cú sút hãm thành`);
         hasTacticalData = true;
     } else if (totalShots >= 6) {
-        aiScore += 10;
+        aiScore += 12;
         matchAnalysis.push(`⚽ Hai đội tích cực dứt điểm: Tổng ${totalShots} cú sút`);
         hasTacticalData = true;
     }
 
-    // 4. Phạt góc
+    // 4. Ép sân phạt góc (Sức ép cố định / bóng chết)
     if (maxCorners >= 6) {
-        aiScore += 18;
+        aiScore += 22;
         matchAnalysis.push(`🚩 Sức ép phạt góc dồn dập: ${maxCorners} quả`);
         hasTacticalData = true;
     } else if (maxCorners >= 2) {
-        aiScore += 10;
+        aiScore += 12;
         matchAnalysis.push(`🚩 Tần suất phạt góc: ${maxCorners} quả`);
         hasTacticalData = true;
     }
 
-    // 5. Kèo biến động
+    // 5. Kèo biến động dòng tiền
     if (oddsAnalysis) {
         aiScore += oddsAnalysis.scoreBoost;
         matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
@@ -459,9 +459,9 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    const finalScore = Math.min(Math.max(aiScore, 40.0), 96.0).toFixed(1);
+    const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
 
-    // BÁO ĐỘNG KHI ĐIỂM AI đạt từ 60.0% trở lên
+    // Phát cảnh báo khi điểm AI >= 60.0% VÀ có chỉ số chuyên môn thực tế
     const shouldSend = parseFloat(finalScore) >= 60.0 && hasTacticalData;
 
     return {
@@ -495,15 +495,15 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`[Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
-        console.error('        └─> [Telegram Error]:', err.message);
+        console.error('[Telegram Error]:', err.message);
     }
 }
 
 // ==========================================
-// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (LOẠI BỎ CẢ U18 - HIỂN THỊ LOG QUÉT)
+// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (65' ĐẾN 90')
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -529,24 +529,20 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            // 1. Lọc giải U18 trở xuống (U10..U18)
-            if (isFilteredLeague(league, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ U18 trở xuống`);
-                continue;
-            }
+            // 1. Lọc âm thầm giải trẻ U19 trở xuống
+            if (isFilteredLeague(league, homeName, awayName)) continue;
 
-            // 2. Lọc mốc thời gian ngoài 65-88'
-            if (elapsed < 65 || elapsed > 88) {
-                console.log(`[Trận #${index + 1}] [Phút: ${elapsed}'] ${homeName} vs ${awayName} └─> [Bỏ qua]: Thời gian ngoài mốc 65-88'`);
-                continue;
-            }
+            // 2. Lọc âm thầm mốc thời gian ngoài 65-90'
+            if (elapsed < 65 || elapsed > 90) continue;
 
+            // 3. IN LOG TRẬN ĐẤU ĐANG ĐƯỢC PHÂN TÍCH (TỪ PHÚT 65 ĐẾN 90)
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
+            // CHỈ GỬI TELEGRAM KHI CÓ TÍN HIỆU ĐẠT RULE >= 60.0%
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
                 console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
@@ -564,8 +560,6 @@ async function scanLiveMatches() {
                     ruleEfficiency: aiAnalysis.efficiency
                 };
                 await sendTelegramAlert(pickItem);
-            } else {
-                console.log(`    └─> [Bỏ qua]: chỉ số chuyên môn chưa đủ (${aiAnalysis.efficiency}%)`);
             }
         }
     } catch (err) {
