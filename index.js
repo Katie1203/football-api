@@ -132,21 +132,21 @@ function parseLeagueName(item) {
         if (translatedTournament.toLowerCase().includes(translatedCategory.toLowerCase())) {
             return translatedTournament;
         }
-        return `${translatedTournament}${translatedCategory}`.trim();
+        return `${translatedTournament} ${translatedCategory}`.trim();
     }
 
     return translatedTournament || translatedCategory || 'Bóng Đá Quốc Tế';
 }
 
 // ==========================================
-// 2. BỘ LỌC GIẢI TRẺ (BỎ QUA DƯỚI U19: U10 đến U18)
+// 2. BỘ LỌC CÁC GIẢI TRẺ TỪ U18 TRỞ XUỐNG (U10 ĐẾN U18)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
-    const textToTest = `${leagueName} ${homeName}${awayName}`.toLowerCase();
+    const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    // Khớp U10, U11, U12, U13, U14, U15, U16, U17, U18 (và Sub-10..18, Under-10..18)
-    const youthUnder19Regex = /\b(u-?1[0-8]|sub-?1[0-8]|under-?1[0-8])\b/i;
-    if (youthUnder19Regex.test(textToTest)) return true;
+    // Lọc bỏ tất cả các giải từ U10 đến U18 (U18, U17, U16, U15...)
+    const youthUnder18Regex = /\b(u-?1[0-8]|sub-?1[0-8]|under-?1[0-8])\b/i;
+    if (youthUnder18Regex.test(textToTest)) return true;
 
     const filterKeywords = [
         'academy', 'cadete', 'juvenil', 'juniors', 'junior',
@@ -235,7 +235,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
             const player = g.player?.shortName || g.player?.name || 'Cầu thủ';
             const isHome = g.isHome ? '⚽ [Chủ]' : '⚽ [Khách]';
             const scoreStr = (g.homeScore !== undefined && g.awayScore !== undefined) ? `[${g.homeScore}-${g.awayScore}]` : '';
-            return `• Phút ${min}'${extra}:${isHome} ${player}${scoreStr}`;
+            return `• Phút ${min}'${extra}: ${isHome} ${player} ${scoreStr}`;
         });
 
         return timeline.join('\n');
@@ -412,7 +412,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     // 1. Thẻ đỏ
     if (sofaStats.redCards > 0) {
         aiScore += 20;
-        matchAnalysis.push(`` + `🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
+        matchAnalysis.push(`🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
         hasTacticalData = true;
     }
 
@@ -495,15 +495,15 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`[Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
-        console.error('[Telegram Error]:', err.message);
+        console.error('        └─> [Telegram Error]:', err.message);
     }
 }
 
 // ==========================================
-// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ẨN LOG BỎ QUA)
+// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (LOẠI BỎ CẢ U18 - HIỂN THỊ LOG QUÉT)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -529,20 +529,28 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            // Bỏ qua giải dưới U19 (U10..U18)
-            if (isFilteredLeague(league, homeName, awayName)) continue;
+            // 1. Lọc giải U18 trở xuống (U10..U18)
+            if (isFilteredLeague(league, homeName, awayName)) {
+                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ U18 trở xuống`);
+                continue;
+            }
 
-            // Bỏ qua mốc thời gian ngoài 65-88'
-            if (elapsed < 65 || elapsed > 88) continue;
+            // 2. Lọc mốc thời gian ngoài 65-88'
+            if (elapsed < 65 || elapsed > 88) {
+                console.log(`[Trận #${index + 1}] [Phút: ${elapsed}'] ${homeName} vs ${awayName} └─> [Bỏ qua]: Thời gian ngoài mốc 65-88'`);
+                continue;
+            }
+
+            console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
-            // CHỈ IN LOG VÀ GỬI THÔNG BÁO KHI TRẬN ĐẤU ĐẠT CHUẨN (RULE >= 60.0%)
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
-                console.log(`[AI CHỌN NỔ BÀN] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName} (${aiAnalysis.efficiency}%)`);
+                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                
                 const pickItem = {
                     id: matchId,
                     league,
@@ -556,6 +564,8 @@ async function scanLiveMatches() {
                     ruleEfficiency: aiAnalysis.efficiency
                 };
                 await sendTelegramAlert(pickItem);
+            } else {
+                console.log(`    └─> [Bỏ qua]: chỉ số chuyên môn chưa đủ (${aiAnalysis.efficiency}%)`);
             }
         }
     } catch (err) {
