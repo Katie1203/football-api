@@ -57,7 +57,7 @@ function parseLeagueName(item) {
 }
 
 // ==========================================
-// 1. LẤY DIỄN BIẾN BÀN THẮNG THEO PHÚT (INCIDENTS)
+// 1. DIỄN BIẾN BÀN THẮNG THEO PHÚT (INCIDENTS)
 // ==========================================
 async function fetchMatchIncidents(matchId) {
     try {
@@ -70,14 +70,12 @@ async function fetchMatchIncidents(matchId) {
         });
 
         const incidents = response.data?.incidents || [];
-        // Lọc các sự kiện bàn thắng (goal, penalty, ownGoal)
         const goalEvents = incidents.filter(inc => inc.incidentType === 'goal');
 
         if (goalEvents.length === 0) {
             return 'Chưa có bàn thắng (0-0)';
         }
 
-        // Sắp xếp theo thứ tự thời gian tăng dần
         goalEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
 
         const timeline = goalEvents.map(g => {
@@ -96,7 +94,7 @@ async function fetchMatchIncidents(matchId) {
 }
 
 // ==========================================
-// 2. LẤY THỐNG KÊ & DỮ LIỆU NGUỒN
+// 2. LẤY DỮ LIỆU & THỐNG KÊ CHI TIẾT
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -171,49 +169,12 @@ async function fetchRapidApiMatchStats(matchId) {
     }
 }
 
-function evaluateTripleSourceAI(sofaStats, rapidStats, oddsAnalysis, elapsed) {
-    let matchAnalysis = [];
-    let aiScore = 50.0;
-
-    const maxShotsTarget = Math.max(sofaStats.shotsOnTarget, rapidStats.rapidShotsTarget);
-    const maxCorners = Math.max(sofaStats.corners, rapidStats.rapidCorners);
-
-    if (oddsAnalysis) {
-        aiScore = oddsAnalysis.scoreBoost * 0.5 + aiScore * 0.5;
-        matchAnalysis.push(`💰 Tỷ lệ nhà cái (${oddsAnalysis.bookmaker}): Kèo Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
-    }
-
-    if (maxShotsTarget >= 5) {
-        aiScore += 18;
-        matchAnalysis.push(`⚡ Áp lực dứt điểm liên tục: ${maxShotsTarget} cú sút trúng khung thành`);
-    } else if (maxShotsTarget >= 3) {
-        aiScore += 10;
-        matchAnalysis.push(`🎯 Tần suất hãm thành tốt: ${maxShotsTarget} cú sút trúng đích`);
-    }
-
-    if (maxCorners >= 6) {
-        aiScore += 10;
-        matchAnalysis.push(`🚩 Sức ép bóng chết cao: ${maxCorners} quả phạt góc`);
-    }
-
-    if (sofaStats.redCards > 0) {
-        aiScore += 15;
-        matchAnalysis.push(`🟥 Xuất hiện thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
-    }
-
-    if (elapsed >= 65 && elapsed <= 85) {
-        aiScore += 5;
-        matchAnalysis.push(`⏱ Thời điểm bùng nổ bàn thắng cuối trận (phút ${elapsed}')`);
-    }
-
-    const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
-    const isHighProbability = parseFloat(finalScore) >= 65.0;
-
-    return {
-        efficiency: finalScore,
-        detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
-        shouldSend: isHighProbability
-    };
+async function fetchMatchDetailStats(matchId) {
+    const [sofaStats, rapidStats] = await Promise.all([
+        fetchSofaScoreStats(matchId),
+        fetchRapidApiMatchStats(matchId)
+    ]);
+    return { sofaStats, rapidStats };
 }
 
 function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
@@ -243,8 +204,56 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
     };
 }
 
+function evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis) {
+    let matchAnalysis = [];
+    let aiScore = 50.0;
+
+    const sofaStats = metrics.sofaStats || { shotsOnTarget: 0, corners: 0, redCards: 0 };
+    const rapidStats = metrics.rapidStats || { rapidShotsTarget: 0, rapidCorners: 0 };
+
+    const maxShotsTarget = Math.max(sofaStats.shotsOnTarget, rapidStats.rapidShotsTarget);
+    const maxCorners = Math.max(sofaStats.corners, rapidStats.rapidCorners);
+
+    if (oddsAnalysis) {
+        aiScore = oddsAnalysis.scoreBoost * 0.5 + aiScore * 0.5;
+        matchAnalysis.push(`💰 Tỷ lệ nhà cái (${oddsAnalysis.bookmaker}): Kèo Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
+    }
+
+    if (maxShotsTarget >= 5) {
+        aiScore += 18;
+        matchAnalysis.push(`⚡ Áp lực dứt điểm liên tục: ${maxShotsTarget} cú sút trúng khung thành`);
+    } else if (maxShotsTarget >= 3) {
+        aiScore += 10;
+        matchAnalysis.push(`🎯 Tần suất hãm thành tốt: ${maxShotsTarget} cú sút trúng đích`);
+    }
+
+    if (maxCorners >= 6) {
+        aiScore += 10;
+        matchAnalysis.push(`🚩 Sức ép bóng chết cao: ${maxCorners} quả phạt góc`);
+    }
+
+    if (sofaStats.redCards > 0) {
+        aiScore += 15;
+        matchAnalysis.push(`🟥 Xuất hiện thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
+    }
+
+    if (elapsed >= 70 && elapsed <= 85) {
+        aiScore += 5;
+        matchAnalysis.push(`⏱ Thời điểm bùng nổ bàn thắng cuối trận (phút ${elapsed}')`);
+    }
+
+    const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
+    const isHighProbability = parseFloat(finalScore) >= 65.0;
+
+    return {
+        efficiency: finalScore,
+        detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
+        shouldSend: isHighProbability
+    };
+}
+
 // ==========================================
-// 3. MẪU THÔNG BÁO TELEGRAM (BỔ SUNG DIỄN BIẾN TỶ SỐ)
+// 3. MẪU THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     const message = 
@@ -275,7 +284,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 4. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 4. TIẾN TRÌNH QUÉT TỰ ĐỘNG (THEO MÃ MỚI CỦA BẠN)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -288,8 +297,6 @@ async function scanLiveMatches() {
             fetchSofaScoreLive()
         ]);
 
-        let countSent = 0;
-
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
             const matchId = String(item.id);
@@ -300,21 +307,33 @@ async function scanLiveMatches() {
             const awayScore = item.awayScore?.current ?? 0;
             const league = parseLeagueName(item);
 
-            if (!matchId || sentAlerts.has(matchId)) continue;
-            if (elapsed < 65 || elapsed > 90) continue;
+            console.log(`[Trận #${index + 1}] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
-            const [sofaStats, rapidStats, goalTimeline] = await Promise.all([
-                fetchSofaScoreStats(matchId),
-                fetchRapidApiMatchStats(matchId),
-                fetchMatchIncidents(matchId) // Gọi thêm dữ liệu diễn biến bàn thắng
-            ]);
+            if (!matchId) continue;
 
+            if (sentAlerts.has(matchId)) {
+                console.log(`    └─> [Bỏ qua]: Đã gửi thông báo Telegram trước đó`);
+                continue;
+            }
+
+            if (elapsed < 70) {
+                console.log(`    └─> [Bỏ qua]: Chưa đủ 70 phút (${elapsed}' < 70')`);
+                continue;
+            }
+
+            if (elapsed > 90) {
+                console.log(`    └─> [Bỏ qua]: Đã hết trận (${elapsed}' > 90')`);
+                continue;
+            }
+
+            const metrics = await fetchMatchDetailStats(matchId);
+            const goalTimeline = await fetchMatchIncidents(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
-            const aiAnalysis = evaluateTripleSourceAI(sofaStats, rapidStats, oddsAnalysis, elapsed);
+            const aiAnalysis = evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis);
 
             if (aiAnalysis.shouldSend) {
-                console.log(`    └─> [ĐẠT RULE ${aiAnalysis.efficiency}% >= 65%] Gửi Telegram...`);
-                await sendTelegramAlert({
+                console.log(`    └─> [AI CHỌN: NỔ BÀN H2] (${aiAnalysis.efficiency}%)`);
+                const pickItem = {
                     id: matchId,
                     league,
                     homeName,
@@ -325,11 +344,12 @@ async function scanLiveMatches() {
                     goalTimeline,
                     detailText: aiAnalysis.detailText,
                     ruleEfficiency: aiAnalysis.efficiency
-                });
-                countSent++;
+                };
+                await sendTelegramAlert(pickItem);
+            } else {
+                console.log(`    └─> [Bỏ qua]: Độ tin cậy chưa đủ (${aiAnalysis.efficiency}% < 65%)`);
             }
         }
-        console.log(`---> [KẾT QUẢ QUÉT] Hoàn tất quét. Đã gửi Telegram ${countSent} trận.`);
     } catch (err) {
         console.error(`[API Fetch Error]:`, err.message);
     }
