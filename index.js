@@ -1,8 +1,11 @@
 const express = require('express');
 const axios = require('axios');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+
+app.use(express.json());
 
 // ==========================================
 // CẤU HÌNH DỮ LIỆU & TELEGRAM
@@ -59,7 +62,6 @@ function calculateExactMinute(item) {
     let periodStart = item.time?.currentPeriodStartTimestamp || item.statusTime?.currentPeriodStartTimestamp;
     
     if (periodStart) {
-        // Chuẩn hóa millisecond về second nếu timestamp > 10 chữ số
         if (periodStart > 9999999999) {
             periodStart = Math.floor(periodStart / 1000);
         }
@@ -294,7 +296,9 @@ function evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis) {
     }
 
     const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
-    const isHighProbability = parseFloat(finalScore) >= 65.0;
+    
+    // Cập nhật điều kiện từ >= 65.0 thành >= 55.0
+    const isHighProbability = parseFloat(finalScore) >= 55.0;
 
     return {
         efficiency: finalScore,
@@ -406,7 +410,9 @@ async function scanLiveMatches() {
     }
 }
 
-app.get('/', (req, res) => res.send('Football AI Service is Running!'));
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
