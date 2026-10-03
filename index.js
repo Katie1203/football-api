@@ -275,7 +275,7 @@ async function fetchSofaScoreLive() {
 }
 
 // ==========================================
-// 6. HÀM LẤY CHI TIẾT CHỈ SỐ TRẬN ĐẤU (SÚT, GÓC, THẺ ĐỎ)
+// 6. HÀM LẤY CHI TIẾT CHỈ SỐ TRẬN ĐẤU (TỐI ƯU KIỂM SOÁT BÓNG)
 // ==========================================
 async function fetchMatchDetailStats(matchId) {
     try {
@@ -287,7 +287,9 @@ async function fetchMatchDetailStats(matchId) {
             timeout: 6000
         });
 
-        let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, shotsOffTarget = 0, blockedShots = 0, possessionHome = 50, possessionAway = 50;
+        let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, shotsOffTarget = 0, blockedShots = 0;
+        let possessionHome = null, possessionAway = null;
+        
         const statistics = response.data?.statistics;
 
         if (Array.isArray(statistics)) {
@@ -297,9 +299,9 @@ async function fetchMatchDetailStats(matchId) {
                     const items = group.statisticsItems || [];
                     items.forEach(st => {
                         const name = String(st.name || st.slug || '').toLowerCase();
-                        const homeVal = parseInt(st.home, 10) || 0;
-                        const awayVal = parseInt(st.away, 10) || 0;
-                        const sumVal = homeVal + awayVal;
+                        const homeVal = parseInt(st.home, 10);
+                        const awayVal = parseInt(st.away, 10);
+                        const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
 
                         if (name.includes('shots on target') || name.includes('sút trúng đích')) {
                             shotsOnTarget = Math.max(shotsOnTarget, sumVal);
@@ -313,13 +315,20 @@ async function fetchMatchDetailStats(matchId) {
                             corners = Math.max(corners, sumVal);
                         } else if (name.includes('red card') || name.includes('thẻ đỏ')) {
                             redCards = Math.max(redCards, sumVal);
-                        } else if (name.includes('ball possession') || name.includes('kiểm soát bóng')) {
-                            possessionHome = parseInt(st.home, 10) || 50;
-                            possessionAway = parseInt(st.away, 10) || 50;
+                        } else if (name.includes('ball possession') || name.includes('possession') || name.includes('kiểm soát bóng')) {
+                            if (!isNaN(homeVal) && !isNaN(awayVal)) {
+                                possessionHome = homeVal;
+                                possessionAway = awayVal;
+                            }
                         }
                     });
                 });
             });
+        }
+
+        let possessionStr = null;
+        if (possessionHome !== null && possessionAway !== null) {
+            possessionStr = `${possessionHome}% - ${possessionAway}%`;
         }
 
         return {
@@ -330,12 +339,12 @@ async function fetchMatchDetailStats(matchId) {
                 blockedShots,
                 corners, 
                 redCards,
-                possession: `${possessionHome}% - ${possessionAway}%`
+                possession: possessionStr
             }
         };
     } catch (err) {
         return {
-            sofaStats: { shotsOnTarget: 0, totalShots: 0, shotsOffTarget: 0, blockedShots: 0, corners: 0, redCards: 0, possession: '50% - 50%' }
+            sofaStats: { shotsOnTarget: 0, totalShots: 0, shotsOffTarget: 0, blockedShots: 0, corners: 0, redCards: 0, possession: null }
         };
     }
 }
@@ -409,7 +418,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
 
-    // Kiểm soát bóng & cộng điểm áp sân
+    // Chỉ phân tích kiểm soát bóng nếu API có trả về dữ liệu thật
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
         const possParts = stats.possession.split('-');
@@ -483,7 +492,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     const finalScore = Math.min(Math.max(aiScore, 40.0), 98.0).toFixed(1);
     
-    // Đã nâng ngưỡng tối thiểu trở lại mức 65.0%
+    // Ngưỡng tối thiểu kích hoạt gửi Telegram >= 65.0%
     const MIN_SEND_PERCENTAGE = 65.0; 
     const shouldSend = parseFloat(finalScore) >= MIN_SEND_PERCENTAGE && hasTacticalData;
 
