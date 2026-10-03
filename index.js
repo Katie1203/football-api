@@ -155,7 +155,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 3. THU Thập DỮ LIỆU ODDS & THỐNG KÊ CHI TIẾT
+// 3. THU THẬP DỮ LIỆU ODDS & THỐNG KÊ CHI TIẾT
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -182,6 +182,9 @@ async function fetchSofaScoreLive() {
     }
 }
 
+// ==========================================
+// 4. HÀM LẤY CHI TIẾT CHỈ SỐ TRẬN ĐẤU (Đúng nguyên mẫu bạn gửi)
+// ==========================================
 async function fetchMatchDetailStats(matchId) {
     try {
         const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`, {
@@ -297,28 +300,14 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 4. THUẬT TOÁN AI CHẤM ĐIỂM HIỆU SUẤT THEO % RULE
+// 5. THUẬT TOÁN AI CHẤM ĐIỂM HIỆU SUẤT THEO % RULE (Đúng nguyên mẫu bạn gửi)
 // ==========================================
-function evaluateMatchDynamicAI(metrics, oddsAnalysis, homeScore, awayScore, elapsed) {
+function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
     let aiScore = 40.0; // Điểm cơ sở bắt đầu
 
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
-
-    // Đánh giá thời điểm vàng cuối trận
-    const totalGoals = homeScore + awayScore;
-    if (elapsed >= 65 && elapsed <= 88) {
-        if (totalGoals === 0) {
-            aiScore += 24;
-            matchAnalysis.push(`⏱ Thời điểm vàng (${elapsed}'): Chưa có bàn thắng, áp lực dâng cao`);
-            hasTacticalData = true;
-        } else if (totalGoals > 0) {
-            aiScore += 20;
-            matchAnalysis.push(`⏱ Thời điểm nhạy cảm (${elapsed}'): Tỷ số ${homeScore}-${awayScore}, khả năng cao nổ thêm bàn`);
-            hasTacticalData = true;
-        }
-    }
 
     // Kiểm soát bóng & Tấn công
     if (stats.possession) {
@@ -388,7 +377,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, homeScore, awayScore, ela
 }
 
 // ==========================================
-// 5. THÔNG BÁO TELEGRAM & TIẾN TRÌNH QUÉT
+// 6. THÔNG BÁO TELEGRAM & TIẾN TRÌNH QUÉT
 // ==========================================
 async function sendTelegramAlert(item) {
     const message = 
@@ -443,7 +432,9 @@ async function scanLiveMatches() {
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, homeScore, awayScore, elapsed);
+            
+            // Gọi hàm AI đúng 2 tham số như bạn cung cấp
+            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
