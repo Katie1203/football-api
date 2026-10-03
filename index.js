@@ -15,8 +15,8 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
 const API_LIVE_URL = `https://${RAPIDAPI_HOST}/football-current-live`;
 
-// 2. The Odds API - Tích hợp API Key mới của bạn
-const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';[cite: 8]
+// 2. The Odds API
+const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
 
 const sentAlerts = new Set();
@@ -265,7 +265,6 @@ async function scanLiveMatches() {
     console.log(`[Auto-Scan AI] Quét RapidAPI + The Odds API... (${currentVN.timeStr})`);
 
     try {
-        // Chỉ gọi The Odds API khi bắt đầu quét để tiết kiệm lượt dùng API
         const allOdds = await fetchOddsData();
 
         const response = await axios.get(API_LIVE_URL, {
@@ -301,7 +300,6 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            // Lọc chính xác các trận từ phút 65 trở đi
             if (elapsed < 65) {
                 console.log(`    └─> [Bỏ qua]: Chưa đủ 65 phút (${elapsed}' < 65')`);
                 continue;
