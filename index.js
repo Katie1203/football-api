@@ -12,7 +12,8 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
-const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
+// Đổi sang endpoint tổng để quét toàn bộ trận live trên thế giới
+const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/sport/football/events/live`;
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -347,6 +348,8 @@ async function scanLiveMatches() {
             fetchSofaScoreLive()
         ]);
 
+        console.log(`    └─> Tổng số trận đang live trên toàn cầu: ${sofaMatches.length}`);
+
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
             const matchId = String(item.id);
@@ -362,7 +365,6 @@ async function scanLiveMatches() {
 
             if (isFilteredLeague(league, homeName, awayName)) continue;
 
-            // Chặn hoàn toàn các trận đã kết thúc (elapsed = 999) hoặc ngoài mốc 65-90'
             if (elapsed === 999 || elapsed < 65 || elapsed > 90) continue;
 
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
