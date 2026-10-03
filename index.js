@@ -30,53 +30,76 @@ function getVietnamTime() {
     };
 }
 
+// FIX LỖI 1: TÍNH TOÁN CHÍNH XÁC PHÚT THI ĐẤU (HT, H2)
 function calculateExactMinute(item) {
-    const liveTimeObj = item.status?.liveTime || {};
+    if (!item) return 0;
 
+    // 1. Kiểm tra status code/type
+    const statusObj = item.status || {};
+    const statusType = String(statusObj.type || statusObj.short || item.statusShort || '').toUpperCase();
+    const reasonShort = String(statusObj.reason?.short || statusObj.statusReason?.short || '').toUpperCase();
+
+    if (statusType === 'HT' || reasonShort === 'HT' || statusType.includes('HALF')) {
+        return 45; // Hết hiệp 1
+    }
+
+    if (statusType === 'FT' || reasonShort === 'FT' || statusType.includes('ENDED')) {
+        return 90; // Hết trận
+    }
+
+    // 2. Kiểm tra liveTime
+    const liveTimeObj = statusObj.liveTime || item.liveTime || {};
+    
     if (liveTimeObj.short) {
         const parsedMin = parseInt(String(liveTimeObj.short).replace(/[^0-9]/g, ''), 10);
-        if (!isNaN(parsedMin)) return parsedMin;
+        if (!isNaN(parsedMin) && parsedMin > 0) return parsedMin;
     }
 
     if (liveTimeObj.long && liveTimeObj.long.includes(':')) {
         const parts = liveTimeObj.long.split(':');
         const min = parseInt(parts[0], 10);
-        if (!isNaN(min)) return min;
+        if (!isNaN(min) && min > 0) return min;
     }
 
-    const statusShort = String(item.status?.short || item.elapsed || '').toUpperCase();
-    if (statusShort === 'HT' || statusShort.includes('HALF')) return 45;
-    if (statusShort === 'FT' || statusShort.includes('ENDED')) return 90;
-
-    if (typeof item.elapsed === 'number' && item.elapsed > 0) return item.elapsed;
+    // 3. Kiểm tra các field thời gian khác từ RapidAPI
+    const directMinute = item.elapsed || item.time?.minute || item.minute || item.currentMinute;
+    if (typeof directMinute === 'number' && directMinute > 0) {
+        return directMinute;
+    }
+    if (typeof directMinute === 'string') {
+        const parsed = parseInt(directMinute.replace(/[^0-9]/g, ''), 10);
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
 
     return 0;
 }
 
+// FIX LỖI 2: LẤY TÊN GIẢI ĐẤU CHÍNH XÁC
 function parseLeagueName(item) {
     if (!item) return 'Bóng Đá Quốc Tế';
 
-    let tourObj = Array.isArray(item.tournament) ? item.tournament[0] : item.tournament;
-    let leagueObj = Array.isArray(item.league) ? item.league[0] : item.league;
+    // Bóc tách tournament / league / category
+    const tourObj = Array.isArray(item.tournament) ? item.tournament[0] : item.tournament;
+    const leagueObj = Array.isArray(item.league) ? item.league[0] : item.league;
+    const catObj = Array.isArray(item.category) ? item.category[0] : item.category;
 
-    const possibleNames = [
-        tourObj?.name,
-        tourObj?.translatedName,
-        item.tournamentName,
-        item.leagueName,
-        leagueObj?.name
-    ];
+    const tourName = tourObj?.name || tourObj?.translatedName;
+    const categoryName = catObj?.name || catObj?.translatedName;
+    const leagueName = leagueObj?.name || leagueObj?.translatedName || item.tournamentName || item.leagueName;
 
-    for (let name of possibleNames) {
-        if (name && typeof name === 'string' && name.trim().length > 0) {
-            return name.trim();
-        }
+    // Ưu tiên hiển thị: Quốc gia/Khu vực + Tên giải (Ví dụ: Mexico - Liga MX)
+    if (categoryName && tourName && !tourName.toLowerCase().includes(categoryName.toLowerCase())) {
+        return `${categoryName} - ${tourName}`;
     }
+    
+    if (tourName) return tourName;
+    if (leagueName) return leagueName;
+
     return 'Bóng Đá Quốc Tế';
 }
 
 // ==========================================
-// 1. MODULE THE ODDS API (LẤY DỮ LIỆU KÈO LIVE)
+// 1. MODULE THE ODDS API
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -131,7 +154,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 2. MODULE RAPIDAPI (TRÍCH XUẤT CHỈ SỐ THỰC TẾ)
+// 2. MODULE RAPIDAPI
 // ==========================================
 async function fetchMatchDetailStats(matchId, baseItem) {
     try {
@@ -236,7 +259,7 @@ async function sendTelegramAlert(item) {
     const awayScore = item.away?.score ?? item.awayScore ?? 0;
 
     const message = 
-`🚨 KÈO RUNG H2 (RAPIDAPI + THE ODDS API)
+`🚨 RUNG CHUÔNG ĐÓN LỘC
 🏆 Giải đấu: ${item.league}
 ⚔️ Trận đấu: ${homeName} ${homeScore}–${awayScore} ${awayName}
 ⏱️ Thời gian: Phút ${item.elapsed}'
