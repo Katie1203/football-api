@@ -357,7 +357,7 @@ function cleanTeamName(name) {
         .trim();
 }
 
-// Đã tinh chỉnh lại mức cộng điểm kèo nhà cái phù hợp hơn, cân bằng với chỉ số thực tế
+// ĐÃ TINH CHỈNH: Giảm điểm cộng của Odds < 1.40 xuống mức thấp (chỉ +3%) để tránh ảo tưởng do kèo quá sâu
 function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
     if (!Array.isArray(allOdds) || allOdds.length === 0) return null;
 
@@ -382,22 +382,22 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
     const pointDiff = overLine - currentTotalGoals;
 
     if (pointDiff >= 0.75) {
-        oddsBonus = 10.0;
+        oddsBonus = 8.0;
         oddsNotes.push(`Line Over giữ mức cao (${overLine}) so với tổng ${currentTotalGoals} bàn`);
     } else if (pointDiff > 0) {
-        oddsBonus = 6.0;
+        oddsBonus = 5.0;
         oddsNotes.push(`Line Over (${overLine}) sát mốc nổ bàn`);
     }
 
-    if (price <= 1.35) {
-        oddsBonus += 12.0;
-        oddsNotes.push(`Odds Over rất thấp (${price}) - Dòng tiền tài cực mạnh`);
-    } else if (price <= 1.55) {
+    if (price < 1.40) {
+        oddsBonus += 3.0; // Giảm mạnh điểm thưởng vì Odds quá thấp, rủi ro cao lợi nhuận ít
+        oddsNotes.push(`⚠️ Odds Over quá thấp (${price}) - Nhà cái ép sâu, rủi ro cao`);
+    } else if (price <= 1.60) {
         oddsBonus += 8.0;
-        oddsNotes.push(`Odds Over giảm sâu (${price})`);
-    } else if (price <= 1.80) {
-        oddsBonus += 5.0;
-        oddsNotes.push(`Odds Over ổn định (${price})`);
+        oddsNotes.push(`Odds Over giảm sâu (${price}) - Dòng tiền tài tốt`);
+    } else if (price <= 1.85) {
+        oddsBonus += 6.0;
+        oddsNotes.push(`Odds Over ổn định (${price}) - Biên độ đẹp`);
     } else {
         oddsBonus += 2.0;
         oddsNotes.push(`Odds Over (${price})`);
@@ -413,7 +413,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 7. THUẬT TOÁN AI & ĐỌC VỊ DỰ ĐOÁN TỶ SỐ (ĐỒNG BỘ NỔ BÀN)
+// 7. THUẬT TOÁN AI & ĐỌC VỊ NHẬN ĐỊNH SỐ BÀN THẮNG CÒN LẠI
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis, currentHomeScore, currentAwayScore) {
     let matchAnalysis = [];
@@ -500,26 +500,31 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, currentHomeScore, current
     const MIN_SEND_PERCENTAGE = 60.0; 
     const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
 
-    // --- LOGIC ĐỌC VỊ TỶ SỐ ĐỒNG BỘ VỚI KÈO NỔ BÀN ---
+    // --- LOGIC ĐỌC VỊ SỐ BÀN THẮNG CÒN LẠI VÀ DỰ ĐOÁN TỶ SỐ ---
     let predictedHome = currentHomeScore;
     let predictedAway = currentAwayScore;
-    let predictionNote = "Thế trận sáng nước, dự kiến nổ thêm bàn thắng.";
+    let remainingGoalsText = "Khả năng giữ nguyên tỷ số hoặc nổ 1 bàn sát nút.";
 
-    // Nếu bot đã kết luận trận đấu có khả năng nổ bàn (shouldSend = true) 
-    // và dòng tiền nhà cái / kèo Over cao hơn tổng tỷ số hiện tại -> Đảm bảo dự đoán tỷ số chung cuộc phải tăng lên
     if (shouldSend) {
-        if (oddsAnalysis && oddsAnalysis.line > (currentHomeScore + currentAwayScore)) {
-            // Dựa vào đội đang kiểm soát bóng tốt hơn hoặc ngẫu nhiên cộng thêm 1 bàn phản ánh việc nổ bàn
+        const shots = stats.shotsOnTarget || 0;
+        const total = stats.totalShots || 0;
+
+        if (shots >= 5 || total >= 14 || (oddsAnalysis && oddsAnalysis.line >= (currentHomeScore + currentAwayScore + 1.0))) {
+            // Sức ép cực mạnh -> Dự báo nổ thêm từ 2 bàn
+            if (homePossNum >= awayPossNum) {
+                predictedHome += 2;
+            } else {
+                predictedAway += 2;
+            }
+            remainingGoalsText = "🔥 Sức ép khủng khiếp! Dự kiến nổ thêm từ **1 đến 2 bàn thắng** nữa trước khi trận đấu kết thúc.";
+        } else {
+            // Sức ép vừa phải -> Dự báo nổ thêm 1 bàn
             if (homePossNum >= awayPossNum) {
                 predictedHome += 1;
             } else {
                 predictedAway += 1;
             }
-            predictionNote = `Kèo và thế trận ủng hộ nổ tài, dự báo tỷ số được nới rộng lên ${predictedHome}-${predictedAway}.`;
-        } else {
-            // Mặc định cộng 1 bàn chia đều cho thế trận ép cuối trận
-            predictedHome += 1;
-            predictionNote = "Áp lực dồn dập cuối trận, khả năng xuất hiện thêm bàn thắng.";
+            remainingGoalsText = "⚽ Thế trận cởi mở, dự kiến nổ thêm **1 bàn thắng** sát nút.";
         }
     }
 
@@ -531,7 +536,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, currentHomeScore, current
         shouldSend,
         prediction: {
             score: predictedScoreStr,
-            note: predictionNote
+            remainingGoals: remainingGoalsText
         }
     };
 }
@@ -553,9 +558,9 @@ ${item.goalTimeline}
 📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
 ${item.detailText}
 
-🔮 ĐỌC VỊ & DỰ ĐOÁN TỶ SỐ:
-• Dự kiến chung cuộc: [ ${item.prediction.score} ]
-• Nhận định: ${item.prediction.note}
+🔮 ĐỌC VỊ & DỰ ĐOÁN BÀN THẮNG:
+• Nhận định: ${item.prediction.remainingGoals}
+• Dự kiến tỷ số chung cuộc: [ ${item.prediction.score} ]
 
 📈 Hiệu suất Rule: ${item.ruleEfficiency}%`;
 
@@ -564,7 +569,7 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} - Dự đoán: ${item.prediction.score} (${item.ruleEfficiency}%)`);
+        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} - Dự kiến: ${item.prediction.score} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
         console.error('        └─> [Telegram Error]:', err.message);
@@ -605,7 +610,6 @@ async function scanLiveMatches() {
 
             const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
-            // THAY ĐỔI MỚI: Chỉ quét từ phút 50 đến 92 (bỏ qua dưới phút 50, bỏ qua HT)
             if (isNaN(numericElapsed) || numericElapsed < 50 || numericElapsed > 92) {
                 const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
                 console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung quét (50-92') hoặc HT`);
@@ -620,7 +624,7 @@ async function scanLiveMatches() {
 
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%) - Dự đoán tỷ số: ${aiAnalysis.prediction.score}`);
+                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%) - Dự kiến tỷ số: ${aiAnalysis.prediction.score}`);
                 
                 const pickItem = {
                     id: matchId,
