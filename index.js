@@ -155,7 +155,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU (BỎ QUA HT)
+// 3. TÍNH PHÚT TRẬN ĐẤU (BỎ QUA HT, CHỈ TÍNH HIỆP 2: 45 - 92')
 // ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
@@ -412,9 +412,9 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 7. THUẬT TOÁN AI TÍNH PHẦN TRĂM CỘNG DỒN ĐỘNG
+// 7. THUẬT TOÁN AI & ĐỌC VỊ DỰ ĐOÁN TỶ SỐ
 // ==========================================
-function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
+function evaluateMatchDynamicAI(metrics, oddsAnalysis, currentHomeScore, currentAwayScore) {
     let matchAnalysis = [];
     let aiPercentage = 35.0; // Mốc khởi đầu nền
 
@@ -422,13 +422,14 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let hasTacticalData = false;
 
     // 1. Tỷ lệ kiểm soát bóng (Tối đa +15%)
+    let homePossNum = 50, awayPossNum = 50;
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
         const possParts = stats.possession.split('-');
         if (possParts.length === 2) {
-            const homePoss = parseInt(possParts[0].trim(), 10) || 50;
-            const awayPoss = parseInt(possParts[1].trim(), 10) || 50;
-            const maxPoss = Math.max(homePoss, awayPoss);
+            homePossNum = parseInt(possParts[0].trim(), 10) || 50;
+            awayPossNum = parseInt(possParts[1].trim(), 10) || 50;
+            const maxPoss = Math.max(homePossNum, awayPossNum);
 
             if (maxPoss >= 70) {
                 aiPercentage += 15.0;
@@ -500,22 +501,49 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // Giới hạn trần điểm tối đa là 98.0%
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
-    
-    // Ngưỡng tối thiểu kích hoạt gửi Telegram nâng lên: > 60.0%
-    const MIN_SEND_PERCENTAGE = 60.0; 
+    const MIN_SEND_PERCENTAGE = 60.0; // Ngưỡng Rule >= 60%
     const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
+
+    // --- LOGIC ĐỌC VỊ DỰ ĐOÁN TỶ SỐ CUỐI TRẬN ---
+    let predictedHome = currentHomeScore;
+    let predictedAway = currentAwayScore;
+    let predictionNote = "Khả năng giữ nguyên tỷ số hoặc có thêm 1 bàn sát nút.";
+
+    const totalShots = stats.totalShots || 0;
+    const shotsOnTarget = stats.shotsOnTarget || 0;
+
+    if (totalShots >= 12 || shotsOnTarget >= 4 || (oddsAnalysis && oddsAnalysis.line > (currentHomeScore + currentAwayScore + 0.5))) {
+        // Thế trận cởi mở, có xu hướng nổ thêm bàn
+        if (homePossNum > 55 && currentHomeScore <= currentAwayScore) {
+            predictedHome += 1; // Đội chủ nhà dồn ép gỡ hòa/thắng
+            predictionNote = "Chủ nhà đang ép sân mạnh mẽ, dự báo có bàn gỡ/bàn vươn lên.";
+        } else if (awayPossNum > 55 && currentAwayScore <= currentHomeScore) {
+            predictedAway += 1; // Đội khách dồn ép
+            predictionNote = "Đội khách gia tăng áp lực, dự báo có bàn thắng muộn.";
+        } else {
+            // Cộng ngẫu nhiên 1 bàn cho đội có thông số sáng hơn hoặc tổng thể trận cởi mở
+            if (homePossNum >= awayPossNum) predictedHome += 1;
+            else predictedAway += 1;
+            predictionNote = "Thế trận đôi công dồn dập cuối trận, khả năng xuất hiện thêm bàn thắng cho cả hai.";
+        }
+    }
+
+    const predictedScoreStr = `${predictedHome} - ${predictedAway}`;
 
     return {
         efficiency: finalPercentage,
         detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
-        shouldSend
+        shouldSend,
+        prediction: {
+            score: predictedScoreStr,
+            note: predictionNote
+        }
     };
 }
 
 // ==========================================
-// 8. THÔNG BÁO TELEGRAM
+// 8. THÔNG BÁO TELEGRAM (CÓ KÈM DỰ ĐOÁN TỶ SỐ)
 // ==========================================
 async function sendTelegramAlert(item) {
     const timeDisplay = `Phút ${item.elapsed}'`;
@@ -531,7 +559,10 @@ ${item.goalTimeline}
 📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
 ${item.detailText}
 
-🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
+🔮 ĐỌC VỊ & DỰ ĐOÁN TỶ SỐ:
+• Dự kiến chung cuộc: [ ${item.prediction.score} ]
+• Nhận định: ${item.prediction.note}
+
 📈 Hiệu suất Rule: ${item.ruleEfficiency}%`;
 
     try {
@@ -539,7 +570,7 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} - Dự đoán: ${item.prediction.score} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
         console.error('        └─> [Telegram Error]:', err.message);
@@ -547,7 +578,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (Phút 45 đến 92, không HT)
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (Hiệp 2: 45 - 92', Không HT)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -590,11 +621,11 @@ async function scanLiveMatches() {
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
+            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, homeScore, actualAwayScore);
 
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%) - Dự đoán tỷ số: ${aiAnalysis.prediction.score}`);
                 
                 const pickItem = {
                     id: matchId,
@@ -606,7 +637,8 @@ async function scanLiveMatches() {
                     elapsed: numericElapsed,
                     goalTimeline,
                     detailText: aiAnalysis.detailText,
-                    ruleEfficiency: aiAnalysis.efficiency
+                    ruleEfficiency: aiAnalysis.efficiency,
+                    prediction: aiAnalysis.prediction
                 };
                 await sendTelegramAlert(pickItem);
             } else {
