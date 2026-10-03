@@ -15,9 +15,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
-// Khôi phục lại endpoint chuẩn trả về danh sách live đầy đủ nhất
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
-const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
@@ -274,7 +272,8 @@ async function fetchSofaScoreLive() {
     }
 }
 
-async function fetchSofaScoreStats(matchId) {
+// Đã tối ưu hóa hàm bóc tách dữ liệu thống kê trực tiếp chuẩn xác từ SofaScore
+async function fetchMatchDetailStats(matchId) {
     try {
         const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`, {
             headers: {
@@ -283,53 +282,45 @@ async function fetchSofaScoreStats(matchId) {
             },
             timeout: 6000
         });
-        const statisticsGroup = response.data?.statistics || [];
-        let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
 
-        if (Array.isArray(statisticsGroup) && statisticsGroup.length > 0) {
-            const allStats = statisticsGroup[0]?.groups || [];
-            allStats.forEach(group => {
-                (group.statisticsItems || []).forEach(st => {
-                    const name = String(st.name || '').toLowerCase();
-                    const val = (parseInt(st.home, 10) || 0) + (parseInt(st.away, 10) || 0);
-                    if (name.includes('shots on target')) shotsOnTarget = val;
-                    if (name.includes('total shots') || name.includes('shots')) totalShots = val;
-                    if (name.includes('corner')) corners = val;
-                    if (name.includes('red card')) redCards = val;
+        let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
+        const statistics = response.data?.statistics;
+
+        if (Array.isArray(statistics)) {
+            statistics.forEach(period => {
+                const groups = period.groups || [];
+                groups.forEach(group => {
+                    const items = group.statisticsItems || [];
+                    items.forEach(st => {
+                        const name = String(st.name || '').toLowerCase();
+                        const homeVal = parseInt(st.home, 10) || 0;
+                        const awayVal = parseInt(st.away, 10) || 0;
+                        const sumVal = homeVal + awayVal;
+
+                        if (name.includes('shots on target') || name.includes('sút trúng đích')) {
+                            shotsOnTarget = Math.max(shotsOnTarget, sumVal);
+                        } else if (name.includes('total shots') || name.includes('shots') || name.includes('tổng số cú sút')) {
+                            totalShots = Math.max(totalShots, sumVal);
+                        } else if (name.includes('corner') || name.includes('phạt góc')) {
+                            corners = Math.max(corners, sumVal);
+                        } else if (name.includes('red card') || name.includes('thẻ đỏ')) {
+                            redCards = Math.max(redCards, sumVal);
+                        }
+                    });
                 });
             });
         }
-        return { shotsOnTarget, totalShots, corners, redCards };
-    } catch (err) {
-        return { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 };
-    }
-}
 
-async function fetchRapidApiMatchStats(matchId) {
-    try {
-        const response = await axios.get(`https://${RAPIDAPI_HOST}/football-match-get-statistics?matchid=${matchId}`, {
-            headers: {
-                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
-                'x-rapidapi-host': RAPIDAPI_HOST
-            },
-            timeout: 6000
-        });
-        const statsObj = response.data?.stats || response.data?.statistics || {};
         return {
-            rapidShotsTarget: (statsObj.homeShotsOnTarget || 0) + (statsObj.awayShotsOnTarget || 0),
-            rapidCorners: (statsObj.homeCorners || 0) + (statsObj.awayCorners || 0)
+            sofaStats: { shotsOnTarget, totalShots, corners, redCards },
+            rapidStats: { rapidShotsTarget: 0, rapidCorners: 0 }
         };
     } catch (err) {
-        return { rapidShotsTarget: 0, rapidCorners: 0 };
+        return {
+            sofaStats: { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 },
+            rapidStats: { rapidShotsTarget: 0, rapidCorners: 0 }
+        };
     }
-}
-
-async function fetchMatchDetailStats(matchId) {
-    const [sofaStats, rapidStats] = await Promise.all([
-        fetchSofaScoreStats(matchId),
-        fetchRapidApiMatchStats(matchId)
-    ]);
-    return { sofaStats, rapidStats };
 }
 
 function cleanTeamName(name) {
@@ -399,11 +390,9 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let aiScore = 40.0; // Điểm cơ sở 40.0%
 
     const sofaStats = metrics.sofaStats || { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 };
-    const rapidStats = metrics.rapidStats || { rapidShotsTarget: 0, rapidCorners: 0 };
-
-    const maxShotsTarget = Math.max(sofaStats.shotsOnTarget, rapidStats.rapidShotsTarget);
-    const maxCorners = Math.max(sofaStats.corners, rapidStats.rapidCorners);
-    const totalShots = sofaStats.totalShots || 0;
+    const maxShotsTarget = sofaStats.shotsOnTarget;
+    const maxCorners = sofaStats.corners;
+    const totalShots = sofaStats.totalShots;
 
     let hasTacticalData = false;
 
@@ -505,7 +494,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (IN ĐẦY ĐỦ LOG TRẬN ĐẤU NHƯ CŨ)
+// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -536,7 +525,6 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            // In log cho các trận nằm ngoài khung giờ để dễ theo dõi như cũ
             if (elapsed === 999 || elapsed < 65 || elapsed > 90) {
                 console.log(`[Trận #${index + 1}] [Phút: ${elapsed === 999 ? 'FT' : elapsed + "'"}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Thời gian ngoài mốc 65-90'`);
                 continue;
