@@ -30,20 +30,71 @@ function getVietnamTime() {
     };
 }
 
+// ==========================================
+// HÀM TÍNH PHÚT TRẬN ĐẤU CHUẨN XÁC SOFASCORE
+// ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
-    const statusType = String(item.status?.type || item.status?.description || '').toLowerCase();
-    if (statusType.includes('halftime') || statusType === 'ht') return 45;
-    if (statusType.includes('ended') || statusType === 'ft') return 90;
 
-    const timeObj = item.statusTime || item.time || {};
-    if (typeof timeObj.initial === 'number') {
-        const elapsedMinutes = Math.floor((Math.floor(Date.now() / 1000) - timeObj.initial) / 60);
-        if (elapsedMinutes > 0 && elapsedMinutes <= 120) return elapsedMinutes;
+    const statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
+    const statusDesc = String(item.status?.description || '').toLowerCase();
+
+    // 1. Kiểm tra trạng thái Hết hiệp 1 / Hết trận
+    if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') {
+        return 45;
+    }
+    if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) {
+        return 90;
     }
 
-    const match = String(item.status?.description || '').match(/\d+/);
-    return match ? parseInt(match[0], 10) : 0;
+    // 2. Ưu tiên lấy trực tiếp phút từ status.description (nếu API có sẵn dạng "62'", "35'")
+    const matchDesc = statusDesc.match(/^(\d+)['\s]?$/);
+    if (matchDesc) {
+        return parseInt(matchDesc[1], 10);
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+
+    // 3. Tính dựa trên currentPeriodStartTimestamp (Mốc thời gian bắt đầu hiệp hiện tại)
+    let periodStart = item.time?.currentPeriodStartTimestamp || item.statusTime?.currentPeriodStartTimestamp;
+    
+    if (periodStart) {
+        // Chuẩn hóa millisecond về second nếu timestamp > 10 chữ số
+        if (periodStart > 9999999999) {
+            periodStart = Math.floor(periodStart / 1000);
+        }
+
+        let elapsedInPeriod = Math.floor((nowSeconds - periodStart) / 60);
+        if (elapsedInPeriod < 0) elapsedInPeriod = 0;
+
+        // Xử lý Hiệp 2 (cộng thêm 45 phút của Hiệp 1)
+        const isSecondHalf = statusType.includes('second') || 
+                             statusDesc.includes('2nd') || 
+                             item.time?.period === 2 || 
+                             item.time?.currentPeriod === 2 ||
+                             statusType === 'inprogress_2nd';
+
+        if (isSecondHalf) {
+            return 45 + elapsedInPeriod;
+        }
+        return elapsedInPeriod;
+    }
+
+    // 4. Fallback: Tính theo initial timestamp
+    let initialTime = item.statusTime?.initial || item.time?.initial;
+    if (initialTime) {
+        if (initialTime > 9999999999) initialTime = Math.floor(initialTime / 1000);
+        const elapsed = Math.floor((nowSeconds - initialTime) / 60);
+        if (elapsed > 0 && elapsed <= 120) return elapsed;
+    }
+
+    // 5. Trích xuất số bất kỳ trong status.description
+    const anyNum = statusDesc.match(/\d+/);
+    if (anyNum) {
+        return parseInt(anyNum[0], 10);
+    }
+
+    return 0;
 }
 
 function parseLeagueName(item) {
@@ -284,7 +335,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 4. TIẾN TRÌNH QUÉT TỰ ĐỘNG (THEO MÃ MỚI CỦA BẠN)
+// 4. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
