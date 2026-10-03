@@ -33,25 +33,131 @@ function getVietnamTime() {
 }
 
 // ==========================================
-// 1. BỘ LỌC GIẢI TRẺ (LOẠI BỎ U18 TRỜ XUỐNG)
+// 1. BẢNG DỊCH QUỐC GIA & GIẢI ĐẤU VIỆT HÓA
 // ==========================================
-function isYouthOrUnder18League(leagueName, homeName, awayName) {
-    const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
-    
-    // Pattern khớp U15, U16, U17, U18, Sub-15..18, Under-15..18
-    const youthRegex = /\b(u-?1[0-8]|sub-?1[0-8]|under-?1[0-8])\b/i;
-    if (youthRegex.test(textToTest)) return true;
+const COUNTRY_MAP = {
+    'England': 'Anh',
+    'Spain': 'Tây Ban Nha',
+    'Italy': 'Ý',
+    'Germany': 'Đức',
+    'France': 'Pháp',
+    'Japan': 'Nhật Bản',
+    'South Korea': 'Hàn Quốc',
+    'Vietnam': 'Việt Nam',
+    'Brazil': 'Brazil',
+    'Argentina': 'Argentina',
+    'Netherlands': 'Hà Lan',
+    'Portugal': 'Bồ Đào Nha',
+    'Turkey': 'Thổ Nhĩ Kỳ',
+    'Saudi Arabia': 'Ả Rập Xê Út',
+    'China': 'Trung Quốc',
+    'Thailand': 'Thái Lan',
+    'Australia': 'Úc',
+    'USA': 'Mỹ',
+    'World': 'Quốc Tế',
+    'Europe': 'Châu Âu',
+    'Asia': 'Châu Á',
+    'South America': 'Nam Mỹ',
+    'Africa': 'Châu Phi'
+};
 
-    const keywords = [
-        'youth', 'academy', 'cadete', 'juvenil', 'juniors', 'junior',
-        'u15', 'u16', 'u17', 'u18', 'sub15', 'sub16', 'sub17', 'sub18'
-    ];
+const LEAGUE_NAME_MAP = {
+    'UEFA Champions League': 'Cúp C1 Châu Âu',
+    'UEFA Europa League': 'Cúp C2 Châu Âu',
+    'UEFA Conference League': 'Cúp C3 Châu Âu',
+    'UEFA Nations League': 'Nations League Châu Âu',
+    'AFC Champions League Elite': 'Cúp C1 Châu Á',
+    'AFC Champions League Two': 'Cúp C2 Châu Á',
+    'AFC Asian Cup': 'Cúp Châu Á (Asian Cup)',
+    'CONMEBOL Libertadores': 'Cúp C1 Nam Mỹ (Libertadores)',
+    'CONMEBOL Sudamericana': 'Cúp C2 Nam Mỹ (Sudamericana)',
+    'World Cup': 'Giải Vô Địch Thế Giới (World Cup)',
+    'Club World Cup': 'Giải VĐQG Thế Giới Các CLB',
+    'Friendlies': 'Giao Hữu Quốc Tế',
+    'Club Friendly': 'Giao Hữu CLB',
 
-    return keywords.some(kw => textToTest.includes(kw));
+    'Premier League': 'Ngoại Hạng Anh',
+    'Championship': 'Hạng Nhất Anh',
+    'LaLiga': 'VĐQG Tây Ban Nha',
+    'LaLiga 2': 'Hạng 2 Tây Ban Nha',
+    'Serie A': 'VĐQG Ý',
+    'Serie B': 'Hạng 2 Ý',
+    'Bundesliga': 'VĐQG Đức',
+    '2. Bundesliga': 'Hạng 2 Đức',
+    'Ligue 1': 'VĐQG Pháp',
+    'Ligue 2': 'Hạng 2 Pháp',
+    'J.League 1': 'VĐQG Nhật Bản',
+    'J1 League': 'VĐQG Nhật Bản',
+    'J.League 2': 'Hạng 2 Nhật Bản',
+    'J2 League': 'Hạng 2 Nhật Bản',
+    'J.League 3': 'Hạng 3 Nhật Bản',
+    'J3 League': 'Hạng 3 Nhật Bản',
+    'K League 1': 'VĐQG Hàn Quốc',
+    'K League 2': 'Hạng 2 Hàn Quốc',
+    'V-League 1': 'V-League Việt Nam',
+
+    'U20 World Cup': 'World Cup U20',
+    'U19 European Championship': 'Vô Địch U19 Châu Âu',
+    'U21 European Championship': 'Vô Địch U21 Châu Âu',
+    'AFC U20 Asian Cup': 'Cúp U20 Châu Á'
+};
+
+function parseLeagueName(item) {
+    if (!item) return 'Bóng Đá Quốc Tế';
+
+    let category = item.tournament?.category?.name || item.category?.name || '';
+    let tournament = item.tournament?.name || item.competitionName || '';
+
+    if (LEAGUE_NAME_MAP[tournament]) {
+        return LEAGUE_NAME_MAP[tournament];
+    }
+
+    const translatedCategory = COUNTRY_MAP[category] || category;
+
+    let translatedTournament = tournament
+        .replace(/\bPremier League\b/gi, 'Giải VĐQG')
+        .replace(/\bDivision 1\b/gi, 'Hạng 1')
+        .replace(/\bDivision 2\b/gi, 'Hạng 2')
+        .replace(/\bDivision 3\b/gi, 'Hạng 3')
+        .replace(/\b1st Division\b/gi, 'Hạng 1')
+        .replace(/\b2nd Division\b/gi, 'Hạng 2')
+        .replace(/\bSuper League\b/gi, 'VĐQG')
+        .replace(/\bPro League\b/gi, 'VĐQG')
+        .replace(/\bCup\b/gi, 'Cúp')
+        .replace(/\bU21\b/gi, 'Giải U21')
+        .replace(/\bU20\b/gi, 'Giải U20')
+        .replace(/\bU19\b/gi, 'Giải U19');
+
+    if (translatedCategory && translatedTournament) {
+        if (translatedTournament.toLowerCase().includes(translatedCategory.toLowerCase())) {
+            return translatedTournament;
+        }
+        return `${translatedTournament}${translatedCategory}`.trim();
+    }
+
+    return translatedTournament || translatedCategory || 'Bóng Đá Quốc Tế';
 }
 
 // ==========================================
-// 2. TÍNH PHÚT TRẬN ĐẤU CHUẨN XÁC
+// 2. BỘ LỌC GIẢI TRẺ (BỎ QUA DƯỚI U19: U10 đến U18)
+// ==========================================
+function isFilteredLeague(leagueName, homeName, awayName) {
+    const textToTest = `${leagueName} ${homeName}${awayName}`.toLowerCase();
+    
+    // Khớp U10, U11, U12, U13, U14, U15, U16, U17, U18 (và Sub-10..18, Under-10..18)
+    const youthUnder19Regex = /\b(u-?1[0-8]|sub-?1[0-8]|under-?1[0-8])\b/i;
+    if (youthUnder19Regex.test(textToTest)) return true;
+
+    const filterKeywords = [
+        'academy', 'cadete', 'juvenil', 'juniors', 'junior',
+        'reserves', 'reserve', 'amateur', 'simulated', 'srl'
+    ];
+
+    return filterKeywords.some(kw => textToTest.includes(kw));
+}
+
+// ==========================================
+// 3. TÍNH PHÚT TRẬN ĐẤU CHUẨN XÁC SOFASCORE
 // ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
@@ -59,17 +165,11 @@ function calculateExactMinute(item) {
     const statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
     const statusDesc = String(item.status?.description || '').toLowerCase();
 
-    if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') {
-        return 45;
-    }
-    if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) {
-        return 90;
-    }
+    if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') return 45;
+    if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 90;
 
     const matchDesc = statusDesc.match(/^(\d+)['\s]?$/);
-    if (matchDesc) {
-        return parseInt(matchDesc[1], 10);
-    }
+    if (matchDesc) return parseInt(matchDesc[1], 10);
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     let periodStart = item.time?.currentPeriodStartTimestamp || item.statusTime?.currentPeriodStartTimestamp;
@@ -86,9 +186,7 @@ function calculateExactMinute(item) {
                              item.time?.currentPeriod === 2 ||
                              statusType === 'inprogress_2nd';
 
-        if (isSecondHalf) {
-            return 45 + elapsedInPeriod;
-        }
+        if (isSecondHalf) return 45 + elapsedInPeriod;
         return elapsedInPeriod;
     }
 
@@ -105,18 +203,8 @@ function calculateExactMinute(item) {
     return 0;
 }
 
-function parseLeagueName(item) {
-    if (!item) return 'Bóng Đá Quốc Tế';
-    const category = item.tournament?.category?.name || item.category?.name || '';
-    const tournament = item.tournament?.name || item.competitionName || '';
-    if (category && tournament) {
-        return tournament.toLowerCase().includes(category.toLowerCase()) ? tournament : `${category}: ${tournament}`;
-    }
-    return tournament || category || 'Bóng Đá Quốc Tế';
-}
-
 // ==========================================
-// 3. DIỄN BIẾN BÀN THẮNG THEO PHÚT
+// 4. DIỄN BIẾN BÀN THẮNG THEO PHÚT
 // ==========================================
 async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
     try {
@@ -147,7 +235,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
             const player = g.player?.shortName || g.player?.name || 'Cầu thủ';
             const isHome = g.isHome ? '⚽ [Chủ]' : '⚽ [Khách]';
             const scoreStr = (g.homeScore !== undefined && g.awayScore !== undefined) ? `[${g.homeScore}-${g.awayScore}]` : '';
-            return `• Phút ${min}'${extra}: ${isHome} ${player} ${scoreStr}`;
+            return `• Phút ${min}'${extra}:${isHome} ${player}${scoreStr}`;
         });
 
         return timeline.join('\n');
@@ -161,7 +249,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS
+// 5. LẤY DỮ LIỆU & PHÂN TÍCH KÈO BIẾN ĐỘNG
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -272,88 +360,109 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
     if (!overOutcome) return null;
 
     let scoreBoost = 0;
-    const pointDiff = overOutcome.point - currentTotalGoals;
+    let oddsNotes = [];
+    const overLine = overOutcome.point;
+    const price = overOutcome.price;
+    const pointDiff = overLine - currentTotalGoals;
 
-    if (pointDiff <= 0.75 && pointDiff > 0) scoreBoost += 20;
-    if (overOutcome.price <= 1.85) scoreBoost += 15;
+    if (pointDiff >= 0.75) {
+        scoreBoost += 20;
+        oddsNotes.push(`Line Over giữ mức cao (${overLine}) so với tổng ${currentTotalGoals} bàn`);
+    } else if (pointDiff > 0) {
+        scoreBoost += 10;
+        oddsNotes.push(`Line Over (${overLine}) sát mốc nổ bàn`);
+    }
+
+    if (price <= 1.80) {
+        scoreBoost += 18;
+        oddsNotes.push(`Odds Over giảm sâu (${price}) - Dòng tiền đè mạnh cửa Tài`);
+    } else if (price <= 1.95) {
+        scoreBoost += 10;
+        oddsNotes.push(`Odds Over đẹp (${price})`);
+    } else if (price > 2.20) {
+        scoreBoost -= 12;
+        oddsNotes.push(`Odds Over cao (${price}) - Dấu hiệu nặng xỉu`);
+    }
 
     return {
         bookmaker: foundMatch.bookmakers[0].title,
-        line: overOutcome.point,
-        odds: overOutcome.price,
-        scoreBoost
+        line: overLine,
+        odds: price,
+        scoreBoost,
+        oddsNoteText: oddsNotes.join(' | ')
     };
 }
 
 // ==========================================
-// 5. THUẬT TOÁN AI CHẤM ĐIỂM
+// 6. THUẬT TOÁN AI CHẤM ĐIỂM CHUYÊN MÔN (RULE >= 60.0%)
 // ==========================================
-function evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis) {
+function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiScore = 20.0; // Điểm cơ sở chuẩn
+    let aiScore = 40.0;
 
     const sofaStats = metrics.sofaStats || { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 };
     const rapidStats = metrics.rapidStats || { rapidShotsTarget: 0, rapidCorners: 0 };
 
     const maxShotsTarget = Math.max(sofaStats.shotsOnTarget, rapidStats.rapidShotsTarget);
     const maxCorners = Math.max(sofaStats.corners, rapidStats.rapidCorners);
+    const totalShots = sofaStats.totalShots || 0;
 
-    let hasAttackingData = false;
+    let hasTacticalData = false;
 
-    // 1. Phân tích Sút trúng đích
-    if (maxShotsTarget >= 6) {
-        aiScore += 30;
-        matchAnalysis.push(`⚡ Tần suất hãm thành cực cao: ${maxShotsTarget} cú sút trúng khung thành`);
-        hasAttackingData = true;
-    } else if (maxShotsTarget >= 3) {
-        aiScore += 18;
-        matchAnalysis.push(`🎯 Sức ép dứt điểm tốt: ${maxShotsTarget} cú sút trúng đích`);
-        hasAttackingData = true;
-    } else if (maxShotsTarget > 0) {
-        aiScore += 8;
-        matchAnalysis.push(`🎯 Tổng số cú sút trúng đích: ${maxShotsTarget}`);
-        hasAttackingData = true;
-    }
-
-    // 2. Phân tích Phạt góc
-    if (maxCorners >= 7) {
-        aiScore += 18;
-        matchAnalysis.push(`🚩 Sức ép bóng chết lớn: ${maxCorners} quả phạt góc`);
-        hasAttackingData = true;
-    } else if (maxCorners >= 4) {
-        aiScore += 10;
-        matchAnalysis.push(`🚩 Phạt góc: ${maxCorners} quả`);
-        hasAttackingData = true;
-    }
-
-    // 3. Thẻ đỏ
+    // 1. Thẻ đỏ
     if (sofaStats.redCards > 0) {
+        aiScore += 20;
+        matchAnalysis.push(`` + `🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
+        hasTacticalData = true;
+    }
+
+    // 2. Cú sút trúng đích
+    if (maxShotsTarget >= 5) {
+        aiScore += 25;
+        matchAnalysis.push(`⚡ Sức ép sát thương cao: ${maxShotsTarget} cú sút trúng khung thành`);
+        hasTacticalData = true;
+    } else if (maxShotsTarget >= 1) {
         aiScore += 15;
-        matchAnalysis.push(`🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Xáo trộn phòng ngự`);
-        hasAttackingData = true;
+        matchAnalysis.push(`🎯 Tần suất hãm thành tốt: ${maxShotsTarget} cú sút trúng đích`);
+        hasTacticalData = true;
     }
 
-    // 4. Khung giờ vàng (72' - 85')
-    if (elapsed >= 72 && elapsed <= 85) {
-        aiScore += 8;
-        matchAnalysis.push(`⏱ Khung giờ vàng dồn ép bàn thắng (phút ${elapsed}')`);
+    // 3. Đôi công (Tổng số cú sút)
+    if (totalShots >= 12) {
+        aiScore += 18;
+        matchAnalysis.push(`🔥 Thế trận đôi công cởi mở: Tổng ${totalShots} cú sút hãm thành`);
+        hasTacticalData = true;
+    } else if (totalShots >= 6) {
+        aiScore += 10;
+        matchAnalysis.push(`⚽ Hai đội tích cực dứt điểm: Tổng ${totalShots} cú sút`);
+        hasTacticalData = true;
     }
 
-    // 5. Kèo Odds nhà cái
+    // 4. Phạt góc
+    if (maxCorners >= 6) {
+        aiScore += 18;
+        matchAnalysis.push(`🚩 Sức ép phạt góc dồn dập: ${maxCorners} quả`);
+        hasTacticalData = true;
+    } else if (maxCorners >= 2) {
+        aiScore += 10;
+        matchAnalysis.push(`🚩 Tần suất phạt góc: ${maxCorners} quả`);
+        hasTacticalData = true;
+    }
+
+    // 5. Kèo biến động
     if (oddsAnalysis) {
         aiScore += oddsAnalysis.scoreBoost;
         matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
-        hasAttackingData = true;
+        if (oddsAnalysis.oddsNoteText) {
+            matchAnalysis.push(`   └─> ${oddsAnalysis.oddsNoteText}`);
+        }
+        hasTacticalData = true;
     }
 
-    if (!hasAttackingData) {
-        matchAnalysis.push(`⚠️ Giải đấu thiếu dữ liệu thống kê chi tiết`);
-    }
+    const finalScore = Math.min(Math.max(aiScore, 40.0), 96.0).toFixed(1);
 
-    const finalScore = Math.min(Math.max(aiScore, 20.0), 96.0).toFixed(1);
-
-    // Điểm >= 60.0% VÀ có chỉ số tấn công thực tế mới gửi Telegram
-    const shouldSend = parseFloat(finalScore) >= 60.0 && hasAttackingData;
+    // BÁO ĐỘNG KHI ĐIỂM AI đạt từ 60.0% trở lên
+    const shouldSend = parseFloat(finalScore) >= 60.0 && hasTacticalData;
 
     return {
         efficiency: finalScore,
@@ -363,14 +472,14 @@ function evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis) {
 }
 
 // ==========================================
-// 6. THÔNG BÁO TELEGRAM
+// 7. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     const message = 
 `🔔 RUNG CHUỔNG VÀNGGGG
 🏆 Giải đấu: ${item.league}
 ⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–${item.awayScore} ${item.awayName}
-⏱️️ Thời gian: Phút ${item.elapsed}'
+⏱ Thời gian: Phút ${item.elapsed}'
 
 ⚽ DIỄN BIẾN TỶ SỐ THEO PHÚT:
 ${item.goalTimeline}
@@ -386,15 +495,15 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`[Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
-        console.error('        └─> [Telegram Error]:', err.message);
+        console.error('[Telegram Error]:', err.message);
     }
 }
 
 // ==========================================
-// 7. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU THỨ TỰ LỌC)
+// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ẨN LOG BỎ QUA)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -418,32 +527,22 @@ async function scanLiveMatches() {
             const league = parseLeagueName(item);
 
             if (!matchId) continue;
-
-            // LỌC 1: Đã cảnh báo trước đó
             if (sentAlerts.has(matchId)) continue;
 
-            // LỌC 2: Giải trẻ U18 trở xuống
-            if (isYouthOrUnder18League(league, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ U18`);
-                continue;
-            }
+            // Bỏ qua giải dưới U19 (U10..U18)
+            if (isFilteredLeague(league, homeName, awayName)) continue;
 
-            // LỌC 3: Chưa đủ mốc thời gian (65 - 88 phút)
-            if (elapsed < 65 || elapsed > 88) {
-                console.log(`[Trận #${index + 1}] [Phút: ${elapsed}'] ${homeName} vs ${awayName} └─> [Bỏ qua]: Thời gian ngoài mốc 65-88'`);
-                continue;
-            }
-
-            // --- CHỈ KHI QUA 3 BƯỚC LỌC TRÊN MỚI TÍNH CHỈ SỐ ÉP SÂN ---
-            console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
+            // Bỏ qua mốc thời gian ngoài 65-88'
+            if (elapsed < 65 || elapsed > 88) continue;
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis);
+            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
+            // CHỈ IN LOG VÀ GỬI THÔNG BÁO KHI TRẬN ĐẤU ĐẠT CHUẨN (RULE >= 60.0%)
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                console.log(`[AI CHỌN NỔ BÀN] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName} (${aiAnalysis.efficiency}%)`);
                 const pickItem = {
                     id: matchId,
                     league,
@@ -457,8 +556,6 @@ async function scanLiveMatches() {
                     ruleEfficiency: aiAnalysis.efficiency
                 };
                 await sendTelegramAlert(pickItem);
-            } else {
-                console.log(`    └─> [Bỏ qua]: chỉ số ép sân thấp (${aiAnalysis.efficiency}%)`);
             }
         }
     } catch (err) {
@@ -466,7 +563,6 @@ async function scanLiveMatches() {
     }
 }
 
-// Sửa lỗi ENOENT index.html
 app.get('/', (req, res) => {
     res.send('Football Live AI Scanner Service is Running!');
 });
