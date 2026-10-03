@@ -5,17 +5,20 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// CẤU HÌNH HỆ THỐNG & TELEGRAM API
+// CẤU HÌNH HỆ THỐNG & KẾT NỐI API (RAPIDAPI + THE ODDS API)
 // ==========================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8956360235:AAHTralILZmGJ9Ynm35M1DXa_S5tJ4eyAEs';
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'f00cdf8303msh374792a917698bbp1f02cbjsn3bc6445978c1';
+// 1. RapidAPI - Lấy danh sách trận & chỉ số dứt điểm/góc
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 const RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
-
 const API_LIVE_URL = `https://${RAPIDAPI_HOST}/football-current-live`;
 
-// Bộ nhớ lưu các trận đã báo để tránh báo trùng
+// 2. The Odds API - Tích hợp API Key mới của bạn
+const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';[cite: 8]
+const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
+
 const sentAlerts = new Set();
 
 function getVietnamTime() {
@@ -73,7 +76,62 @@ function parseLeagueName(item) {
 }
 
 // ==========================================
-// 1. GỌI API CHI TIẾT & TRÍCH XUẤT CHỈ SỐ
+// 1. MODULE THE ODDS API (LẤY DỮ LIỆU KÈO LIVE)
+// ==========================================
+async function fetchOddsData() {
+    if (!ODDS_API_KEY) return [];
+    try {
+        const response = await axios.get(ODDS_API_URL, { timeout: 10000 });
+        return response.data || [];
+    } catch (err) {
+        console.error('    ├─> [The Odds API Error]:', err.message);
+        return [];
+    }
+}
+
+function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
+    if (!Array.isArray(allOdds) || allOdds.length === 0) return null;
+
+    const clean = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const hClean = clean(homeName);
+    const aClean = clean(awayName);
+
+    const foundMatch = allOdds.find(m => {
+        const mHome = clean(m.home_team);
+        const mAway = clean(m.away_team);
+        return (mHome.includes(hClean) || hClean.includes(mHome)) &&
+               (mAway.includes(aClean) || aClean.includes(mAway));
+    });
+
+    if (!foundMatch || !foundMatch.bookmakers || foundMatch.bookmakers.length === 0) return null;
+
+    const bookmaker = foundMatch.bookmakers[0];
+    const totalsMarket = bookmaker.markets?.find(mk => mk.key === 'totals');
+
+    if (!totalsMarket || !totalsMarket.outcomes) return null;
+
+    const overOutcome = totalsMarket.outcomes.find(o => o.name === 'Over');
+    if (!overOutcome) return null;
+
+    const liveLine = overOutcome.point; 
+    const overOdds = overOutcome.price;
+
+    let impliedProb = (1 / overOdds) * 100;
+    const diff = liveLine - currentTotalGoals;
+
+    if (diff <= 0.75) impliedProb += 15;
+    if (overOdds <= 1.85) impliedProb += 10;
+
+    return {
+        bookmaker: bookmaker.title,
+        line: liveLine,
+        odds: overOdds,
+        scoreBoost: Math.min(Math.max(impliedProb, 40.0), 90.0)
+    };
+}
+
+// ==========================================
+// 2. MODULE RAPIDAPI (TRÍCH XUẤT CHỈ SỐ THỰC TẾ)
 // ==========================================
 async function fetchMatchDetailStats(matchId, baseItem) {
     try {
@@ -116,84 +174,58 @@ function extractMatchMetrics(data, fallbackItem) {
     const homeCorners = statsObj.homeCorners || statsObj.cornersHome || fallbackItem?.home?.corners || 0;
     const awayCorners = statsObj.awayCorners || statsObj.cornersAway || fallbackItem?.away?.corners || 0;
 
-    const homeDangerous = statsObj.homeDangerousAttacks || statsObj.dangerousAttacksHome || 0;
-    const awayDangerous = statsObj.awayDangerousAttacks || statsObj.dangerousAttacksAway || 0;
-
     return {
         totalShots: homeShots + awayShots,
         shotsOnTarget: homeTarget + awayTarget,
         totalCorners: homeCorners + awayCorners,
-        dangerousAttacks: homeDangerous + awayDangerous,
         redCards: homeRed + awayRed
     };
 }
 
 // ==========================================
-// 2. THUẬT TOÁN ĐÁNH GIÁ ĐẠT RULE AI (>= 65%)
+// 3. THUẬT TOÁN AI PHÂN TÍCH KẾT HỢP
 // ==========================================
-function evaluateMatchDynamicAI(metrics, elapsed) {
-    let scoreAI = 50.0;
+function evaluateMatchCombinedAI(metrics, elapsed, oddsAnalysis) {
     let matchAnalysis = [];
-    let hasStatsData = false;
+    let aiScore = 50.0;
 
-    console.log(`    ├─> [Thống kê trích xuất] Sút tổng: ${metrics.totalShots}, Trúng đích: ${metrics.shotsOnTarget}, Phạt góc: ${metrics.totalCorners}, Thẻ đỏ: ${metrics.redCards}`);
-
-    // A. Phân tích Dứt điểm & Đôi công
-    if (metrics.shotsOnTarget >= 6) {
-        scoreAI += 24;
-        matchAnalysis.push(`Đôi công dồn dập: ${metrics.shotsOnTarget} cú sút trúng đích`);
-        hasStatsData = true;
-    } else if (metrics.shotsOnTarget >= 4) {
-        scoreAI += 14;
-        matchAnalysis.push(`Tần suất dứt điểm tốt (${metrics.shotsOnTarget} sút trúng khung thành)`);
-        hasStatsData = true;
-    } else if (metrics.totalShots >= 10) {
-        scoreAI += 10;
-        matchAnalysis.push(`Tích cực hãm thành (${metrics.totalShots} lần dứt điểm)`);
-        hasStatsData = true;
+    if (oddsAnalysis) {
+        aiScore = oddsAnalysis.scoreBoost * 0.6 + aiScore * 0.4;
+        matchAnalysis.push(`📊 Tỷ lệ nổ bàn (The Odds API - ${oddsAnalysis.bookmaker}): Kèo Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
+    } else {
+        matchAnalysis.push(`📊 Phân tích thế trận real-time (RapidAPI)`);
     }
 
-    // B. Phân tích Áp lực Tấn công & Phạt góc
-    if (metrics.dangerousAttacks >= 60) {
-        scoreAI += 15;
-        matchAnalysis.push(`Sức ép lớn: ${metrics.dangerousAttacks} đợt tấn công nguy hiểm`);
-        hasStatsData = true;
+    if (metrics.shotsOnTarget >= 5) {
+        aiScore += 18;
+        matchAnalysis.push(`⚡ Sút trúng đích dồn dập: ${metrics.shotsOnTarget} cú sút`);
+    } else if (metrics.shotsOnTarget >= 3) {
+        aiScore += 10;
+        matchAnalysis.push(`🎯 Tần suất dứt điểm tốt (${metrics.shotsOnTarget} cú sút trúng khung thành)`);
     }
+
     if (metrics.totalCorners >= 6) {
-        scoreAI += 12;
-        matchAnalysis.push(`Phạt góc liên tục (${metrics.totalCorners} quả) - Hàng thủ chịu ép sân lớn`);
-        hasStatsData = true;
+        aiScore += 10;
+        matchAnalysis.push(`🚩 Sức ép phạt góc cao: ${metrics.totalCorners} quả góc`);
     }
 
-    // C. Phân tích Thẻ đỏ
     if (metrics.redCards > 0) {
-        scoreAI += 20;
-        matchAnalysis.push(`Lợi thế quân số / Thẻ đỏ (${metrics.redCards} thẻ) - Khoảng trống phòng ngự bị khai thác`);
-        hasStatsData = true;
+        aiScore += 15;
+        matchAnalysis.push(`🟥 Thẻ đỏ xuất hiện (${metrics.redCards} thẻ) - Hổng hàng phòng ngự`);
     }
 
-    // D. Khung giờ vàng late-game (72' - 85')
-    if (elapsed >= 72 && elapsed <= 85) {
-        scoreAI += 8;
-        matchAnalysis.push(`Khung giờ vàng late-game (phút ${elapsed}'): Thể lực suy giảm & áp lực đẩy cao`);
+    if (elapsed >= 65 && elapsed <= 85) {
+        aiScore += 5;
+        matchAnalysis.push(`⏱️ Khung giờ vàng late-game (phút ${elapsed}')`);
     }
 
-    if (!hasStatsData) {
-        return {
-            efficiency: "45.0",
-            sampleN: 100,
-            detailText: "• API chưa cập nhật đủ dữ liệu dứt điểm/ép sân real-time",
-            shouldSend: false
-        };
-    }
-
-    const finalScore = Math.min(Math.max(scoreAI, 35.0), 96.0).toFixed(1);
+    const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
 
     return {
         efficiency: finalScore,
         sampleN: 190 + (elapsed % 30),
         detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
-        shouldSend: parseFloat(finalScore) >= 65.0 // ĐIỀU CHỈNH: Đạt từ 65.0% trở lên là gửi Telegram
+        shouldSend: parseFloat(finalScore) >= 65.0
     };
 }
 
@@ -204,17 +236,15 @@ async function sendTelegramAlert(item) {
     const awayScore = item.away?.score ?? item.awayScore ?? 0;
 
     const message = 
-`🚨 KÈO RUNGGG ĐÓN LỘC (MATCH DYNAMICS)
-🏆 Giải: ${item.league}
-⚽ ${homeName} ${homeScore}–${awayScore} ${awayName} · phút ${item.elapsed}'
+`🚨 KÈO RUNG H2 (RAPIDAPI + THE ODDS API)
+🏆 Giải đấu: ${item.league}
+⚔️ Trận đấu: ${homeName} ${homeScore}–${awayScore} ${awayName}
+⏱️ Thời gian: Phút ${item.elapsed}'
 
-📊 TRẠNG THÁI TỶ SỐ:
-• Hiện tại: ${homeScore} - ${awayScore}
-
-🧠 PHÂN TÍCH CHỈ SỐ ĐÔI CÔNG & ÉP SÂN:
+📊 PHÂN TÍCH AI KẾT HỢP DÒNG TIỀN & THẾ TRẬN:
 ${item.detailText}
 
-🎯 Nhận định AI: Xác suất NỔ BÀN H2 cực cao
+🎯 Nhận định AI: Khả năng NỔ BÀN H2 cực cao
 🔥 Đánh giá AI đạt rule: ${item.ruleEfficiency}% · (n=${item.sampleN})`;
 
     try {
@@ -232,9 +262,12 @@ ${item.detailText}
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
     console.log(`\n==================================================`);
-    console.log(`[Auto-Scan AI] Quét diễn biến thế trận real-time... (${currentVN.timeStr})`);
+    console.log(`[Auto-Scan AI] Quét RapidAPI + The Odds API... (${currentVN.timeStr})`);
 
     try {
+        // Chỉ gọi The Odds API khi bắt đầu quét để tiết kiệm lượt dùng API
+        const allOdds = await fetchOddsData();
+
         const response = await axios.get(API_LIVE_URL, {
             headers: {
                 'x-rapidapi-key': RAPIDAPI_KEY.trim(),
@@ -256,6 +289,7 @@ async function scanLiveMatches() {
             const awayName = item.away?.name || 'Đội khách';
             const homeScore = item.home?.score ?? 0;
             const awayScore = item.away?.score ?? 0;
+            const currentTotalGoals = homeScore + awayScore;
             const league = parseLeagueName(item);
 
             console.log(`[Trận #${index + 1}] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
@@ -267,8 +301,9 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            if (elapsed < 70) {
-                console.log(`    └─> [Bỏ qua]: Chưa đủ 70 phút (${elapsed}' < 70')`);
+            // Lọc chính xác các trận từ phút 65 trở đi
+            if (elapsed < 65) {
+                console.log(`    └─> [Bỏ qua]: Chưa đủ 65 phút (${elapsed}' < 65')`);
                 continue;
             }
 
@@ -278,7 +313,8 @@ async function scanLiveMatches() {
             }
 
             const metrics = await fetchMatchDetailStats(matchId, item);
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, elapsed);
+            const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals);
+            const aiAnalysis = evaluateMatchCombinedAI(metrics, elapsed, oddsAnalysis);
 
             if (aiAnalysis.shouldSend) {
                 console.log(`    └─> [AI CHỌN: NỔ BÀN H2] (${aiAnalysis.efficiency}% >= 65.0%) -> Gửi Telegram..`);
@@ -298,7 +334,7 @@ async function scanLiveMatches() {
                 await sendTelegramAlert(pickItem);
                 countSent++;
             } else {
-                console.log(`    └─> [Bỏ qua]: Không đủ điều kiện thế trận (${aiAnalysis.efficiency}% < 65.0%)`);
+                console.log(`    └─> [Bỏ qua]: Không đủ điều kiện AI (${aiAnalysis.efficiency}% < 65.0%)`);
             }
         }
 
@@ -308,7 +344,7 @@ async function scanLiveMatches() {
     }
 }
 
-app.get('/', (req, res) => res.send('Football Match Dynamics AI is Running!'));
+app.get('/', (req, res) => res.send('Perfect Combined AI (RapidAPI + The Odds API) is Running!'));
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
