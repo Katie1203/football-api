@@ -15,7 +15,8 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
-const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/sport/football/events/live`;
+// Khôi phục lại endpoint chuẩn trả về danh sách live đầy đủ nhất
+const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 const RAPIDAPI_HOST = 'free-api-live-football-data.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -148,6 +149,7 @@ function parseLeagueName(item) {
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
+    // Chỉ chặn các giải trẻ từ U20 trở xuống; CHO PHÉP U21 đi qua
     const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
     if (youthRegex.test(textToTest)) return true;
 
@@ -266,9 +268,7 @@ async function fetchSofaScoreLive() {
             },
             timeout: 15000
         });
-        const data = response.data;
-        if (Array.isArray(data)) return data;
-        return data?.events || data?.liveEvents || data?.sportEvents || [];
+        return response.data?.events || response.data?.liveEvents || [];
     } catch (err) {
         return [];
     }
@@ -505,7 +505,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 8. TIẾN TRÌNH QUÉT TỰ ĐỘNG (IN ĐẦY ĐỦ LOG TRẬN ĐẤU NHƯ CŨ)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -517,8 +517,6 @@ async function scanLiveMatches() {
             fetchOddsData(),
             fetchSofaScoreLive()
         ]);
-
-        console.log(`    └─> Tổng số trận đang live trên hệ thống: ${sofaMatches.length}`);
 
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
@@ -533,9 +531,16 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            if (isFilteredLeague(league, homeName, awayName)) continue;
+            if (isFilteredLeague(league, homeName, awayName)) {
+                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ`);
+                continue;
+            }
 
-            if (elapsed === 999 || elapsed < 65 || elapsed > 90) continue;
+            // In log cho các trận nằm ngoài khung giờ để dễ theo dõi như cũ
+            if (elapsed === 999 || elapsed < 65 || elapsed > 90) {
+                console.log(`[Trận #${index + 1}] [Phút: ${elapsed === 999 ? 'FT' : elapsed + "'"}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Thời gian ngoài mốc 65-90'`);
+                continue;
+            }
 
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
