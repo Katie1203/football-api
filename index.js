@@ -409,9 +409,25 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
 
-    // Kiểm soát bóng & Tấn công
+    // Kiểm soát bóng & cộng điểm áp sân
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
+        const possParts = stats.possession.split('-');
+        if (possParts.length === 2) {
+            const homePoss = parseInt(possParts[0].trim(), 10) || 50;
+            const awayPoss = parseInt(possParts[1].trim(), 10) || 50;
+            const maxPoss = Math.max(homePoss, awayPoss);
+
+            if (maxPoss >= 65) {
+                aiScore += 18;
+                matchAnalysis.push(`    └─> Thế trận áp đảo mạnh (${maxPoss}% thời lượng kiểm soát)`);
+                hasTacticalData = true;
+            } else if (maxPoss >= 60) {
+                aiScore += 10;
+                matchAnalysis.push(`    └─> Thế trận lấn lướt (${maxPoss}% thời lượng kiểm soát)`);
+                hasTacticalData = true;
+            }
+        }
     }
 
     // Thẻ đỏ
@@ -467,8 +483,8 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     const finalScore = Math.min(Math.max(aiScore, 40.0), 98.0).toFixed(1);
     
-    // Đã cập nhật ngưỡng tối thiểu từ 65.0 xuống 60.0 tại đây:
-    const MIN_SEND_PERCENTAGE = 60.0; 
+    // Đã nâng ngưỡng tối thiểu trở lại mức 65.0%
+    const MIN_SEND_PERCENTAGE = 65.0; 
     const shouldSend = parseFloat(finalScore) >= MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
@@ -576,7 +592,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule >= 60%`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule >= 65%`);
             }
         }
     } catch (err) {
