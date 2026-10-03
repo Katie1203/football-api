@@ -398,7 +398,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Độ tin cậy chưa đủ (${aiAnalysis.efficiency}% < 65%)`);
+                console.log(`    └─> [Bỏ qua]: Độ tin cậy chưa đủ (${aiAnalysis.efficiency}% < 55%)`);
             }
         }
     } catch (err) {
