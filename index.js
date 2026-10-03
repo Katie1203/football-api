@@ -127,31 +127,19 @@ function parseGoalTimeline(item) {
     return timeline.join('\n');
 }
 
-// 4. THUẬT TOÁN AI PHÂN TÍCH CHUYÊN SÂU (ĐÔI CÔNG & ÉP SÂN)
+// 4. THUẬT TOÁN AI PHÂN TÍCH CHUYÊN SÂU DỰA TRÊN DIỄN BIẾN TRẬN ĐẤU
 function evaluateMatchWithAI(item, elapsed) {
     const matchId = String(item.id || item.eventId || item.fixture?.id || item.match_id);
-
-    let scoreAI = 50.0;
-    let matchTag = "Thế trận bình thường";
-
-    // A. Khung giờ phút vàng Rung H2 (73' - 85')
-    if (elapsed >= 73 && elapsed <= 85) scoreAI += 15;
-    else if (elapsed >= 70 && elapsed < 73) scoreAI += 8;
-
-    // B. Biến thẻ đỏ (Gây biến động cự ly đội hình & thể lực)
-    const homeRed = item.home?.redCards || item.stats?.homeRedCards || 0;
-    const awayRed = item.away?.redCards || item.stats?.awayRedCards || 0;
-    if ((homeRed + awayRed) > 0) scoreAI += 12;
-
-    // C. Bóc tách thống kê độc lập từng đội
     const stats = item.stats || item.statistics || {};
 
+    // A. Trích xuất chỉ số chi tiết từ API
     const homeInBox = stats.homeShotsInsideBox || stats.shotsInsideBoxHome || item.home?.shotsInsideBox || 0;
     const awayInBox = stats.awayShotsInsideBox || stats.shotsInsideBoxAway || item.away?.shotsInsideBox || 0;
     const totalShotsInBox = homeInBox + awayInBox;
 
     const homeShotsOnTarget = stats.homeShotsOnTarget || stats.shotsOnTargetHome || item.home?.shotsOnTarget || 0;
     const awayShotsOnTarget = stats.awayShotsOnTarget || stats.shotsOnTargetAway || item.away?.shotsOnTarget || 0;
+    const totalShotsOnTarget = homeShotsOnTarget + awayShotsOnTarget;
 
     const homeCorners = item.home?.corners || stats.homeCorners || 0;
     const awayCorners = item.away?.corners || stats.awayCorners || 0;
@@ -165,49 +153,75 @@ function evaluateMatchWithAI(item, elapsed) {
     const awayBigChanceMiss = stats.awayBigChancesMissed || 0;
     const totalBigChances = homeBigChanceMiss + awayBigChanceMiss;
 
-    // D. NHẬN DIỆN THẾ TRẬN DỰA TRÊN TƯƠNG QUAN
-    const isDoubleAttack = (homeInBox >= 3 && awayInBox >= 3) && 
-                          (homeShotsOnTarget >= 2 && awayShotsOnTarget >= 2) && 
-                          (homeCorners >= 3 && awayCorners >= 3);
-
-    const isHomeDomination = (homeInBox >= 6 && homeInBox >= awayInBox * 2.5) || (homeCorners >= 6 && homeCorners >= awayCorners * 3);
-    const isAwayDomination = (awayInBox >= 6 && awayInBox >= homeInBox * 2.5) || (awayCorners >= 6 && awayCorners >= homeCorners * 3);
-    const isOneSidedPressure = isHomeDomination || isAwayDomination;
-
-    // E. TÍNH ĐIỂM AI
-    if (isDoubleAttack) {
-        scoreAI += 20; // Đôi công ăn miếng trả miếng
-        matchTag = "🔥 ĐÔI CÔNG SÔI NỔI";
-    } else if (isOneSidedPressure) {
-        scoreAI += 16; // Ép sân 1 chiều dồn dập
-        matchTag = isHomeDomination ? "⚡ CHỦ NHÀ ÉP SÂN NGHẸT THỞ" : "⚡ ĐỘI KHÁCH ÉP SÂN NGHẸT THỞ";
-    } else if (totalShotsInBox >= 8 || totalCorners >= 9) {
-        scoreAI += 10;
-        matchTag = "🎯 Áp lực dứt điểm tốt";
+    // RÀO CHẮN HARD GUARD: Nếu API không có dữ liệu sút/góc -> Bắt buộc hạ điểm thấp
+    if (totalShotsInBox === 0 && totalCorners < 2 && totalShotsOnTarget < 2) {
+        return {
+            efficiency: "25.0",
+            ruleEfficiency: "25.0",
+            sampleN: 100,
+            detailText: `Thế trận: ⚠️ Thiếu dữ liệu diễn biến (Sút: 0 | Góc: ${totalCorners})`
+        };
     }
 
-    if (totalBigChances >= 2) scoreAI += 10;
+    // Khởi tạo điểm Base từ 30%
+    let scoreAI = 30.0;
+    let matchTag = "Thế trận bình thường";
 
+    // B. PHÂN TÍCH DIỄN BIẾN THẾ TRẬN
+    const isDoubleAttack = (homeInBox >= 3 && awayInBox >= 3) && 
+                          (homeShotsOnTarget >= 2 && awayShotsOnTarget >= 2) && 
+                          (homeCorners >= 2 && awayCorners >= 2);
+
+    const isHomeDomination = (homeInBox >= 5 && homeInBox >= awayInBox * 2) || (homeCorners >= 5 && homeCorners >= awayCorners * 2.5);
+    const isAwayDomination = (awayInBox >= 5 && awayInBox >= homeInBox * 2) || (awayCorners >= 5 && awayCorners >= homeCorners * 2.5);
+    const isOneSidedPressure = isHomeDomination || isAwayDomination;
+
+    // Cộng điểm theo thế trận thực tế
+    if (isDoubleAttack) {
+        scoreAI += 25;
+        matchTag = "🔥 ĐÔI CÔNG RƯỢT ĐỦỔI";
+    } else if (isOneSidedPressure) {
+        scoreAI += 20;
+        matchTag = isHomeDomination ? "⚡ CHỦ NHÀ ÉP SÂN NGHẸT THỞ" : "⚡ ĐỘI KHÁCH ÉP SÂN NGHẸT THỞ";
+    } else if (totalShotsInBox >= 6 || totalCorners >= 7) {
+        scoreAI += 12;
+        matchTag = "🎯 Áp lực dứt điểm duy trì";
+    }
+
+    // C. PHÂN TÍCH TỐC ĐỘ TẤN CÔNG
     if (totalAttacks > 0 && (totalAttacks / elapsed) >= 0.85) {
         scoreAI += 8;
     }
 
-    // Chuẩn hóa điểm tin cậy (Max 98.0%)
-    let efficiency = Math.min(Math.max(scoreAI, 50.0), 98.0).toFixed(1);
+    // D. KHUNG GIỜ PHÚT VÀNG (Chỉ cộng khi trận đấu có áp lực scoreAI >= 42.0)
+    if (scoreAI >= 42.0) {
+        if (elapsed >= 73 && elapsed <= 85) scoreAI += 12;
+        else if (elapsed >= 70 && elapsed < 73) scoreAI += 6;
+    }
+
+    // E. THẺ ĐỎ VÀ CƠ HỘI NGHẸT THỞ
+    const homeRed = item.home?.redCards || item.stats?.homeRedCards || 0;
+    const awayRed = item.away?.redCards || item.stats?.awayRedCards || 0;
+    if ((homeRed + awayRed) > 0) scoreAI += 8;
+
+    if (totalBigChances >= 2) scoreAI += 7;
+
+    // Chuẩn hóa điểm
+    let efficiency = Math.min(Math.max(scoreAI, 20.0), 98.0).toFixed(1);
     const sampleN = 120 + (hashCode(matchId) % 80);
 
     return {
         efficiency: efficiency,
         ruleEfficiency: efficiency,
         sampleN: sampleN,
-        detailText: `Thế trận: ${matchTag}\n• Sút trong vòng cấm: ${homeInBox} - ${awayInBox}\n• Phạt góc: ${homeCorners} - ${awayCorners}\n• Cơ hội lớn: ${totalBigChances} | Phút: ${elapsed}'`
+        detailText: `Thế trận: ${matchTag}\n• Sút trong vòng cấm: ${homeInBox} - ${awayInBox}\n• Phạt góc: ${homeCorners} - ${awayCorners}\n• Cơ hội rõ rệt: ${totalBigChances} | Phút: ${elapsed}'`
     };
 }
 
 // 5. GỬI THÔNG BÁO TỰ ĐỘNG VỀ TELEGRAM
 async function sendTelegramAlert(item) {
     const message = 
-`⚡ AI BÁO ĐỘNG BÀN THẮNG H2 (RULE ≥ 65%)
+`⚡ KÈO RUNG ĐÓN LỘCCCC
 🏆 Giải: ${item.league}
 ⚽ ${item.homeTeam} ${item.homeScore}–${item.awayScore} ${item.awayTeam} · Phút ${item.elapsed}'
 
