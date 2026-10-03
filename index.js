@@ -155,7 +155,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU & NHẬN DIỆN HT (NGHỈ GIỮA HIỆP)
+// 3. TÍNH PHÚT TRẬN ĐẤU (BỎ QUA HT)
 // ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
@@ -503,7 +503,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     // Giới hạn trần điểm tối đa là 98.0%
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
     
-    // Ngưỡng tối thiểu kích hoạt gửi Telegram đã nâng lên > 60.0%
+    // Ngưỡng tối thiểu kích hoạt gửi Telegram nâng lên: > 60.0%
     const MIN_SEND_PERCENTAGE = 60.0; 
     const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
 
@@ -518,7 +518,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 // 8. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
-    const timeDisplay = item.elapsed === 'HT' ? 'HT (Nghỉ giữa hiệp)' : `Phút ${item.elapsed}'`;
+    const timeDisplay = `Phút ${item.elapsed}'`;
     const message = 
 `🔔 RUNG CHUỔNG VÀNGGGG
 🏆 Giải đấu: ${item.league}
@@ -547,7 +547,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (60 - 92')
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (Phút 45 đến 92, không HT)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -567,7 +567,7 @@ async function scanLiveMatches() {
             const homeName = item.homeTeam?.name || 'Đội nhà';
             const awayName = item.awayTeam?.name || 'Đội khách';
             const homeScore = item.homeScore?.current ?? 0;
-            const awayScore = item.awayScore?.current ?? 0;
+            const actualAwayScore = item.awayScore?.current ?? 0;
             const league = parseLeagueName(item);
 
             if (!matchId) continue;
@@ -578,24 +578,22 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            const isHT = elapsed === 'HT';
-            const numericElapsed = typeof elapsed === 'number' ? elapsed : 0;
+            const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
-            if (elapsed === 999 || (!isHT && (numericElapsed < 60 || numericElapsed > 92))) {
-                const timeLabel = elapsed === 999 ? 'FT' : (isHT ? 'HT' : `${elapsed}'`);
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài mốc quét (60-92' hoặc HT)`);
+            if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
+                const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
+                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung hiệp 2 (45-92') hoặc HT`);
                 continue;
             }
 
-            const logTimeStr = isHT ? 'HT (Nghỉ giữa hiệp)' : `${elapsed}'`;
-            console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${logTimeStr}] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
+            console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId);
-            const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
+            const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
             if (aiAnalysis.shouldSend) {
-                const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
+                const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
                 console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
                 
                 const pickItem = {
@@ -604,8 +602,8 @@ async function scanLiveMatches() {
                     homeName,
                     awayName,
                     homeScore,
-                    awayScore,
-                    elapsed,
+                    awayScore: actualAwayScore,
+                    elapsed: numericElapsed,
                     goalTimeline,
                     detailText: aiAnalysis.detailText,
                     ruleEfficiency: aiAnalysis.efficiency
