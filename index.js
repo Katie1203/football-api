@@ -503,8 +503,8 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     // Giới hạn trần điểm tối đa là 98.0%
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
     
-    // Ngưỡng tối thiểu kích hoạt gửi Telegram > 65.0%
-    const MIN_SEND_PERCENTAGE = 65.0; 
+    // Ngưỡng tối thiểu kích hoạt gửi Telegram đã nâng lên > 60.0%
+    const MIN_SEND_PERCENTAGE = 60.0; 
     const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
@@ -581,7 +581,6 @@ async function scanLiveMatches() {
             const isHT = elapsed === 'HT';
             const numericElapsed = typeof elapsed === 'number' ? elapsed : 0;
 
-            // Mở rộng mốc quét từ phút 60 đến 92 (và giữ HT)
             if (elapsed === 999 || (!isHT && (numericElapsed < 60 || numericElapsed > 92))) {
                 const timeLabel = elapsed === 999 ? 'FT' : (isHT ? 'HT' : `${elapsed}'`);
                 console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài mốc quét (60-92' hoặc HT)`);
@@ -613,7 +612,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 65%`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
             }
         }
     } catch (err) {
