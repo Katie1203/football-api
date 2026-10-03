@@ -153,7 +153,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU CHUẨN XÁC CHỐNG LỆCH GIỜ
+// 3. TÍNH PHÚT TRẬN ĐẤU CHUẨN XÁC SOFASCORE
 // ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
@@ -164,12 +164,10 @@ function calculateExactMinute(item) {
     if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') return 45;
     if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 90;
 
-    // Ưu tiên lấy trực tiếp số phút từ SofaScore time.played
     if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
         return Math.min(Math.max(item.time.played, 1), 90);
     }
 
-    // Bắt số phút dạng "75'", "82'" trực tiếp từ status.description
     const matchDesc = statusDesc.match(/^(\d+)['\s]?$/);
     if (matchDesc) {
         return parseInt(matchDesc[1], 10);
@@ -396,11 +394,11 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 6. THUẬT TOÁN AI CHẤM ĐIỂM THẾ TRẬN ÉP SÂN (BASE SCORE 35.0%, RULE >= 60.0%)
+// 6. THUẬT TOÁN AI CHẤM ĐIỂM DỰA TRÊN RULE ÉP SÂN (BASE: 35%, RULE >= 60%)
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiScore = 35.0; // Mốc điểm cơ sở 35.0%
+    let aiScore = 35.0; // Điểm cơ sở chuẩn 35%
 
     const sofaStats = metrics.sofaStats || { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0 };
     const rapidStats = metrics.rapidStats || { rapidShotsTarget: 0, rapidCorners: 0 };
@@ -411,14 +409,14 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     let hasTacticalData = false;
 
-    // 1. Thẻ đỏ
+    // Rule 1: Thẻ đỏ (+20đ)
     if (sofaStats.redCards > 0) {
         aiScore += 20;
         matchAnalysis.push(`🟥 Thẻ đỏ (${sofaStats.redCards} thẻ) - Hổng vị trí phòng ngự`);
         hasTacticalData = true;
     }
 
-    // 2. Sút trúng đích (Tăng trọng số ép sân)
+    // Rule 2: Sút trúng đích / Sức ép sát thương lên khung thành
     if (maxShotsTarget >= 5) {
         aiScore += 30;
         matchAnalysis.push(`⚡ Sức ép dồn dập cực cao: ${maxShotsTarget} cú sút trúng khung thành`);
@@ -433,7 +431,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 3. Đôi công / Sút tổng
+    // Rule 3: Thế trận đôi công / Tổng số cú sút
     if (totalShots >= 12) {
         aiScore += 20;
         matchAnalysis.push(`🔥 Thế trận đôi công cởi mở: Tổng ${totalShots} cú sút hãm thành`);
@@ -444,7 +442,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 4. Ép sân phạt góc
+    // Rule 4: Sức ép phạt góc dồn dập
     if (maxCorners >= 6) {
         aiScore += 22;
         matchAnalysis.push(`🚩 Sức ép phạt góc dồn dập: ${maxCorners} quả`);
@@ -455,7 +453,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 5. Kèo biến động dòng tiền
+    // Rule 5: Dòng tiền kèo biến động nhà cái
     if (oddsAnalysis) {
         aiScore += oddsAnalysis.scoreBoost;
         matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
@@ -467,7 +465,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     const finalScore = Math.min(Math.max(aiScore, 35.0), 96.0).toFixed(1);
 
-    // Báo động khi điểm AI >= 60.0% VÀ có chỉ số chuyên môn thực tế
+    // Kích hoạt khi hiệu suất Rule đạt từ 60.0% trở lên và có dữ liệu chiến thuật
     const shouldSend = parseFloat(finalScore) >= 60.0 && hasTacticalData;
 
     return {
@@ -541,14 +539,14 @@ async function scanLiveMatches() {
             // 2. Lọc âm thầm mốc thời gian ngoài 65-90'
             if (elapsed < 65 || elapsed > 90) continue;
 
-            // 3. IN LOG CHO CÁC TRẬN ĐANG ĐƯỢC PHÂN TÍCH TRONG KHUNG GIỜ 65-90'
+            // 3. IN LOG PHÂN TÍCH TRẬN ĐẤU TRONG KHUNG GIỜ 65-90'
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
-            // 4. HIỂN THỊ KẾT QUẢ ĐÁNH GIÁ TRONG TERMINAL
+            // 4. KIỂM TRA HIỆU SUẤT RULE >= 60% ĐỂ GỬI TELEGRAM
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, awayScore);
                 console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
@@ -567,7 +565,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Mốc báo động >= 60%`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule >= 60%`);
             }
         }
     } catch (err) {
