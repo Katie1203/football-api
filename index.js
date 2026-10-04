@@ -248,7 +248,8 @@ function parseLeagueName(item) {
 
 
 // ==========================================================
-// 10. BỘ LỌC GIẢI TRẺ / GIẢI PHỤ
+// 10. BỘ LỌC GIẢI TRẺ / GIẢI PHỤ / GIẢI CỎ / SINH VIÊN
+// (ĐÃ LOẠI TRỪ CÁC GIẢI NỮ CHUYÊN NGHIỆP LỚN)
 // ==========================================================
 
 function isFilteredLeague(
@@ -261,6 +262,35 @@ function isFilteredLeague(
     `${leagueName} ${homeName} ${awayName}`
       .toLowerCase();
 
+  const leagueLower = leagueName.toLowerCase();
+
+  // 1. NGOẠI LỆ: GIỮ LẠI CÁC GIẢI NỮ CHUYÊN NGHIỆP / QUỐC TẾ LỚN
+  const professionalWomenKeywords = [
+    'womens champions league',
+    'uefa women',
+    'afc women',
+    'conmebol libertadores femenina',
+    'nwsl',
+    'womens super league',
+    'd1 arkema',
+    'frauen-bundesliga',
+    'liga f',
+    'serie a fem',
+    'a-league women',
+    'world cup women',
+    'olympic women',
+    'shebelieves cup'
+  ];
+
+  const isProWomen = professionalWomenKeywords.some(
+    kw => leagueLower.includes(kw)
+  );
+
+  if (isProWomen) {
+    return false;
+  }
+
+  // 2. Lọc các giải trẻ (U10 đến U20)
   const youthRegex =
     /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
 
@@ -268,11 +298,21 @@ function isFilteredLeague(
     return true;
   }
 
+  // 3. Danh sách từ khóa nhận diện giải cỏ, nghiệp dư, bán chuyên, sinh viên
   const filterKeywords = [
     'simulated',
     'srl',
     'esports',
-    'e-soccer'
+    'e-soccer',
+    'ncaa',             // Giải sinh viên Mỹ
+    'amateur',          // Nghiệp dư
+    'semi-pro',         // Bán chuyên
+    'regional',         // Giải khu vực/bang cấp thấp
+    'reserve',          // Giải dự bị
+    'state league',     // Giải bang
+    'local',            // Giải địa phương
+    'college',          // Giải cao đẳng/đại học
+    'university'        // Giải đại học
   ];
 
   return filterKeywords.some(
@@ -282,7 +322,7 @@ function isFilteredLeague(
 
 
 // ==========================================================
-// 11. TÍNH PHÚT TRẬN ĐẤU (ĐÃ CẬP NHẬT PHIÊN BẢN MỚI)
+// 11. TÍNH PHÚT TRẬN ĐẤU
 // ==========================================================
 
 function calculateExactMinute(item) {
@@ -2225,7 +2265,7 @@ async function scanLiveMatches() {
 
 
       // ----------------------------------------------------
-      // LỌC GIẢI TRẺ / GIẢI PHỤ
+      // LỌC GIẢI TRẺ / GIẢI PHỤ / CỎ / SINH VIÊN
       // ----------------------------------------------------
 
       if (
@@ -2241,7 +2281,7 @@ async function scanLiveMatches() {
           `[Trận #${index + 1}] ` +
           `[${leagueName}] ` +
           `${homeName} vs ${awayName} ` +
-          `└─> [Bỏ qua]: Giải trẻ/Phụ`
+          `└─> [Bỏ qua]: Giải trẻ/Phụ/Cỏ/Sinh viên`
 
         );
 
