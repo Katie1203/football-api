@@ -186,10 +186,10 @@ function calculateExactMinute(item) {
         if (elapsedInPeriod < 0) elapsedInPeriod = 0;
 
         const isSecondHalf = statusType.includes('second') || 
-                             statusDesc.includes('2nd') || 
-                             item.time?.period === 2 || 
-                             item.time?.currentPeriod === 2 ||
-                             statusType === 'inprogress_2nd';
+                           statusDesc.includes('2nd') || 
+                           item.time?.period === 2 || 
+                           item.time?.currentPeriod === 2 ||
+                           statusType === 'inprogress_2nd';
 
         if (isSecondHalf) return Math.min(45 + elapsedInPeriod, 90);
         return Math.min(elapsedInPeriod, 45);
@@ -247,7 +247,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS
+// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS (ĐÃ BỌC AN TOÀN CHỐNG LỖI 401)
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -255,6 +255,8 @@ async function fetchOddsData() {
         const response = await axios.get(ODDS_API_URL, { timeout: 8000 });
         return response.data || [];
     } catch (err) {
+        const status = err.response?.status || 'Lỗi mạng';
+        console.warn(`[Odds Engine Warning] Không thể tải dữ liệu tỷ lệ (Trạng thái: ${status}). Bot vẫn chạy bình thường bằng dữ liệu SofaScore.`);
         return [];
     }
 }
@@ -270,6 +272,7 @@ async function fetchSofaScoreLive() {
         });
         return response.data?.events || response.data?.liveEvents || [];
     } catch (err) {
+        console.error(`[SofaScore Error]:`, err.message);
         return [];
     }
 }
@@ -467,7 +470,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     const finalScore = Math.min(Math.max(aiScore, 40.0), 98.0).toFixed(1);
     
-    // Đã cập nhật ngưỡng tối thiểu từ 65.0 xuống 60.0 tại đây:
+    // Ngưỡng tối thiểu kích hoạt: 60.0%
     const MIN_SEND_PERCENTAGE = 60.0; 
     const shouldSend = parseFloat(finalScore) >= MIN_SEND_PERCENTAGE && hasTacticalData;
 
@@ -523,6 +526,13 @@ async function scanLiveMatches() {
             fetchOddsData(),
             fetchSofaScoreLive()
         ]);
+
+        console.log(`[Debug API] Lấy thành công ${sofaMatches.length} trận từ SofaScore live.`);
+
+        if (!Array.isArray(sofaMatches) || sofaMatches.length === 0) {
+            console.log(`[Thông báo] Hiện tại không có trận đấu live nào từ API.`);
+            return;
+        }
 
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
