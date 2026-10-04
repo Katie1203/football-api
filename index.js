@@ -40,11 +40,11 @@ const ODDS_API_URL = ODDS_API_KEY
   ? `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
   : '';
 
-// Nguồn mới bổ sung: FlashScore API
+// Nguồn bổ sung: FlashScore API
 const FLASHSCORE_HOST = 'flashscore-api1.p.rapidapi.com';
 const FLASHSCORE_LIVE_URL = `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/live?sport_id=1`;
 
-// Nguồn mới bổ sung: Live Football Stream API
+// Nguồn bổ sung: Live Football Stream API
 const LIVE_FOOTBALL_HOST = 'football-live-stream-api.p.rapidapi.com';
 const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/matches`;
 
@@ -214,7 +214,7 @@ function calculateExactMinute(item) {
 
 
 // ==========================================================
-// 12. CÁC HÀM LẤY TRẬN LIVE TỪ ĐA NGUỒN (SOFASCORE + FLASHSCORE + LIVE FOOTBALL)
+// 12. CÁC HÀM LẤY TRẬN LIVE TỪ ĐA NGUỒN
 // ==========================================================
 
 async function fetchLiveMatchesFromSofaScore() {
@@ -320,11 +320,10 @@ async function fetchOddsData() {
 
 
 // ==========================================================
-// 15. LẤY THỐNG KÊ TRẬN ĐẤU (HỖ TRỢ ĐA NGUỒN: LIVESCORE -> SOFASCORE -> FLASHSCORE)
+// 15. LẤY THỐNG KÊ TRẬN ĐẤU
 // ==========================================================
 
 async function fetchMatchDetailStats(matchId, homeName, awayName, sourceFlag = 'sofascore') {
-  // Nếu trận thuộc nguồn FlashScore
   if (sourceFlag === 'flashscore') {
     try {
       const res = await axios.get(`https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/details?matchId=${matchId}`, {
@@ -365,7 +364,6 @@ async function fetchMatchDetailStats(matchId, homeName, awayName, sourceFlag = '
     } catch (e) {}
   }
 
-  // Thử Livescore
   try {
     const searchUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
     const resLive = await axios.get(searchUrl, {
@@ -422,7 +420,6 @@ async function fetchMatchDetailStats(matchId, homeName, awayName, sourceFlag = '
     }
   } catch (err) {}
 
-  // SofaScore Fallback
   try {
     const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`, {
       headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
@@ -708,7 +705,7 @@ ${item.ruleEfficiency}%
 
 
 // ==========================================================
-// 21. QUÉT LIVE MATCHES TỪ TẤT CẢ CÁC NGUỒN
+// 21. QUÉT LIVE MATCHES (LỌC GIẢI CỎ NGAY TỪ VÒNG ĐẦU TIÊN)
 // ==========================================================
 
 async function scanLiveMatches() {
@@ -724,7 +721,6 @@ async function scanLiveMatches() {
       fetchLiveMatchesFromLiveFootball()
     ]);
 
-    // Chuẩn hóa và gộp danh sách trận đấu từ mọi nguồn không bị trùng lặp ID
     const formattedMatches = [];
 
     sofaMatches.forEach(i => {
@@ -777,18 +773,27 @@ async function scanLiveMatches() {
       return;
     }
 
-    // Chỉ lọc các trận đang diễn ra thực tế
+    // 💡 LỌC BỎ NGAY LẬP TỨC TRÁNH GỌI MẤT LƯỢT API CHO GIẢI CỎ / NGHIỆP DƯ
     const liveMatches = allMatches.filter(match => {
       const item = match.raw;
       const statusType = String(item.status?.type || item.status || '').toLowerCase();
       const statusCode = item.status?.code;
-      return statusType === 'inprogress' || statusCode === 1 || match.source === 'flashscore' || match.source === 'live-football';
+      
+      const isLive = statusType === 'inprogress' || statusCode === 1 || match.source === 'flashscore' || match.source === 'live-football';
+      if (!isLive) return false;
+
+      // Loại bỏ ngay giải rác, giải cỏ, nghiệp dư, sinh viên
+      if (isFilteredLeague(match.leagueName, match.homeName, match.awayName)) {
+        return false;
+      }
+
+      return true;
     });
 
-    console.log(`[Bộ lọc Live] Tổng số trận trả về: ${allMatches.length} | Trận đang đá thực tế: ${liveMatches.length}`);
+    console.log(`[Bộ lọc Live] Tổng số trận trả về: ${allMatches.length} | Trận hợp lệ sau khi lọc bỏ giải rác: ${liveMatches.length}`);
 
     if (liveMatches.length === 0) {
-      console.log(`[Thông báo]: Hiện tại không có trận đấu nào đang trong trạng thái Live.`);
+      console.log(`[Thông báo]: Hiện tại không có trận đấu hợp lệ nào đang Live.`);
       return;
     }
 
@@ -801,17 +806,12 @@ async function scanLiveMatches() {
       const actualAwayScore = match.awayScore;
       const leagueName = match.leagueName;
 
-      if (isFilteredLeague(leagueName, homeName, awayName)) {
-        console.log(`[Trận #${index + 1}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ/Cỏ/Sinh viên`);
-        continue;
-      }
-
       const elapsed = calculateExactMinute(match.raw);
       const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
       if (isNaN(numericElapsed) || numericElapsed < 46 || numericElapsed > 92) {
         const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-        console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung 46'-92'`);
+        console.log(`[Trận hợp lệ #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung 46'-92'`);
         continue;
       }
 
@@ -861,7 +861,7 @@ async function scanLiveMatches() {
 // ==========================================================
 
 app.get('/', (req, res) => {
-  res.send('Football AI Scanner (SofaScore + Livescore + FlashScore + LiveFootball + Odds) is Running!');
+  res.send('Football AI Scanner (Multi-Source + Optimized Filter) is Running!');
 });
 
 
