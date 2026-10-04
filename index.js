@@ -601,5 +601,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     scanLiveMatches();
-    setInterval(scanLiveMatches, 3 * 60 * 1000);
+    setInterval(scanLiveMatches, 10 * 60 * 1000);
 });
