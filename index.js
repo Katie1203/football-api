@@ -282,7 +282,7 @@ function isFilteredLeague(
 
 
 // ==========================================================
-// 11. TÍNH PHÚT TRẬN ĐẤU
+// 11. TÍNH PHÚT TRẬN ĐẤU (ĐÃ CẬP NHẬT PHIÊN BẢN MỚI)
 // ==========================================================
 
 function calculateExactMinute(item) {
@@ -293,79 +293,214 @@ function calculateExactMinute(item) {
 
   const statusType =
     String(
-      item.status?.type ||
-      item.status?.code ||
-      ''
+      item.status?.type || ''
     ).toLowerCase();
 
-  const statusDesc =
+  const statusDescription =
     String(
-      item.status?.description ||
-      ''
+      item.status?.description || ''
     ).toLowerCase();
 
 
-  // Trận kết thúc
-  if (
-    statusType.includes('ended') ||
-    statusType.includes('finished') ||
-    statusDesc.includes('ft')
-  ) {
+  // ========================================================
+  // TRẬN ĐÃ KẾT THÚC
+  // ========================================================
 
+  if (
+    statusType === 'finished' ||
+    statusType === 'ended' ||
+    statusType === 'cancelled' ||
+    statusType === 'canceled'
+  ) {
     return 999;
   }
 
 
-  // Hiệp 1 / Hiệp 2 giữa trận
-  if (
-    statusType.includes('halftime') ||
-    statusType.includes('ht') ||
-    statusType === 'ht'
-  ) {
+  // ========================================================
+  // HIỆP GIỮA
+  // ========================================================
 
+  if (
+    statusDescription.includes('halftime') ||
+    statusDescription === 'ht' ||
+    statusType === 'halftime'
+  ) {
     return 'HT';
   }
 
 
-  // SofaScore time.current
-  if (
-    typeof item.time?.current === 'number' &&
-    item.time.current > 0
+  // ========================================================
+  // 1. NẾU API ĐÃ TRẢ SẴN LIVE MINUTE
+  // ========================================================
+
+  const directMinuteCandidates = [
+
+    item.minute,
+
+    item.liveMinute,
+
+    item.live?.minute,
+
+    item.status?.minute,
+
+    item.status?.current,
+
+    item.time?.current,
+
+    item.time?.minute,
+
+    item.time?.currentMinute
+
+  ];
+
+
+  for (
+    const value of directMinuteCandidates
   ) {
 
-    return item.time.current;
+    const minute =
+      Number(value);
+
+    if (
+      Number.isFinite(minute) &&
+      minute > 0 &&
+      minute <= 130
+    ) {
+
+      return Math.floor(minute);
+
+    }
+
   }
 
 
-  // SofaScore time.played
+  // ========================================================
+  // 2. TÍNH TỪ currentPeriodStartTimestamp
+  // ========================================================
+
+  const currentPeriodStartTimestamp =
+    Number(
+      item.time?.currentPeriodStartTimestamp ||
+      item.currentPeriodStartTimestamp ||
+      item.time?.currentPeriodStart
+    );
+
+
   if (
-    typeof item.time?.played === 'number' &&
-    item.time.played > 0
+    Number.isFinite(
+      currentPeriodStartTimestamp
+    ) &&
+    currentPeriodStartTimestamp > 0
   ) {
 
-    return item.time.played;
+    const now =
+      Math.floor(
+        Date.now() / 1000
+      );
+
+
+    const elapsedSeconds =
+      now -
+      currentPeriodStartTimestamp;
+
+
+    if (
+      elapsedSeconds >= 0 &&
+      elapsedSeconds < 7200
+    ) {
+
+      let calculatedMinute =
+        Math.floor(
+          elapsedSeconds / 60
+        ) + 1;
+
+
+      // ----------------------------------------------------
+      // XÁC ĐỊNH HIỆP
+      // ----------------------------------------------------
+
+      const isSecondHalf =
+        statusDescription.includes(
+          '2nd half'
+        ) ||
+
+        statusDescription.includes(
+          'second half'
+        ) ||
+
+        statusDescription.includes(
+          'hiệp 2'
+        );
+
+
+      if (isSecondHalf) {
+
+        calculatedMinute =
+          45 +
+          Math.floor(
+            elapsedSeconds / 60
+          ) +
+          1;
+
+      }
+
+
+      return calculatedMinute;
+
+    }
+
   }
 
 
-  // minute
+  // ========================================================
+  // 3. FALLBACK TỪ startTimestamp
+  // ========================================================
+
+  const startTimestamp =
+    Number(
+      item.startTimestamp ||
+      item.start_timestamp
+    );
+
+
   if (
-    typeof item.minute === 'number' &&
-    item.minute > 0
+    Number.isFinite(startTimestamp) &&
+    startTimestamp > 0 &&
+    statusType === 'inprogress'
   ) {
 
-    return item.minute;
+    const now =
+      Math.floor(
+        Date.now() / 1000
+      );
+
+
+    const elapsedSeconds =
+      now -
+      startTimestamp;
+
+
+    if (
+      elapsedSeconds >= 0 &&
+      elapsedSeconds < 7200
+    ) {
+
+      const calculatedMinute =
+        Math.floor(
+          elapsedSeconds / 60
+        ) + 1;
+
+
+      return calculatedMinute;
+
+    }
+
   }
 
 
-  // status.val
-  if (
-    typeof item.status?.val === 'number' &&
-    item.status.val > 0
-  ) {
-
-    return item.status.val;
-  }
-
+  // ========================================================
+  // KHÔNG XÁC ĐỊNH ĐƯỢC
+  // ========================================================
 
   return 0;
 }
