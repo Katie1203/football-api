@@ -216,7 +216,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
+// 4. LẤY DỮ LIỆU KÉP (CHỈ LẤY TRẬN LIVE THỰC TẾ)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
  try {
@@ -237,14 +237,11 @@ async function fetchLiveMatchesDualSource() {
  }
 
  try {
- const currentVN = getVietnamTime();
  const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
- const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
-
- const [resLive, resDate] = await Promise.all([
- axios.get(liveUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null })),
- axios.get(dateUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null }))
- ]);
+ const resLive = await axios.get(liveUrl, { 
+ headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, 
+ timeout: 10000 
+ });
 
  let rawData = [];
  const seenIds = new Set();
@@ -259,9 +256,10 @@ async function fetchLiveMatchesDualSource() {
  const eps = String(obj.Eps || obj.status || obj.Trh || obj.MatchStatus || '').toUpperCase();
  const tm = obj.Tm || obj.Minute || obj.time;
  
+ // Chỉ nhận diện trận đấu đang đá thực sự (có ký hiệu phút hoặc trạng thái live)
  const isLiveStatus = eps.includes("'") || eps.includes("LIVE") || eps.includes("1") || eps.includes("IN_PLAY") || (typeof tm === 'number' && tm > 0);
 
- if (isLiveStatus || (typeof tm === 'number' && tm >= 1 && tm <= 120)) {
+ if (isLiveStatus) {
  seenIds.add(matchId);
  rawData.push({
  ...obj,
@@ -283,9 +281,8 @@ async function fetchLiveMatchesDualSource() {
  }
 
  if (resLive && resLive.data) processMatchObject(resLive.data);
- if (resDate && resDate.data) processMatchObject(resDate.data);
 
- console.log(`[Source: Livescore6 All-Scope] ✅ Quét vét cạn thành công tổng cộng ${rawData.length} trận live.`);
+ console.log(`[Source: Livescore6 Live-Scope] ✅ Lọc thành công ${rawData.length} trận đang diễn ra trực tiếp.`);
  return { source: 'livescore6', matches: rawData };
  } catch (err) {
  console.error(`❌ [Livescore6 Backup Error]:`, err.message);
@@ -747,7 +744,7 @@ async function scanLiveMatches() {
 
  const { source, matches } = liveResult;
  if (matches.length === 0) {
- console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả SofaScore và Livescore6.`);
+ console.log(`[Thông báo]: Không thu thập được trận live nào ở thời điểm này.`);
  return;
  }
 
@@ -815,7 +812,7 @@ async function scanLiveMatches() {
  };
  await sendTelegramAlert(pickItem);
  } else {
- console.log(` └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
+ console.log(` └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 58%`);
  }
  }
  } catch (err) {
