@@ -18,9 +18,14 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Dự phòng tự động khi SofaScore lỗi)
+// Nguồn 2: Livescore6 (Dùng endpoint list-by-date để quét toàn bộ trận trong ngày)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
-const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;
+
+const getVietnamDateStr = () => {
+    const now = new Date();
+    const vnTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
+    return vnTime.toISOString().slice(0, 10).replace(/-/g, ''); // Định dạng YYYYMMDD
+};
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
@@ -168,7 +173,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU
+// 3. TÍNH PHÚT TRẬN ĐẤU (CHUẨN XÁC)
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -179,46 +184,41 @@ function calculateExactMinute(item, source) {
     if (source === 'sofascore') {
         statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
         statusDesc = String(item.status?.description || '').toLowerCase();
-    } else {
-        statusType = String(item.Eps || item.status || item.matchStatus || '').toLowerCase();
-        statusDesc = String(item.statusDescription || item.Reason || '').toLowerCase();
-    }
 
-    if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft') || statusType === 'ft') return 999;
-    
-    if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht' || statusType === '10' || statusDesc.includes('half time')) {
-        return 'HT';
-    }
+        if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 999;
+        if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') return 'HT';
 
-    if (source === 'sofascore') {
         if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
             return item.time.played;
         }
-        const matchDesc = statusDesc.match(/^(\d+)['\s]?$/);
-        if (matchDesc) return parseInt(matchDesc[1], 10);
-
-        const nowSeconds = Math.floor(Date.now() / 1000);
-        let periodStart = item.time?.currentPeriodStartTimestamp || item.statusTime?.currentPeriodStartTimestamp;
-        
-        if (periodStart) {
-            if (periodStart > 9999999999) periodStart = Math.floor(periodStart / 1000);
-            let elapsedInPeriod = Math.floor((nowSeconds - periodStart) / 60);
-            if (elapsedInPeriod < 0) elapsedInPeriod = 0;
-
-            const isSecondHalf = statusType.includes('second') || 
-                                 statusDesc.includes('2nd') || 
-                                 item.time?.period === 2 || 
-                                 item.time?.currentPeriod === 2 ||
-                                 statusType === 'inprogress_2nd';
-
-            if (isSecondHalf) return Math.min(45 + elapsedInPeriod, 95);
-            return Math.min(elapsedInPeriod, 45);
-        }
     } else {
-        const matchMin = statusType.match(/(\d+)/);
-        if (matchMin) {
-            const val = parseInt(matchMin[1], 10);
-            if (val > 0 && val <= 120) return val;
+        if (typeof item.Tm === 'number' && item.Tm > 0) return item.Tm;
+        if (typeof item.time === 'number' && item.time > 0) return item.time;
+        if (typeof item.minute === 'number' && item.minute > 0) return item.minute;
+
+        const rawStatusTexts = [
+            item.Eps,
+            item.status,
+            item.matchStatus,
+            item.statusText,
+            item.statusDescription,
+            item.Reason
+        ];
+
+        for (const rawText of rawStatusTexts) {
+            if (!rawText) continue;
+            const textStr = String(rawText).trim().toUpperCase();
+
+            if (textStr.includes('FT') || textStr.includes('AET') || textStr.includes('PEN') || textStr.includes('FINISHED')) return 999;
+            if (textStr.includes('HT') || textStr === '10' || textStr.includes('HALF TIME')) return 'HT';
+
+            const matchNum = textStr.match(/(\d+)/);
+            if (matchNum) {
+                const val = parseInt(matchNum[1], 10);
+                if (val > 0 && val <= 120) {
+                    return val;
+                }
+            }
         }
     }
 
@@ -226,7 +226,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
+// 4. LẤY DỮ LIỆU KÉP (VÉT CẠN CHUẨN XÁC TOÀN BỘ TRẬN LIVE)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -243,56 +243,51 @@ async function fetchLiveMatchesDualSource() {
             return { source: 'sofascore', matches: events };
         }
     } catch (err) {
-        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
+        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6 (List-By-Date)...`);
     }
 
     try {
-        const response = await axios.get(LIVESCORE_LIVE_URL, {
+        const dateStr = getVietnamDateStr();
+        const LIVESCORE_BY_DATE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${dateStr}&Timezone=-7`;
+
+        const response = await axios.get(LIVESCORE_BY_DATE_URL, {
             headers: {
                 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
                 'x-rapidapi-host': LIVESCORE_HOST
             },
-            timeout: 10000
+            timeout: 15000
         });
 
-        let rawData = [];
+        let activeMatches = [];
         const data = response.data;
 
-        function extractMatchesDeep(obj, inheritedMeta = {}) {
-            if (!obj) return;
-            
-            if (Array.isArray(obj)) {
-                obj.forEach(item => extractMatchesDeep(item, inheritedMeta));
+        function collectMatches(node) {
+            if (!node) return;
+            if (Array.isArray(node)) {
+                node.forEach(item => collectMatches(item));
                 return;
             }
-
-            if (typeof obj === 'object') {
-                const cName = obj.Cname || obj.categoryName || obj.country || inheritedMeta.Cname;
-                const tName = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || inheritedMeta.Tname;
-
-                const hasMatchInfo = obj.Eid || (obj.T1 && obj.T2);
-                const isContainer = obj.Stages || obj.events || obj.Mlist || obj.data;
-
-                if (hasMatchInfo && !isContainer) {
-                    rawData.push({
-                        ...obj,
-                        _inheritedCategory: cName,
-                        _inheritedTournament: tName
-                    });
-                }
-
-                for (const key of Object.keys(obj)) {
-                    if (typeof obj[key] === 'object' && obj[key] !== null) {
-                        extractMatchesDeep(obj[key], { Cname: cName, Tname: tName });
+            if (typeof node === 'object') {
+                if (node.Eid && node.T1 && node.T2) {
+                    const eps = String(node.Eps || node.status || '').trim().toUpperCase();
+                    const isNotFinished = !eps.includes('FT') && !eps.includes('AET') && !eps.includes('PEN') && !eps.includes('NS') && !eps.includes('POSTP');
+                    if (isNotFinished || eps.includes("'") || eps.includes('HT')) {
+                        activeMatches.push(node);
+                    }
+                } else {
+                    for (const key of Object.keys(node)) {
+                        if (typeof node[key] === 'object' && node[key] !== null) {
+                            collectMatches(node[key]);
+                        }
                     }
                 }
             }
         }
 
-        extractMatchesDeep(data);
+        collectMatches(data);
 
-        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
-        return { source: 'livescore6', matches: rawData };
+        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${activeMatches.length} trận live đang diễn ra.`);
+        return { source: 'livescore6', matches: activeMatches };
     } catch (err) {
         console.error(`❌ [Livescore6 Backup Error]:`, err.message);
         return { source: 'none', matches: [] };
@@ -738,7 +733,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG (KHUNG PHÚT 50 - 92)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -784,16 +779,14 @@ async function scanLiveMatches() {
             const leagueName = parseLeagueName(item, source);
 
             if (isFilteredLeague(leagueName, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ`);
                 continue;
             }
 
             const elapsed = calculateExactMinute(item, source);
             const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
-            if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
-                const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung hiệp 2 (45-92') hoặc HT`);
+            // Bắt chuẩn khung phút từ 50 đến 92
+            if (isNaN(numericElapsed) || numericElapsed < 50 || numericElapsed > 92) {
                 continue;
             }
 
@@ -840,6 +833,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Đặt chu kỳ quét liên tục mỗi 60 giây (1 phút)
-    setInterval(scanLiveMatches, 7 * 60 * 1000); // 7 phút quét một lầns
+    // Quét liên tục mỗi 60 giây
+    setInterval(scanLiveMatches, 60000);
 });
