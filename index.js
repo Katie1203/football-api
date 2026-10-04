@@ -127,8 +127,8 @@ function parseLeagueName(item, source) {
         category = item.tournament?.category?.name || item.category?.name || '';
         tournament = item.tournament?.name || item.competitionName || '';
     } else {
-        category = item.categoryName || item.tournament?.category?.name || item.category?.name || '';
-        tournament = item.tournamentName || item.tournament?.name || item.competitionName || '';
+        category = item.categoryName || item.tournament?.category?.name || item.category?.name || item.Cname || item.country || '';
+        tournament = item.tournamentName || item.tournament?.name || item.competitionName || item.Tname || item.LeagueName || item.tournament_name || '';
     }
 
     if (LEAGUE_NAME_MAP[tournament]) {
@@ -180,8 +180,8 @@ function calculateExactMinute(item, source) {
         statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
         statusDesc = String(item.status?.description || '').toLowerCase();
     } else {
-        statusType = String(item.status || item.statusText || item.matchStatus || '').toLowerCase();
-        statusDesc = String(item.statusDescription || '').toLowerCase();
+        statusType = String(item.status || item.statusText || item.matchStatus || item.Tr1 || item.match_status || '').toLowerCase();
+        statusDesc = String(item.statusDescription || item.Reason || item.status_text || '').toLowerCase();
     }
 
     if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft') || statusType === 'ft') return 999;
@@ -217,6 +217,7 @@ function calculateExactMinute(item, source) {
     } else {
         if (typeof item.time === 'number') return item.time;
         if (typeof item.minute === 'number') return item.minute;
+        if (typeof item.Tr1 === 'number') return item.Tr1;
         const matchMin = statusType.match(/(\d+)/);
         if (matchMin) {
             const val = parseInt(matchMin[1], 10);
@@ -228,7 +229,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. HỆ THỐNG LẤY DỮ LIỆU KÉP (SOFASCORE -> FALLBACK LIVESCORE6)
+// 4. HỆ THỐNG LẤY DỮ LIỆU KÉP (VÉT CẠN ĐA TẦNG CHO LIVESCORE6)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -260,26 +261,41 @@ async function fetchLiveMatchesDualSource() {
         let rawData = [];
         const data = response.data;
 
-        if (Array.isArray(data)) {
-            rawData = data;
-        } else if (data && typeof data === 'object') {
-            const possibleKeys = ['matches', 'events', 'response', 'data', 'fixtures', 'live', 'result', 'Stages'];
-            for (const key of possibleKeys) {
-                if (Array.isArray(data[key])) {
-                    rawData = data[key];
-                    break;
+        // Đệ quy vét cạn tất cả các định dạng cấu trúc của Livescore6 API
+        function extractMatchesDeep(obj, inheritedMeta = {}) {
+            if (!obj) return;
+            
+            if (Array.isArray(obj)) {
+                obj.forEach(item => extractMatchesDeep(item, inheritedMeta));
+                return;
+            }
+
+            if (typeof obj === 'object') {
+                const cName = obj.Cname || obj.categoryName || obj.country || inheritedMeta.Cname;
+                const tName = obj.Tname || obj.tournamentName || obj.LeagueName || obj.tournament_name || inheritedMeta.Tname;
+
+                // Nhận diện nếu object này chứa thông tin trận đấu (có tên đội hoặc ID trận)
+                const hasMatchInfo = obj.Eid || obj.matchId || obj.homeTeam || obj.home || obj.t1 || obj.T1 || obj.HomeName || obj.hname;
+                const isContainer = obj.Stages || obj.matches || obj.events || obj.Mlist || obj.data || obj.response;
+
+                if (hasMatchInfo && !isContainer) {
+                    rawData.push({
+                        ...obj,
+                        _inheritedCategory: cName,
+                        _inheritedTournament: tName
+                    });
+                }
+
+                // Tiếp tục duyệt sâu vào các nhánh con
+                for (const key of Object.keys(obj)) {
+                    if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        extractMatchesDeep(obj[key], { Cname: cName, Tname: tName });
+                    }
                 }
             }
-            if (rawData.length === 0 && data.Stages) {
-                data.Stages.forEach(stage => {
-                    if (stage.events && Array.isArray(stage.events)) {
-                        rawData.push(...stage.events);
-                    } else if (stage.matches && Array.isArray(stage.matches)) {
-                        rawData.push(...stage.matches);
-                    }
-                });
-            }
         }
+
+        extractMatchesDeep(data);
 
         console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
         return { source: 'livescore6', matches: rawData };
@@ -759,11 +775,20 @@ async function scanLiveMatches() {
                 homeScore = item.homeScore?.current ?? 0;
                 actualAwayScore = item.awayScore?.current ?? 0;
             } else {
-                matchId = String(item.Eid || item.id || item.matchId);
-                homeName = item.homeTeam?.name || item.home || item.t1?.[0] || 'Đội nhà';
-                awayName = item.awayTeam?.name || item.away || item.t2?.[0] || 'Đội khách';
-                homeScore = parseInt(item.homeScore ?? item.fs_h ?? item.homeGoals ?? 0, 10);
-                actualAwayScore = parseInt(item.awayScore ?? item.fs_a ?? item.awayGoals ?? 0, 10);
+                matchId = String(item.Eid || item.id || item.matchId || item.ID || `ls6_${index}`);
+                
+                // Trích xuất tên đội linh hoạt từ các định dạng phong phú của Livescore6
+                homeName = item.homeTeam?.name || item.home || item.t1?.[0] || item.T1?.[0] || item.HomeName || item.hname || item.home_name || item.team1 || 'Đội nhà';
+                awayName = item.awayTeam?.name || item.away || item.t2?.[0] || item.T2?.[0] || item.AwayName || item.aname || item.away_name || item.team2 || 'Đội khách';
+                
+                // Nếu tên đội lưu trong mảng hoặc object dạng khác
+                if (typeof homeName === 'object') homeName = homeName.name || homeName.Tname || 'Đội nhà';
+                if (typeof awayName === 'object') awayName = awayName.name || awayName.Tname || 'Đội khách';
+
+                homeScore = parseInt(item.homeScore ?? item.fs_h ?? item.homeGoals ?? item.Tr2?.[0] ?? item.home_score ?? 0, 10);
+                actualAwayScore = parseInt(item.awayScore ?? item.fs_a ?? item.awayGoals ?? item.Tr2?.[1] ?? item.away_score ?? 0, 10);
+                if (isNaN(homeScore)) homeScore = 0;
+                if (isNaN(actualAwayScore)) actualAwayScore = 0;
             }
 
             const elapsed = calculateExactMinute(item, source);
