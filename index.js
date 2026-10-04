@@ -168,7 +168,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU (FIX CHUẨN XÁC 100% CHO LIVESCORE6)
+// 3. TÍNH PHÚT TRẬN ĐẤU & LỌC HIỆP 1 / HT
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -181,7 +181,12 @@ function calculateExactMinute(item, source) {
         statusDesc = String(item.status?.description || '').toLowerCase();
 
         if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 999;
-        if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') return 'HT';
+        
+        // Nhận diện Nghỉ giữa hiệp (HT)
+        if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht' || statusType === 'halftime') return 'HT';
+
+        // Nhận diện Đang đá Hiệp 1
+        if (statusType.includes('firsthalf') || statusDesc.includes('1st half') || statusDesc.includes('1st')) return '1ST';
 
         if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
             return item.time.played;
@@ -205,7 +210,12 @@ function calculateExactMinute(item, source) {
             const textStr = String(rawText).trim().toUpperCase();
 
             if (textStr.includes('FT') || textStr.includes('AET') || textStr.includes('PEN') || textStr.includes('FINISHED')) return 999;
-            if (textStr.includes('HT') || textStr === '10' || textStr.includes('HALF TIME')) return 'HT';
+            
+            // Nhận diện Nghỉ giữa hiệp (HT)
+            if (textStr.includes('HT') || textStr === '10' || textStr.includes('HALF TIME') || textStr.includes('HALFTIME')) return 'HT';
+
+            // Nhận diện Đang đá Hiệp 1
+            if (textStr.includes('1ST') || textStr.includes('1H')) return '1ST';
 
             const matchNum = textStr.match(/(\d+)/);
             if (matchNum) {
@@ -221,7 +231,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 KẾT HỢP ĐẶC BIỆT)
+// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -243,7 +253,6 @@ async function fetchLiveMatchesDualSource() {
 
     try {
         const currentVN = getVietnamTime();
-        // Gọi song song cả 2 endpoint: list-live (lấy ngay lập tức các trận đang đá) và list-by-date (lấy toàn bộ các giải trong ngày)
         const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
         const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
 
@@ -791,9 +800,16 @@ async function scanLiveMatches() {
             const elapsed = calculateExactMinute(item, source);
             const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
-            if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
-                const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung hiệp 2 (45-92') hoặc HT`);
+            // BỘ LỌC CHẶT CHẼ: BỎ QUA HIỆP 1 VÀ NGHỈ GIỮA HIỆP (HT)
+            if (elapsed === 'HT' || elapsed === '1ST') {
+                console.log(`[Trận #${index + 1}] [Trạng thái: ${elapsed}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Đang nghỉ giữa hiệp (HT) hoặc đang đá Hiệp 1`);
+                continue;
+            }
+
+            // CHỈ GIỮ LẠI HIỆP 2 (Từ phút 46 đến 92)
+            if (isNaN(numericElapsed) || numericElapsed < 46 || numericElapsed > 92) {
+                const timeLabel = (elapsed === 999) ? 'FT' : `${elapsed}'`;
+                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Không thuộc khung Hiệp 2 (46'-92')`);
                 continue;
             }
 
@@ -840,6 +856,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
+    // Chu kỳ quét 7 phút/lần
     setInterval(scanLiveMatches, 7 * 60 * 1000);
 });
