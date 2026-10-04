@@ -107,17 +107,18 @@ function parseLeagueName(item, source) {
 }
 
 // ==========================================
-// 2. BỘ LỌC TỐI ƯU: CHẶN SERIE D, BÁN CHUYÊN & GIỮ HẠNG 1, 2, 3, 4
+// 2. BỘ LỌC TỐI ƯU: GIỮ GIAO HỮU, HẠNG 1-4 & CHẶN BÁN CHUYÊN/PHONG TRÀO
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    // 1. CHẶN TRIỆT ĐỂ: SERIE D, GIẢI TRẺ THẤP (U15-U20), BÁN CHUYÊN, NGHIỆP DƯ, PHONG TRÀO
-    const strictRejectRegex = /\b(serie\s*d|u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20|youth|juvenil|reserves|reserve|res\.|dự bị|esports|e-soccer|cyber|simulated|friendly|amateur|amateurs|academic|university|phong trào|bán chuyên|regional league|oberliga|tercera|gamma ethniki)\b/i;
+    // 1. CHẶN TRIỆT ĐỂ: GIẢI TRẺ THẤP (U15-U20), DỰ BỊ, ESPORTS, BÁN CHUYÊN, NGHIỆP DƯ, PHONG TRÀO
+    // (Đã loại bỏ chữ 'friendly' khỏi bộ lọc chặn để cho phép các trận giao hữu đi qua)
+    const strictRejectRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20|youth|juvenil|reserves|reserve|res\.|dự bị|esports|e-soccer|cyber|simulated|amateur|amateurs|academic|university|phong trào|bán chuyên|regional league|oberliga|tercera|gamma ethniki)\b/i;
     if (strictRejectRegex.test(textToTest)) return true;
 
     // 2. KIỂM TRA MỞ CHO PHÉP GIẢI HẠNG 2, 3, 4 QUỐC GIA (NAM & NỮ)
-    const validDivisionRegex = /\b(hạng\s*[234]|league\s*[234]|liga\s*[234]|serie\s*[bc]|division\s*[234]|2nd\s*division|3rd\s*division|4th\s*division|2\.\s*liga|3\.\s*liga|segunda|championship|1st\s*division|2nd\s*snl|3rd\s*snl)\b/i;
+    const validDivisionRegex = /\b(hạng\s*[234]|league\s*[234]|liga\s*[234]|serie\s*[bcd]|division\s*[234]|2nd\s*division|3rd\s*division|4th\s*division|2\.\s*liga|3\.\s*liga|segunda|tercera|championship|1st\s*division|2nd\s*snl|3rd\s*snl)\b/i;
     if (validDivisionRegex.test(textToTest)) {
         return false;
     }
@@ -128,12 +129,13 @@ function isFilteredLeague(leagueName, homeName, awayName) {
         return false;
     }
 
-    // 4. WHITELIST - CÁC GIẢI VĐQG / CÚP CHÂU LỤC / NỮ TOP
+    // 4. WHITELIST - CÁC GIẢI VĐQG, CÚP, GIAO HỮU VÀ NỮ TOP
     const approvedLeagues = [
         'champions league', 'europa league', 'conference league', 'nations league', 
         'libertadores', 'sudamericana', 'afc champions', 'world cup', 'euro', 'copa america',
+        'friendly', 'giao hữu', 'club friendlies', 'international friendly',
         'premier league', 'ngoại hạng anh', 'laliga', 'tây ban nha', 'serie a', 'serie b', 'serie c', 'ý', 'bundesliga', 'đức', 'ligue 1', 'pháp',
-        'eredivisie', 'hà lan', 'primeira liga', 'bồ đào nha', 'super lig', 'thổ nhĩ kỳ',
+        'eredivisie', 'hà lan', 'primeira liga', 'bồ đào nha', 'super lig', 'thổ nhĩ Kỳ',
         'pro league', 'bỉ', 'premiership', 'scotland', 'super league', 'thụy sĩ',
         'eliteserien', 'na uy', 'superliga', 'đan mạch', 'brasileiro', 'brazil', 'liga profesional', 'argentina', 'mls', 'mỹ',
         'j1 league', 'nhật bản', 'k league 1', 'hàn quốc', 'super league (china)', 'trung quốc',
@@ -365,7 +367,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
     
-    // CẤU HÌNH ĐIỂM CƠ SỞ = 35%
+    // ĐIỂM CƠ SỞ = 35%
     let aiPercentage = 35.0;
     
     const stats = metrics.sofaStats || {};
@@ -430,7 +432,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 }
 
 // ==========================================
-// 8. TELEGRAM ALERT & AUTO SCANNER (LƯỢC BỎ TRẬN THIẾU CHỈ SỐ)
+// 8. TELEGRAM ALERT & AUTO SCANNER
 // ==========================================
 async function sendTelegramAlert(item) {
     if (sentAlerts.has(item.id)) return;
@@ -486,7 +488,7 @@ async function scanLiveMatches() {
 
             const leagueName = parseLeagueName(item, source);
 
-            // 1. Chặn giải bán chuyên, Serie D, giải trẻ thấp
+            // 1. Chặn giải bán chuyên, giải trẻ thấp (Đã cho phép giao hữu đi qua)
             if (isFilteredLeague(leagueName, homeName, awayName)) {
                 skippedCount++;
                 continue;
@@ -503,7 +505,7 @@ async function scanLiveMatches() {
             const metrics = await fetchMatchDetailStats(matchId, source);
             const stats = metrics.sofaStats || {};
 
-            // 4. Kiểm tra bắt buộc có chỉ số thực tế (Lược bỏ ngay nếu không có)
+            // 4. Kiểm tra tối thiểu có 1 chỉ số thống kê (Lược bỏ nếu hoàn toàn trống trơn)
             const hasTacticalData = Boolean(
                 stats.possession || 
                 (stats.shotsOnTarget > 0) || 
@@ -534,7 +536,7 @@ async function scanLiveMatches() {
                 console.log(`    └─> [Bỏ qua]: Điểm AI (${aiAnalysis.efficiency}%) - Chưa đạt mốc 58%`);
             }
         }
-        console.log(`[Thống kê lượt quét]: Đã phân tích ${scannedCount} trận hợp lệ có đủ chỉ số (Đã lược bỏ ${skippedCount} trận không đạt/thiếu dữ liệu).`);
+        console.log(`[Thống kê lượt quét]: Đã phân tích ${scannedCount} trận hợp lệ (Đã lược bỏ ${skippedCount} trận không đạt/thiếu dữ liệu).`);
     } catch (err) {
         console.error(`[API Fetch Error]:`, err.message);
     }
