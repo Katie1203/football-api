@@ -19,8 +19,8 @@ const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
 // Nguồn 2: Livescore6 (Dự phòng tự động khi SofaScore lỗi)
-const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';[cite: 7]
-const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;[cite: 7]
+const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
+const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
@@ -231,7 +231,6 @@ function calculateExactMinute(item, source) {
 // 4. HỆ THỐNG LẤY DỮ LIỆU KÉP (SOFASCORE -> FALLBACK LIVESCORE6)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
-    // Thử lấy từ SofaScore trước
     try {
         const response = await axios.get(SOFASCORE_LIVE_URL, {
             headers: {
@@ -249,9 +248,8 @@ async function fetchLiveMatchesDualSource() {
         console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
     }
 
-    // Nếu SofaScore lỗi, tự động gọi Livescore6
     try {
-        const response = await axios.get(LIVESCORE_LIVE_URL, {[cite: 7]
+        const response = await axios.get(LIVESCORE_LIVE_URL, {
             headers: {
                 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
                 'x-rapidapi-host': LIVESCORE_HOST
@@ -337,7 +335,7 @@ async function fetchMatchIncidents(matchId, source, homeScore = 0, awayScore = 0
         }
     } else {
         try {
-            const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-incidents?Eid=${matchId}&Category=soccer`, {[cite: 7]
+            const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-incidents?Eid=${matchId}&Category=soccer`, {
                 headers: {
                     'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
                     'x-rapidapi-host': LIVESCORE_HOST
@@ -475,7 +473,7 @@ async function fetchMatchDetailStats(matchId, source) {
         }
     } else {
         try {
-            const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${matchId}`, {[cite: 7]
+            const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${matchId}`, {
                 headers: {
                     'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
                     'x-rapidapi-host': LIVESCORE_HOST
@@ -608,12 +606,11 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiPercentage = 35.0; // Mốc khởi đầu nền
+    let aiPercentage = 35.0;
 
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
 
-    // 1. Tỷ lệ kiểm soát bóng (Tối đa +15%)
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
         const possParts = stats.possession.split('-');
@@ -634,14 +631,12 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         }
     }
 
-    // 2. Thẻ đỏ (+15%)
     if (stats.redCards > 0) {
         aiPercentage += 15.0;
         matchAnalysis.push(`🟥 Thẻ đỏ (${stats.redCards} thẻ - cộng thêm 15.0%)`);
         hasTacticalData = true;
     }
 
-    // 3. Sút trúng khung thành (Từ +6% đến +18%)
     if (stats.shotsOnTarget >= 6) {
         aiPercentage += 18.0;
         matchAnalysis.push(`⚡ Sút trúng đích dồn dập: ${stats.shotsOnTarget} lần (Cộng thêm 18.0%)`);
@@ -656,7 +651,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 4. Tổng số cú sút (Từ +5% đến +15%)
     if (stats.totalShots >= 15) {
         aiPercentage += 15.0;
         matchAnalysis.push(`🔥 Thế trận cực kỳ cởi mở, tổng sút: ${stats.totalShots} (Cộng thêm 15.0%)`);
@@ -671,7 +665,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 5. Phạt góc (Từ +5% đến +12%)
     if (stats.corners >= 8) {
         aiPercentage += 12.0;
         matchAnalysis.push(`🚩 Sức ép phạt góc lớn: ${stats.corners} quả (Cộng thêm 12.0%)`);
@@ -682,7 +675,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // 6. Phân tích Kèo nhà cái (Tỷ lệ phần trăm động theo Odds)
     if (oddsAnalysis) {
         aiPercentage += oddsAnalysis.oddsBonus;
         matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds} - Cộng thêm ${oddsAnalysis.oddsBonus.toFixed(1)}%)`);
@@ -833,5 +825,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     scanLiveMatches();
-    setInterval(scanLiveMatches, 10 * 60 * 1000);
+    setInterval(scanLiveMatches, 7 * 60 * 1000);
 });
