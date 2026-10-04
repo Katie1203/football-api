@@ -115,16 +115,15 @@ function parseLeagueName(item) {
 }
 
 // ==========================================
-// 2. BỘ LỌC CHẶN TỪ KHÓA RÁC / GIẢI VÙNG TRŨNG NGAY TỪ ĐẦU
+// 2. BỘ LỌC THÔNG MINH (CHẶN CÚP NHỎ, GIỮ CÚP LỚN)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
+    const lNameLower = leagueName.toLowerCase();
     
-    // Chặn giải trẻ dưới U20
     const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
     if (youthRegex.test(textToTest)) return true;
 
-    // Danh sách từ khóa cấm triệt để để không lãng phí lượt cào API
     const rejectKeywords = [
         'simulated', 'srl', 'esports', 'e-soccer', 'cyber', 
         'reserve', 'reserves', 'u21 reserve', 'amateur', 'phong trào', 
@@ -132,12 +131,30 @@ function isFilteredLeague(leagueName, homeName, awayName) {
         'state league', 'counties league', 'division one south', 'division one north',
         'npl', 'nsw', 'semi-professional', 'college', 'university', 'inter-university',
         'ncaa', '3rd division', '4th division',
-        // Các giải vùng trũng, hạng thấp hay thiếu chỉ số thống kê (như Tunisia Ligue 2, Thụy Điển hạng thấp, Tây Ban Nha Preferente...)
         'sodra', 'svealand', 'promotion league', 'ligue 2 (tunisia)', 'tunisia league 2',
-        'preferente', 'autonómica', 'gesigim', 'gelişim ligi', 'group 1 (tunisia)', 'group 2 (tunisia)'
+        'preferente', 'autonómica', 'gesigim', 'gelişim ligi', 'group 1', 'group 2'
     ];
     
-    return rejectKeywords.some(kw => textToTest.includes(kw));
+    if (rejectKeywords.some(kw => textToTest.includes(kw))) {
+        return true;
+    }
+
+    const isCupMatch = lNameLower.includes('cup') || lNameLower.includes('cúp') || lNameLower.includes('trophy');
+    if (isCupMatch) {
+        const allowedMajorCups = [
+            'champions league', 'europa league', 'conference league', 'copa libertadores', 
+            'copa sudamericana', 'world cup', 'fa cup', 'cúp fa', 'copa del rey', 
+            'cúp nhà vua', 'coppa italia', 'dfb pokal', 'coupe de france', 'efl cup', 
+            'league cup', 'super cup', 'siêu cúp'
+        ];
+        
+        const isMajorCup = allowedMajorCups.some(cup => lNameLower.includes(cup));
+        if (!isMajorCup) {
+            return true; 
+        }
+    }
+    
+    return false;
 }
 
 // ==========================================
@@ -552,7 +569,6 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            // 1. Chặn ngay lập tức các giải đấu rác, giải vùng trũng từ đầu để không tốn lượt quét
             if (isFilteredLeague(league, homeName, awayName)) {
                 console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Chặn ngay từ đầu (Giải rác/Thiếu thống kê)`);
                 continue;
@@ -560,7 +576,6 @@ async function scanLiveMatches() {
 
             const elapsed = calculateExactMinute(item);
 
-            // 2. Kiểm tra khung phút hợp lệ từ 46 đến 92 (loại bỏ HT và FT)
             if (elapsed === 'HT' || elapsed === 999 || typeof elapsed !== 'number' || elapsed < 46 || elapsed > 92) {
                 const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
                 console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung phút 46-92`);
@@ -569,10 +584,8 @@ async function scanLiveMatches() {
 
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
-            // 3. Thực hiện cào sâu dữ liệu chỉ số diễn biến trận đấu
             const metrics = await fetchMatchDetailStats(matchId);
             
-            // Nếu không có chỉ số (giải không hỗ trợ), chặn ngay lập tức, không cho đi tiếp
             if (!metrics || !metrics.hasData) {
                 console.log(`    └─> [Chặn ngay]: Giải đấu không có chỉ số diễn biến trận đấu -> Bỏ qua, tiết kiệm lượt gọi API`);
                 continue;
@@ -581,9 +594,10 @@ async function scanLiveMatches() {
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
+            // HIỂN THỊ RÕ CHỈ SỐ AI TRÊN LOG CONSOLE CHO MỌI TRẬN ĐÃ CÀO THÀNH CÔNG
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                console.log(`    └─> [AI CHỌN NỔ BÀN] (Điểm AI đạt: ${aiAnalysis.efficiency}% -> Đạt chuẩn >= 58%)`);
                 
                 const pickItem = {
                     id: matchId,
