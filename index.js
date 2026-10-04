@@ -18,7 +18,7 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Dự phòng tự động khi SofaScore lỗi)
+// Nguồn 2: Livescore6 (Dự phòng mở rộng toàn bộ trận đấu)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;
 
@@ -114,6 +114,7 @@ const LEAGUE_NAME_MAP = {
     'K League 2': 'Hạng 2 Hàn Quốc',
     'V-League 1': 'V-League Việt Nam',
     'Thai League 1': 'VĐQG Thái Lan',
+    'Thai League 3': 'Hạng 3 Thái Lan',
     'Super League': 'VĐQG Trung Quốc'
 };
 
@@ -221,7 +222,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
+// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 MỞ RỘNG)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -253,38 +254,36 @@ async function fetchLiveMatchesDualSource() {
         let rawData = [];
         const data = response.data;
 
-        function extractMatchesDeep(obj, inheritedMeta = {}) {
-            if (!obj) return;
-            
-            if (Array.isArray(obj)) {
-                obj.forEach(item => extractMatchesDeep(item, inheritedMeta));
+        function collectAllMatches(node, inheritedMeta = {}) {
+            if (!node) return;
+            if (Array.isArray(node)) {
+                node.forEach(item => collectAllMatches(item, inheritedMeta));
                 return;
             }
+            if (typeof node === 'object') {
+                const cName = node.Cname || node.categoryName || node.country || inheritedMeta.Cname;
+                const tName = node.Snm || node.Tname || node.tournamentName || node.LeagueName || inheritedMeta.Tname;
 
-            if (typeof obj === 'object') {
-                const cName = obj.Cname || obj.categoryName || obj.country || inheritedMeta.Cname;
-                const tName = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || inheritedMeta.Tname;
-
-                const hasMatchInfo = obj.Eid || (obj.T1 && obj.T2);
-                const isContainer = obj.Stages || obj.events || obj.Mlist || obj.data;
+                const hasMatchInfo = node.Eid || node.matchId || (node.T1 && node.T2);
+                const isContainer = node.Stages || node.events || node.Mlist || node.data;
 
                 if (hasMatchInfo && !isContainer) {
                     rawData.push({
-                        ...obj,
+                        ...node,
                         _inheritedCategory: cName,
                         _inheritedTournament: tName
                     });
                 }
 
-                for (const key of Object.keys(obj)) {
-                    if (typeof obj[key] === 'object' && obj[key] !== null) {
-                        extractMatchesDeep(obj[key], { Cname: cName, Tname: tName });
+                for (const key of Object.keys(node)) {
+                    if (typeof node[key] === 'object' && node[key] !== null) {
+                        collectAllMatches(node[key], { Cname: cName, Tname: tName });
                     }
                 }
             }
         }
 
-        extractMatchesDeep(data);
+        collectAllMatches(data);
 
         console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
         return { source: 'livescore6', matches: rawData };
@@ -835,6 +834,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Đặt chu kỳ quét liên tục mỗi 60 giây (1 phút)
-    setInterval(scanLiveMatches, 60000);
+    // Đặt chu kỳ quét 120 giây (2 phút) để né lỗi Rate Limit (429) của RapidAPI
+    setInterval(scanLiveMatches, 720000);
 });
