@@ -247,7 +247,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS (CÓ BẢO VỆ CHỐNG LỖI)
+// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -409,7 +409,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 7. THUẬT TOÁN AI CHẤM ĐIỂM HIỆU SUẤT THEO % RULE
+// 7. THUẬT TOÁN AI CHẤM ĐIỂM HIỆU SUẤT
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
@@ -513,7 +513,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU ĐỘ TRỄ CHỐNG LỖI 429)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -560,6 +560,9 @@ async function scanLiveMatches() {
                 continue;
             }
 
+            // ⭐ THÊM ĐỘ TRỄ 1 GIÂY GIỮA CÁC TRẬN ĐỂ CHỐNG LỖI 429 TRÊN RAPIDAPI
+            await new Promise(resolve => setTimeout(resolve, 1000));
+
             const logTimeStr = isHT ? 'HT (Nghỉ giữa hiệp)' : `${elapsed}'`;
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${logTimeStr}] [${league}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
@@ -600,6 +603,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     scanLiveMatches();
-    // Giãn khoảng thời gian quét định kỳ lên 5 phút để tránh lỗi 429 (Rate Limit) từ SofaScore
+    // Giãn khoảng thời gian quét định kỳ lên 10 phút để tối ưu hiệu suất
     setInterval(scanLiveMatches, 10 * 60 * 1000);
 });
