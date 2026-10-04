@@ -168,33 +168,53 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. HÀM TÍNH PHÚT ĐƠN GIẢN NẾU CHỈ QUÉT TỪ PHÚT 46
+// 3. HÀM TÍNH PHÚT CHUẨN XÁC CHO SOFASCORE & LIVESCORE6
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
 
-    let textToSearch = '';
-
     if (source === 'sofascore') {
-        // Lấy toàn bộ thông tin thời gian/trạng thái thành 1 chuỗi
-        textToSearch = `${item.status?.description || ''} ${item.statusText || ''} ${item.time?.played || ''}`;
+        const statusType = item.status?.type; // 'inprogress', 'halftime', 'finished', etc.
+        
+        if (statusType !== 'inprogress') return 0;
+
+        const description = (item.status?.description || '').toLowerCase();
+        
+        // Nếu là Hiệp 1 thì trả về phút trong hiệp 1
+        if (description.includes('1st half') || description.includes('h1')) {
+            const match = description.match(/(\d+)/);
+            return match ? parseInt(match[1], 10) : 20; 
+        }
+
+        // Tính phút thi đấu theo Timestamp
+        const currentPeriodStart = item.time?.currentPeriodStartTimestamp;
+        if (currentPeriodStart) {
+            const nowInSeconds = Math.floor(Date.now() / 1000);
+            const elapsedSeconds = nowInSeconds - currentPeriodStart;
+            const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+
+            // Đang ở Hiệp 2 -> Lấy 45 phút hiệp 1 cộng số phút trôi qua hiệp 2
+            if (description.includes('2nd half') || description.includes('h2') || statusType === 'inprogress') {
+                return 45 + elapsedMinutes;
+            }
+            return elapsedMinutes;
+        }
+
+        const textToSearch = `${item.status?.description || ''} ${item.statusText || ''}`;
+        const match = textToSearch.match(/(\d+)/);
+        return match ? parseInt(match[1], 10) : 0;
     } else {
-        textToSearch = `${item.Eps || ''} ${item.status || ''} ${item.statusText || ''} ${item.Tm || ''} ${item.time || ''}`;
-    }
+        // Nguồn Livescore6
+        const textToSearch = `${item.Eps || ''} ${item.status || ''} ${item.statusText || ''} ${item.Tm || ''} ${item.time || ''}`;
+        const lower = textToSearch.toLowerCase();
+        
+        if (lower.includes('ended') || lower.includes('finished') || lower.includes('ft') || lower.includes('ht')) {
+            return 0;
+        }
 
-    // Bỏ qua nếu trận đã kết thúc
-    const lower = textToSearch.toLowerCase();
-    if (lower.includes('ended') || lower.includes('finished') || lower.includes('ft')) {
-        return 0;
+        const match = textToSearch.match(/(\d+)/);
+        return match ? parseInt(match[1], 10) : 0;
     }
-
-    // Trích xuất số duy nhất xuất hiện trong chuỗi (VD: "77'", "90+'", "69'")
-    const match = textToSearch.match(/(\d+)/);
-    if (match) {
-        return parseInt(match[1], 10);
-    }
-
-    return 0;
 }
 
 // ==========================================
@@ -678,6 +698,10 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 // 9. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
+    if (sentAlerts.has(item.id)) {
+        return; // Không gửi lặp lại trận đấu đã thông báo
+    }
+
     const timeDisplay = `Phút ${item.elapsed}'`;
     const message = 
 `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})
@@ -759,12 +783,12 @@ async function scanLiveMatches() {
 
             const minute = calculateExactMinute(item, source);
 
-            // ĐIỀU KIỆN ĐƠN GIẢN: CHỈ LẤY TRẬN Đang Ở PHÚT 46 ĐẾN 98 (KỂ CẢ BÙ GIỜ)[cite: 4]
+            // CHỈ QUÉT BẮT ĐẦU TỪ PHÚT 46 ĐẾN 98
             if (minute < 46 || minute > 98) {
                 continue;
             }
 
-            console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${minute}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
+            console.log(`[Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${minute}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId, source);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
@@ -789,7 +813,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
             }
         }
     } catch (err) {
