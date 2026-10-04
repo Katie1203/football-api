@@ -158,7 +158,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT CHUẨN XÁC (TỪ 46 ĐẾN 92, LOẠI HT)
+// 3. TÍNH PHÚT CHUẨN XÁC
 // ==========================================
 function calculateExactMinute(item) {
     if (!item) return 0;
@@ -536,10 +536,10 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`[Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
-        console.error('        └─> [Telegram Error]:', err.message);
+        console.error('[Telegram Error]:', err.message);
     }
 }
 
@@ -548,9 +548,7 @@ ${item.detailText}
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
-    console.log(`\n==================================================`);
-    console.log(`[Auto-Scan AI] Đang quét trận đấu... (${currentVN.timeStr})`);
-
+    
     try {
         const [allOdds, sofaMatches] = await Promise.all([
             fetchOddsData(),
@@ -569,36 +567,28 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            if (isFilteredLeague(league, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Chặn ngay từ đầu (Giải rác/Thiếu thống kê)`);
-                continue;
-            }
+            // Bỏ qua âm thầm các giải bị chặn
+            if (isFilteredLeague(league, homeName, awayName)) continue;
 
             const elapsed = calculateExactMinute(item);
 
+            // Bỏ qua âm thầm các trận không nằm trong khung phút từ 46 đến 92
             if (elapsed === 'HT' || elapsed === 999 || typeof elapsed !== 'number' || elapsed < 46 || elapsed > 92) {
-                const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung phút 46-92`);
                 continue;
             }
 
-            console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
-
+            // Cào chỉ số trận đấu
             const metrics = await fetchMatchDetailStats(matchId);
-            
-            if (!metrics || !metrics.hasData) {
-                console.log(`    └─> [Chặn ngay]: Giải đấu không có chỉ số diễn biến trận đấu -> Bỏ qua, tiết kiệm lượt gọi API`);
-                continue;
-            }
+            if (!metrics || !metrics.hasData) continue;
 
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
-            // HIỂN THỊ RÕ CHỈ SỐ AI TRÊN LOG CONSOLE CHO MỌI TRẬN ĐÃ CÀO THÀNH CÔNG
+            // HIỂN THỊ CẢ CÁC TRẬN CHƯA ĐẠT 58% LÊN LOG
             if (aiAnalysis.shouldSend) {
-                const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (Điểm AI đạt: ${aiAnalysis.efficiency}% -> Đạt chuẩn >= 58%)`);
+                console.log(`[Phân Tích AI] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName} ➔ Điểm AI: ${aiAnalysis.efficiency}% [ĐẠT CHUẨN GỬI TELEGRAM]`);
                 
+                const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
                 const pickItem = {
                     id: matchId,
                     league,
@@ -613,7 +603,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI đạt ${aiAnalysis.efficiency}% (Chưa đủ mốc tối thiểu 58%)`);
+                console.log(`[Bỏ qua - Dưới chuẩn] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName} ➔ Điểm AI: ${aiAnalysis.efficiency}% (< 58%)`);
             }
         }
     } catch (err) {
