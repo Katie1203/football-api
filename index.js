@@ -115,23 +115,26 @@ function parseLeagueName(item) {
 }
 
 // ==========================================
-// 2. BỘ LỌC CHẶN GIẢI NHỎ, BÁN CHUYÊN, NGHIỆP DƯ & TRẺ
+// 2. BỘ LỌC CHẶN TỪ KHÓA RÁC / GIẢI VÙNG TRŨNG NGAY TỪ ĐẦU
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    // Chặn các giải trẻ dưới U20
+    // Chặn giải trẻ dưới U20
     const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
     if (youthRegex.test(textToTest)) return true;
 
-    // Chặn triệt để các giải bán chuyên, nghiệp dư, khu vực nhỏ, giải phong trào, điện tử, sinh viên
+    // Danh sách từ khóa cấm triệt để để không lãng phí lượt cào API
     const rejectKeywords = [
         'simulated', 'srl', 'esports', 'e-soccer', 'cyber', 
         'reserve', 'reserves', 'u21 reserve', 'amateur', 'phong trào', 
         'bán chuyên', 'nghiệp dư', 'regional', 'campionato primavera', 'academy',
         'state league', 'counties league', 'division one south', 'division one north',
         'npl', 'nsw', 'semi-professional', 'college', 'university', 'inter-university',
-        'ncaa', '3rd division', '4th division'
+        'ncaa', '3rd division', '4th division',
+        // Các giải vùng trũng, hạng thấp hay thiếu chỉ số thống kê (như Tunisia Ligue 2, Thụy Điển hạng thấp, Tây Ban Nha Preferente...)
+        'sodra', 'svealand', 'promotion league', 'ligue 2 (tunisia)', 'tunisia league 2',
+        'preferente', 'autonómica', 'gesigim', 'gelişim ligi', 'group 1 (tunisia)', 'group 2 (tunisia)'
     ];
     
     return rejectKeywords.some(kw => textToTest.includes(kw));
@@ -399,11 +402,11 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 7. THUẬT TOÁN AI (ĐIỂM CƠ SỞ 35%, NGƯỠNG BÁO 58% & BIGGG BET >= 65%)
+// 7. THUẬT TOÁN AI
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiPercentage = 35.0; // Điểm cơ sở 35%
+    let aiPercentage = 35.0; 
 
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
@@ -489,7 +492,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 }
 
 // ==========================================
-// 8. THÔNG BÁO TELEGRAM (BIGGG BET NẾU >= 65%)
+// 8. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     const isBigBet = parseFloat(item.ruleEfficiency) >= 65.0;
@@ -524,7 +527,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU CHẶN TỪ ĐẦU)
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -549,26 +552,29 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
-            // 🛑 CHẶN NGAY TỪ ĐẦU TRƯỚC KHI XÉT PHÚT VÀ GỌI API CHI TIẾT
+            // 1. Chặn ngay lập tức các giải đấu rác, giải vùng trũng từ đầu để không tốn lượt quét
             if (isFilteredLeague(league, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Chặn ngay từ đầu (Giải trẻ/Phụ/Nghiệp dư/Đại học)`);
+                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Chặn ngay từ đầu (Giải rác/Thiếu thống kê)`);
                 continue;
             }
 
             const elapsed = calculateExactMinute(item);
 
+            // 2. Kiểm tra khung phút hợp lệ từ 46 đến 92 (loại bỏ HT và FT)
             if (elapsed === 'HT' || elapsed === 999 || typeof elapsed !== 'number' || elapsed < 46 || elapsed > 92) {
                 const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung phút 46-92 hoặc HT`);
+                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung phút 46-92`);
                 continue;
             }
 
             console.log(`[Đang Phân Tích AI] [ID: ${matchId}] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
+            // 3. Thực hiện cào sâu dữ liệu chỉ số diễn biến trận đấu
             const metrics = await fetchMatchDetailStats(matchId);
             
+            // Nếu không có chỉ số (giải không hỗ trợ), chặn ngay lập tức, không cho đi tiếp
             if (!metrics || !metrics.hasData) {
-                console.log(`    └─> [Bỏ qua]: Không có chỉ số diễn biến trận đấu trên SofaScore`);
+                console.log(`    └─> [Chặn ngay]: Giải đấu không có chỉ số diễn biến trận đấu -> Bỏ qua, tiết kiệm lượt gọi API`);
                 continue;
             }
 
@@ -593,7 +599,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đạt mốc 58% (${aiAnalysis.efficiency}%)`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI đạt ${aiAnalysis.efficiency}% (Chưa đủ mốc tối thiểu 58%)`);
             }
         }
     } catch (err) {
