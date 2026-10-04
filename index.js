@@ -28,8 +28,10 @@ const LIVE_FOOTBALL_HOST =
 const LIVE_FOOTBALL_URL =
   `https://${LIVE_FOOTBALL_HOST}/matches`;
 
+// The Odds API: `upcoming` is a valid sport key and also returns live games.
+// One region + one market = 1 credit per successful request.
 const ODDS_API_URL = ODDS_API_KEY
-  ? `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
+  ? `https://api.the-odds-api.com/v4/sports/upcoming/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
   : '';
 
 
@@ -1229,6 +1231,10 @@ function createEmptyStats() {
     awayFouls: 0,
 
 
+    // Theo dõi trường nào API THỰC SỰ trả về.
+    // Nhờ vậy 0-0 thật khác với dữ liệu bị thiếu.
+    availableStats: {},
+
     // Có lấy được dữ liệu hay không
     hasData: false,
 
@@ -1256,7 +1262,8 @@ function mergeStats(target, source) {
 
     if (
       key === 'hasData' ||
-      key === 'source'
+      key === 'source' ||
+      key === 'availableStats'
     ) {
       continue;
     }
@@ -1478,6 +1485,16 @@ function applyStat(
 
   if (!type) {
     return;
+  }
+
+  // Chỉ đánh dấu available khi API thực sự có field/value.
+  // Giá trị 0 vẫn là dữ liệu hợp lệ nếu field tồn tại.
+  const homeProvided = homeValue !== undefined && homeValue !== null && homeValue !== '';
+  const awayProvided = awayValue !== undefined && awayValue !== null && awayValue !== '';
+  if (homeProvided || awayProvided) {
+    stats.availableStats = stats.availableStats || {};
+    stats.availableStats[type] = true;
+    stats.hasData = true;
   }
 
 
@@ -3630,8 +3647,10 @@ let oddsCache = {
   data: []
 };
 
+// Free plan 500 credits/tháng: tránh đốt 1 credit mỗi 3 phút.
+// 90 phút ~ tối đa 16 request/ngày nếu bot chạy liên tục.
 const ODDS_CACHE_TTL =
-  2 * 60 * 1000;
+  90 * 60 * 1000;
 
 
 // ==========================================================
@@ -3685,41 +3704,27 @@ function createMatchKey(
 // SIMPLE TEAM MATCH
 // ==========================================================
 
-function teamNamesSimilar(
-  a,
-  b
-) {
+function teamNamesSimilar(a, b) {
+  const x = cleanTeamName(a);
+  const y = cleanTeamName(b);
+  if (!x || !y) return false;
+  if (x === y || x.includes(y) || y.includes(x)) return true;
 
-  const x =
-    cleanTeamName(a);
+  // Fuzzy token matching để xử lý khác biệt tên giữa SofaScore và bookmaker.
+  const tokens = value => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2 && !['fc','cf','club','sc','afc','fk','cd'].includes(t));
 
-  const y =
-    cleanTeamName(b);
-
-
-  if (
-    !x ||
-    !y
-  ) {
-    return false;
-  }
-
-
-  if (x === y) {
-    return true;
-  }
-
-
-  if (
-    x.includes(y) ||
-    y.includes(x)
-  ) {
-
-    return true;
-  }
-
-
-  return false;
+  const ax = tokens(a);
+  const bx = tokens(b);
+  if (!ax.length || !bx.length) return false;
+  const common = ax.filter(t => bx.includes(t)).length;
+  const ratio = common / Math.max(Math.min(ax.length, bx.length), 1);
+  return common >= 1 && ratio >= 0.5;
 }
 
 
@@ -3806,10 +3811,10 @@ function findMatchOdds(
 
     return {
       found: false,
-      score: 50,
+      score: null,
       oddsBonus: 0,
       text:
-        '💰 Không có dữ liệu kèo'
+        '💰 Kèo nhà cái: N/A.'
     };
   }
 
@@ -3817,6 +3822,12 @@ function findMatchOdds(
   const event =
     allOdds.find(
       x => {
+
+        // Chỉ coi là live/in-play nếu trận đã bắt đầu.
+        const commence = Date.parse(x.commence_time || '');
+        if (Number.isFinite(commence) && commence > Date.now() + 2 * 60 * 1000) {
+          return false;
+        }
 
         const normal =
 
@@ -3856,10 +3867,10 @@ function findMatchOdds(
 
     return {
       found: false,
-      score: 50,
+      score: null,
       oddsBonus: 0,
       text:
-        '💰 Không tìm thấy kèo phù hợp'
+        '💰 Kèo nhà cái: N/A.'
     };
   }
 
@@ -3942,11 +3953,11 @@ function findMatchOdds(
   ) {
 
     return {
-      found: true,
-      score: 50,
+      found: false,
+      score: null,
       oddsBonus: 0,
       text:
-        '💰 Có trận nhưng không có kèo Over'
+        '💰 Kèo nhà cái: N/A'
     };
   }
 
@@ -4724,406 +4735,131 @@ function evaluateMatchDynamicAI(
   homeScore,
   awayScore
 ) {
+  const available = stats.availableStats || {};
 
-  const attackScore =
-    calculateAttackScore(
-      stats,
-      minute
-    );
+  const attackScore = calculateAttackScore(stats, minute);
+  const dangerousScore = calculateDangerousAttackScore(stats, minute);
+  const sotScore = calculateSOTScore(stats, minute);
+  const blockedScore = calculateBlockedScore(stats);
+  const cornerScore = calculateCornerScore(stats);
+  const possessionScore = calculatePossessionPressureScore(stats);
+  const cardScore = calculateCardScore(stats);
+  const style = calculateMatchStyleScore(stats);
+  const scoreState = calculateScoreStateScore(homeScore, awayScore, minute);
+  const timeScore = calculateTimeScore(minute);
 
+  // Thiếu dữ liệu = KHÔNG tham gia Rule. Không còn mặc định 50 điểm.
+  const components = [];
+  const add = (name, score, weight, isAvailable) => {
+    if (isAvailable && Number.isFinite(score)) components.push({ name, score, weight });
+  };
 
-  const dangerousScore =
-    calculateDangerousAttackScore(
-      stats,
-      minute
-    );
+  add('dangerous', dangerousScore, 18, !!available.dangerousAttacks);
+  add('momentum', momentum?.score, 16, momentum?.available === true);
+  add('sot', sotScore, 14, !!available.shotsOnTarget);
 
+  const styleAvailable = !!(
+    available.dangerousAttacks || available.shotsOnTarget ||
+    available.attacks || available.corners || available.totalShots
+  );
+  add('style', style.score, 11, styleAvailable);
+  add('attack', attackScore, 10, !!available.attacks);
+  add('possession', possessionScore, 8, !!available.possession);
+  add('blocked', blockedScore, 6, !!available.blockedShots);
+  add('corners', cornerScore, 6, !!available.corners);
+  add('odds', oddsAnalysis?.score, 7, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score));
+  add('cards', cardScore, 2, !!(available.yellowCards || available.redCards));
+  add('scoreState', scoreState, 1, true);
+  add('time', timeScore, 1, true);
 
-  const sotScore =
-    calculateSOTScore(
-      stats,
-      minute
-    );
+  const totalWeight = components.reduce((sum, x) => sum + x.weight, 0);
+  let finalScore = totalWeight > 0
+    ? components.reduce((sum, x) => sum + x.score * x.weight, 0) / totalWeight
+    : 0;
 
-
-  const blockedScore =
-    calculateBlockedScore(
-      stats
-    );
-
-
-  const cornerScore =
-    calculateCornerScore(
-      stats
-    );
-
-
-  const possessionScore =
-    calculatePossessionPressureScore(
-      stats
-    );
-
-
-  const cardScore =
-    calculateCardScore(
-      stats
-    );
-
-
-  const style =
-    calculateMatchStyleScore(
-      stats
-    );
-
-
-  const scoreState =
-    calculateScoreStateScore(
-      homeScore,
-      awayScore,
-      minute
-    );
-
-
-  const timeScore =
-    calculateTimeScore(
-      minute
-    );
-
-
-  // Momentum lần scan đầu chưa có
-  // dùng 50 = trung tính
-  const momentumScore =
-    momentum?.available
-      ? momentum.score
-      : 50;
-
-
-  // Không có odds => trung tính 50
-  const oddsScore =
-    oddsAnalysis?.found
-      ? oddsAnalysis.score
-      : 50;
-
-
-  // ======================================================
-  // WEIGHTED SCORE
-  // ======================================================
-
-  let finalScore =
-
-    dangerousScore * 0.18 +
-
-    momentumScore * 0.16 +
-
-    sotScore * 0.14 +
-
-    style.score * 0.11 +
-
-    attackScore * 0.10 +
-
-    possessionScore * 0.08 +
-
-    blockedScore * 0.06 +
-
-    cornerScore * 0.06 +
-
-    oddsScore * 0.07 +
-
-    cardScore * 0.02 +
-
-    scoreState * 0.01 +
-
-    timeScore * 0.01;
-
-
-  // ======================================================
-  // EXTRA LOGIC / PENALTIES
-  // ======================================================
-
-  const totals =
-    calculateTotals(
-      stats
-    );
-
-
+  // Data confidence chỉ dùng nội bộ/log và để chặn BIG BET khi dữ liệu quá mỏng.
+  const dataConfidence = round1(totalWeight);
+  const totals = calculateTotals(stats);
   const notes = [];
 
-
-  // Rất ít SOT cuối trận
-  if (
-    minute >= 70 &&
-    totals.totalShotsOnTarget <= 1
-  ) {
-
+  if (available.shotsOnTarget && minute >= 70 && totals.totalShotsOnTarget <= 1) {
     finalScore -= 8;
-
-    notes.push(
-      '⚠️ SOT quá thấp sau phút 70'
-    );
+    notes.push('⚠️ SOT quá thấp sau phút 70');
   }
-
-
-  // Ít Dangerous Attack
-  if (
-    totals.totalDangerousAttacks > 0 &&
-    totals.totalDangerousAttacks < 30 &&
-    minute >= 65
-  ) {
-
+  if (available.dangerousAttacks && totals.totalDangerousAttacks < 30 && minute >= 65) {
     finalScore -= 5;
-
-    notes.push(
-      '⚠️ Dangerous Attack thấp'
-    );
+    notes.push('⚠️ Dangerous Attack thấp');
   }
-
-
-  // Momentum cực mạnh
-  if (
-    momentum?.available &&
-    momentum.score >= 85
-  ) {
-
+  if (momentum?.available && momentum.score >= 85) {
     finalScore += 4;
-
-    notes.push(
-      '🔥 Momentum cực mạnh'
-    );
+    notes.push('🔥 Momentum cực mạnh');
   }
-
-
-  // Nhiều SOT + Dangerous
-  if (
-    totals.totalShotsOnTarget >= 8 &&
-    totals.totalDangerousAttacks >= 70
-  ) {
-
+  if (available.shotsOnTarget && available.dangerousAttacks &&
+      totals.totalShotsOnTarget >= 8 && totals.totalDangerousAttacks >= 70) {
     finalScore += 3;
-
-    notes.push(
-      '🔥 SOT + Dangerous Attack cao'
-    );
+    notes.push('🔥 SOT + Dangerous Attack cao');
   }
-
-
-  // Đôi công mạnh
-  if (
-    style.type ===
-    'END_TO_END'
-  ) {
-
+  if (styleAvailable && style.type === 'END_TO_END') {
     finalScore += 3;
-
-    notes.push(
-      '⚔️ Hai đội đang đôi công'
-    );
+    notes.push('⚔️ Hai đội đang đôi công');
   }
-
-
-  // Một đội ép sân rõ
-  if (
-    style.type ===
-      'HOME_PRESSURE' ||
-    style.type ===
-      'AWAY_PRESSURE'
-  ) {
-
+  if (styleAvailable && (style.type === 'HOME_PRESSURE' || style.type === 'AWAY_PRESSURE')) {
     finalScore += 2;
-
-    notes.push(
-      '🔥 Có đội ép sân rõ rệt'
-    );
+    notes.push('🔥 Có đội ép sân rõ rệt');
   }
-
-
-  // Odds rất mạnh
-  if (
-    oddsAnalysis?.found &&
-    oddsAnalysis.score >= 85
-  ) {
-
+  if (oddsAnalysis?.found && Number.isFinite(oddsAnalysis?.score) && oddsAnalysis.score >= 85) {
     finalScore += 2;
-
-    notes.push(
-      '💰 Kèo Over đang mạnh'
-    );
+    notes.push('💰 Kèo Over đang mạnh');
   }
 
+  finalScore = round1(clamp(finalScore, 5, 95));
 
-  // Clamp
-  finalScore =
-    clamp(
-      finalScore,
-      5,
-      95
-    );
+  // BIG BET cần Rule >=75 và tối thiểu 55% trọng số dữ liệu thực.
+  const reliableBigBet = finalScore >= BIG_BET_PERCENTAGE && dataConfidence >= 55;
+  let level = 'KHÔNG ĐỦ ĐIỀU KIỆN';
+  if (reliableBigBet && finalScore >= 85) level = '🔥🔥 BIG BET RẤT MẠNH';
+  else if (reliableBigBet) level = '🔥 BIG BET';
+  else if (finalScore >= 68) level = '⚡ TÍN HIỆU MẠNH';
+  else if (finalScore >= MIN_SEND_PERCENTAGE) level = '🔔 CÓ TÍN HIỆU';
 
-
-  finalScore =
-    round1(
-      finalScore
-    );
-
-
-  // ======================================================
-  // LEVEL
-  // ======================================================
-
-  let level =
-    'KHÔNG ĐỦ ĐIỀU KIỆN';
-
-
-  if (
-    finalScore >= 85
-  ) {
-
-    level =
-      '🔥🔥 BIG BET RẤT MẠNH';
-
-  } else if (
-    finalScore >=
-    BIG_BET_PERCENTAGE
-  ) {
-
-    level =
-      '🔥 BIG BET';
-
-  } else if (
-    finalScore >= 68
-  ) {
-
-    level =
-      '⚡ TÍN HIỆU MẠNH';
-
-  } else if (
-    finalScore >=
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    level =
-      '🔔 CÓ TÍN HIỆU';
-  }
-
-
-  // ======================================================
-  // DETAIL TEXT
-  // ======================================================
-
+  const fmt = (name, score, ok) => `${name}: ${ok ? `${round1(score)}%` : 'N/A'}`;
   const detailLines = [
-
-    `🔥 Dangerous Attack Score: ${round1(dangerousScore)}%`,
-
-    `⚡ Momentum Score: ${round1(momentumScore)}%`,
-
-    `🎯 SOT Score: ${round1(sotScore)}%`,
-
-    `⚔️ Đôi công/Ép sân: ${round1(style.score)}%`,
-
-    `🚀 Attack Score: ${round1(attackScore)}%`,
-
-    `📊 Possession Pressure: ${round1(possessionScore)}%`,
-
-    `🧱 Blocked Score: ${round1(blockedScore)}%`,
-
-    `🚩 Corner Score: ${round1(cornerScore)}%`,
-
-    `💰 Odds Score: ${round1(oddsScore)}%`,
-
-    `🟨🟥 Card Score: ${round1(cardScore)}%`
+    fmt('🔥 Dangerous Attack Score', dangerousScore, !!available.dangerousAttacks),
+    fmt('⚡ Momentum Score', momentum?.score, momentum?.available === true),
+    fmt('🎯 SOT Score', sotScore, !!available.shotsOnTarget),
+    fmt('⚔️ Đôi công/Ép sân', style.score, styleAvailable),
+    fmt('🚀 Attack Score', attackScore, !!available.attacks),
+    fmt('📊 Possession Pressure', possessionScore, !!available.possession),
+    fmt('🧱 Blocked Score', blockedScore, !!available.blockedShots),
+    fmt('🚩 Corner Score', cornerScore, !!available.corners),
+    fmt('💰 Odds Score', oddsAnalysis?.score, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score)),
+    fmt('🟨🟥 Card Score', cardScore, !!(available.yellowCards || available.redCards)),
+    `📦 Data Confidence: ${dataConfidence}%`
   ];
-
-
-  if (notes.length) {
-
-    detailLines.push('');
-
-    detailLines.push(
-      ...notes
-    );
-  }
-
+  if (notes.length) detailLines.push('', ...notes);
 
   return {
-
-    efficiency:
-      finalScore,
-
-    shouldSend:
-      finalScore >=
-      MIN_SEND_PERCENTAGE,
-
-    isBigBet:
-      finalScore >=
-      BIG_BET_PERCENTAGE,
-
+    efficiency: finalScore,
+    shouldSend: finalScore >= MIN_SEND_PERCENTAGE,
+    isBigBet: reliableBigBet,
+    dataConfidence,
+    availableComponents: components.map(x => x.name),
     level,
-
-    attackScore:
-      round1(attackScore),
-
-    dangerousScore:
-      round1(
-        dangerousScore
-      ),
-
-    momentumScore:
-      round1(
-        momentumScore
-      ),
-
-    sotScore:
-      round1(
-        sotScore
-      ),
-
-    blockedScore:
-      round1(
-        blockedScore
-      ),
-
-    cornerScore:
-      round1(
-        cornerScore
-      ),
-
-    possessionScore:
-      round1(
-        possessionScore
-      ),
-
-    cardScore:
-      round1(
-        cardScore
-      ),
-
-    styleScore:
-      round1(
-        style.score
-      ),
-
-    oddsScore:
-      round1(
-        oddsScore
-      ),
-
-    scoreState:
-      round1(
-        scoreState
-      ),
-
-    timeScore:
-      round1(
-        timeScore
-      ),
-
-    styleType:
-      style.type,
-
-    styleText:
-      style.text,
-
-    detailText:
-      detailLines.join('\n')
+    attackScore: available.attacks ? round1(attackScore) : null,
+    dangerousScore: available.dangerousAttacks ? round1(dangerousScore) : null,
+    momentumScore: momentum?.available ? round1(momentum.score) : null,
+    sotScore: available.shotsOnTarget ? round1(sotScore) : null,
+    blockedScore: available.blockedShots ? round1(blockedScore) : null,
+    cornerScore: available.corners ? round1(cornerScore) : null,
+    possessionScore: available.possession ? round1(possessionScore) : null,
+    cardScore: (available.yellowCards || available.redCards) ? round1(cardScore) : null,
+    styleScore: styleAvailable ? round1(style.score) : null,
+    oddsScore: oddsAnalysis?.found ? round1(oddsAnalysis.score) : null,
+    scoreState: round1(scoreState),
+    timeScore: round1(timeScore),
+    styleType: style.type,
+    styleText: style.text,
+    detailText: detailLines.join('\n')
   };
 }
 
@@ -5148,7 +4884,8 @@ function evaluateMatchDynamicAI(
 function shouldSendAlert(
   matchId,
   currentPercentage,
-  currentMinute
+  currentMinute,
+  allowBigBet = true
 ) {
 
   const current =
@@ -5223,6 +4960,7 @@ function shouldSendAlert(
   // ======================================================
 
   if (
+    allowBigBet &&
     current >=
       BIG_BET_PERCENTAGE &&
     !previous.bigBetSent
@@ -6028,225 +5766,74 @@ function cleanTelegramText(
 // 43. SEND TELEGRAM ALERT
 // ==========================================================
 
-async function sendTelegramAlert(
-  item,
-  alertDecision
-) {
-
-  if (
-    !TELEGRAM_BOT_TOKEN ||
-    !TELEGRAM_CHAT_ID
-  ) {
-
-    console.log(
-      '[Telegram] Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID'
-    );
-
+async function sendTelegramAlert(item, alertDecision) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+    console.log('[Telegram] Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID');
     return false;
   }
 
+  const percentage = safeNumber(item.ai.efficiency);
+  const previous = alertState.get(item.alertKey);
+  const alertNumber = previous ? previous.alertCount + 1 : 1;
+  const isBigBet = item.ai.isBigBet === true;
+  const totalGoals = safeNumber(item.homeScore) + safeNumber(item.awayScore);
 
-  const percentage =
-    safeNumber(
-      item.ai.efficiency
-    );
+  let matchStateText = 'Thế trận đang cân bằng.';
+  if (item.ai.styleType === 'HOME_PRESSURE') matchStateText = '🔥 Chủ nhà đang ép sân mạnh.';
+  else if (item.ai.styleType === 'AWAY_PRESSURE') matchStateText = '🔥 Đội khách đang ép sân mạnh.';
+  else if (item.ai.styleType === 'END_TO_END') matchStateText = '⚔️ Hai đội đang ĐÔI CÔNG mạnh.';
+  else if (item.ai.styleType === 'BALANCED_ACTIVE') matchStateText = '⚡ Hai đội vẫn đang duy trì tấn công.';
+  else if (item.ai.styleType === 'LOW_TEMPO') matchStateText = '🐢 Nhịp trận đấu đang thấp.';
 
-
-  const previous =
-    alertState.get(
-      item.alertKey
-    );
-
-
-  const alertNumber =
-    previous
-      ? previous.alertCount + 1
-      : 1;
-
-
-  const isBigBet =
-    percentage >=
-    BIG_BET_PERCENTAGE;
-
-
-  let title =
-    '🔔 RUNG CHUÔNG VÀNG';
-
-
-  if (
-    percentage >= 85
-  ) {
-
-    title =
-      '🔥🔥🔥 BIG BET RẤT MẠNH 🔥🔥🔥';
-
-  } else if (
-    isBigBet
-  ) {
-
-    title =
-      '🔥🔥 BIG BET 🔥🔥';
+  let momentumText = '⚡ Momentum: Đang thu thập.';
+  if (item.momentum?.available) {
+    if (item.momentum.score >= 85) momentumText = '🔥 Momentum tấn công đang tăng RẤT MẠNH.';
+    else if (item.momentum.score >= 70) momentumText = '⚡ Momentum tấn công đang tăng mạnh.';
+    else if (item.momentum.score >= 55) momentumText = '⚡ Momentum tấn công ở mức khá.';
+    else momentumText = '⚡ Momentum tấn công chưa mạnh.';
   }
 
+  let oddsText = '💰 Kèo nhà cái: N/A.';
+  if (item.odds?.found && Number.isFinite(item.odds?.point) && Number.isFinite(item.odds?.price)) {
+    oddsText = `💰 Live Over ${item.odds.point} @${Number(item.odds.price).toFixed(2)}.`;
+  }
 
-  const scorePrediction =
-    item.scorePrediction;
+  const bigBetLine = isBigBet ? '\n🔥 BIG BET' : '';
+  const message = `🔔 RUNG CHUÔNG VÀNGGGG🔔
+🏆 Giải đấu: ${cleanTelegramText(item.league)}
+⚔️ Trận đấu: ${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
+⏱️ Thời gian: Phút ${item.minute}'
 
+⚽ DIỄN BIẾN TỶ SỐ:
+• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số: ${item.homeScore}-${item.awayScore})
 
-  const statsText =
-    formatStatsText(
-      item.stats
-    );
+📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
+• ${matchStateText}
+• ${momentumText}
+• ${oddsText}
 
-
-  const momentumText =
-    formatMomentumText(
-      item.momentum
-    );
-
-
-  const oddsText =
-    item.odds?.text ||
-    '💰 Không có dữ liệu kèo';
-
-
-  const goalTimeline =
-    item.goalTimeline ||
-    'Không có dữ liệu';
-
-
-  const message = `
-${title}
-
-🏆 GIẢI ĐẤU:
-${cleanTelegramText(item.league)}
-
-⚔️ TRẬN ĐẤU:
-${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
-
-⏱ PHÚT:
-${item.minute}'
-
-━━━━━━━━━━━━━━━━━━
-
-📊 THỐNG KÊ LIVE
-
-${statsText}
-
-━━━━━━━━━━━━━━━━━━
-
-${momentumText}
-
-━━━━━━━━━━━━━━━━━━
-
-💰 KÈO NHÀ CÁI
-
-${oddsText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 PHÂN TÍCH RULE
-
-${item.ai.detailText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 AI GOAL SCORE:
-${percentage.toFixed(1)}%
-
-${item.ai.level}
-
-🎯 NHẬN ĐỊNH:
-Khả năng xuất hiện THÊM BÀN THẮNG
-
-━━━━━━━━━━━━━━━━━━
-
-🔮 DỰ ĐOÁN TỶ SỐ FT:
-${scorePrediction.text}
-
-⚽ Dự kiến bàn còn lại:
-+${scorePrediction.expectedExtraGoals}
-
-🎯 Đội có khả năng ghi bàn:
-${scorePrediction.likelyScorer}
-
-📊 Sức ép:
-Chủ nhà ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}% Đội khách
-
-🔮 Độ mạnh dự đoán:
-${scorePrediction.confidence}
-
-━━━━━━━━━━━━━━━━━━
-
-⚽ DIỄN BIẾN BÀN THẮNG:
-
-${goalTimeline}
-
-━━━━━━━━━━━━━━━━━━
-
-🚨 CẢNH BÁO #${alertNumber}
-
-📌 ${alertDecision.reason}
-`.trim();
-
+🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
+📈 Hiệu suất Rule: ${percentage.toFixed(1)}%${bigBetLine}`;
 
   try {
-
     await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        chat_id:
-          TELEGRAM_CHAT_ID,
-
-        text:
-          message,
-
-        disable_web_page_preview:
-          true
-      },
-      {
-        timeout: 10000
-      }
+      { chat_id: TELEGRAM_CHAT_ID, text: message, disable_web_page_preview: true },
+      { timeout: 10000 }
     );
 
+    alertState.set(item.alertKey, {
+      lastPercentage: percentage,
+      lastMinute: item.minute,
+      alertCount: alertNumber,
+      bigBetSent: (previous?.bigBetSent || false) || isBigBet,
+      updatedAt: Date.now()
+    });
 
-    alertState.set(
-      item.alertKey,
-      {
-        lastPercentage:
-          percentage,
-
-        lastMinute:
-          item.minute,
-
-        alertCount:
-          alertNumber,
-
-        bigBetSent:
-          (previous?.bigBetSent || false) ||
-          isBigBet,
-
-        updatedAt:
-          Date.now()
-      }
-    );
-
-
-    console.log(
-      `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}%`
-    );
-
-
+    console.log(`[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}% | Data ${item.ai.dataConfidence}%`);
     return true;
-
   } catch (e) {
-
-    console.error(
-      '[Telegram Error]',
-      e.response?.data ||
-      e.message
-    );
-
+    console.error('[Telegram Error]', e.response?.data || e.message);
     return false;
   }
 }
@@ -6672,7 +6259,8 @@ async function analyzeOneMatch(
     shouldSendAlert(
       alertKey,
       ai.efficiency,
-      minute
+      minute,
+      ai.isBigBet
     );
 
 
@@ -6775,19 +6363,12 @@ async function scanLiveMatches() {
 
 
     // ====================================================
-    // LIVE MATCHES + ODDS SONG SONG
+    // LẤY LIVE MATCHES TRƯỚC.
+    // Odds chỉ gọi sau khi biết có trận 46-92 để tiết kiệm quota.
     // ====================================================
 
-    const [
-      liveMatches,
-      allOdds
-    ] = await Promise.all([
-
-      fetchAllLiveMatches(),
-
-      fetchAllLiveOdds()
-
-    ]);
+    const liveMatches = await fetchAllLiveMatches();
+    let allOdds = [];
 
 
     console.log(
@@ -6873,6 +6454,12 @@ async function scanLiveMatches() {
     console.log(
       `[Live] Đủ điều kiện phút 46-92: ${eligibleMatches.length}`
     );
+
+    // Chỉ tốn quota Odds API khi thực sự có trận cần phân tích.
+    if (eligibleMatches.length > 0) {
+      allOdds = await fetchAllLiveOdds();
+      console.log(`[Odds] Nhận ${allOdds.length} events | cache ${Math.round(ODDS_CACHE_TTL / 60000)} phút`);
+    }
 
 
     // ====================================================
