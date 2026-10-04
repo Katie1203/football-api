@@ -548,12 +548,15 @@ ${item.detailText}
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
+    console.log(`\n[${currentVN.timeStr}] 🔄 Bắt đầu vòng quét mới danh sách trận đấu live...`);
     
     try {
         const [allOdds, sofaMatches] = await Promise.all([
             fetchOddsData(),
             fetchSofaScoreLive()
         ]);
+
+        console.log(`[${currentVN.timeStr}] 📡 Đã lấy được ${sofaMatches.length} trận đấu từ SofaScore.`);
 
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
@@ -577,16 +580,21 @@ async function scanLiveMatches() {
                 continue;
             }
 
+            // In log thông báo trận đấu đang được bot tiến hành kiểm tra
+            console.log(`[Đang quét] [Trận #${index + 1}] [Phút: ${elapsed}'] [${league}] ${homeName} vs ${awayName}`);
+
             // Cào chỉ số trận đấu
             const metrics = await fetchMatchDetailStats(matchId);
-            if (!metrics || !metrics.hasData) continue;
+            if (!metrics || !metrics.hasData) {
+                console.log(`    └─> ⚠️ Chưa có dữ liệu thống kê chi tiết từ SofaScore.`);
+                continue;
+            }
 
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
-            // HIỂN THỊ CẢ CÁC TRẬN CHƯA ĐẠT 58% LÊN LOG
             if (aiAnalysis.shouldSend) {
-                console.log(`[Phân Tích AI] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName} ➔ Điểm AI: ${aiAnalysis.efficiency}% [ĐẠT CHUẨN GỬI TELEGRAM]`);
+                console.log(`    └─> [ĐẠT CHUẨN GỬI TELEGRAM] ➔ Hiệu suất AI: ${aiAnalysis.efficiency}% (>= 58%)`);
                 
                 const goalTimeline = await fetchMatchIncidents(matchId, homeScore, actualAwayScore);
                 const pickItem = {
@@ -603,7 +611,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`[Bỏ qua - Dưới chuẩn] [Phút: ${elapsed}'] [${league}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName} ➔ Điểm AI: ${aiAnalysis.efficiency}% (< 58%)`);
+                console.log(`    └─> [Chưa đạt chuẩn] ➔ Hiệu suất AI: ${aiAnalysis.efficiency}% (< 58%)`);
             }
         }
     } catch (err) {
