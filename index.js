@@ -17,6 +17,10 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
+// ⭐ Thêm Host và URL của The Fooball API làm nguồn dự phòng
+const FOOTBALL_API_HOST = 'the-fooball-api.p.rapidapi.com';
+const FOOTBALL_API_LIVE_URL = `https://${FOOTBALL_API_HOST}/football/live`;
+
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '196a388937f13e6c21d537729d88e246';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
 
@@ -115,8 +119,8 @@ const LEAGUE_NAME_MAP = {
 function parseLeagueName(item) {
     if (!item) return 'Bóng Đá Quốc Tế';
 
-    let category = item.tournament?.category?.name || item.category?.name || '';
-    let tournament = item.tournament?.name || item.competitionName || '';
+    let category = item.tournament?.category?.name || item.category?.name || item.league?.country || '';
+    let tournament = item.tournament?.name || item.competitionName || item.league?.name || '';
 
     if (LEAGUE_NAME_MAP[tournament]) {
         return LEAGUE_NAME_MAP[tournament];
@@ -160,8 +164,8 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 function calculateExactMinute(item) {
     if (!item) return 0;
 
-    const statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
-    const statusDesc = String(item.status?.description || '').toLowerCase();
+    const statusType = String(item.status?.type || item.status?.code || item.status || '').toLowerCase();
+    const statusDesc = String(item.status?.description || item.status?.long || '').toLowerCase();
 
     if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft') || statusType === 'ft') return 999;
     
@@ -171,6 +175,9 @@ function calculateExactMinute(item) {
 
     if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
         return item.time.played;
+    }
+    if (typeof item.elapsed === 'number' && item.elapsed > 0) {
+        return item.elapsed;
     }
 
     const matchDesc = statusDesc.match(/^(\d+)['\s]?$/);
@@ -247,7 +254,7 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS
+// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS & ĐA NGUỒN LIVE
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
@@ -275,10 +282,27 @@ async function fetchSofaScoreLive() {
     } catch (err) {
         const status = err.response?.status;
         if (status === 429) {
-            console.warn(`[SofaScore Warning]: Đã chạm giới hạn tần suất gọi API (Lỗi 429). Bot sẽ tự động thử lại ở vòng quét sau.`);
-        } else {
-            console.error(`[SofaScore Error]:`, err.response?.data?.message || err.message);
+            console.warn(`[SofaScore Warning]: Đã chạm giới hạn tần suất gọi API (Lỗi 429).`);
         }
+        return [];
+    }
+}
+
+// ⭐ Hàm gọi nguồn dự phòng "The Fooball API"
+async function fetchBackupLiveMatches() {
+    try {
+        const response = await axios.get(FOOTBALL_API_LIVE_URL, {
+            headers: {
+                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': FOOTBALL_API_HOST
+            },
+            timeout: 10000
+        });
+        console.log(`[Backup API] ✅ Lấy thành công dữ liệu trực tiếp từ "The Fooball API".`);
+        const rawList = response.data?.response || response.data?.matches || response.data || [];
+        return Array.isArray(rawList) ? rawList : [];
+    } catch (err) {
+        console.warn(`[Backup API Warning]: Không thể tải dữ liệu dự phòng - ${err.message}`);
         return [];
     }
 }
@@ -513,7 +537,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU ĐỘ TRỄ CHỐNG LỖI 429)
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (TÍCH HỢP ĐA NGUỒN)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -521,26 +545,35 @@ async function scanLiveMatches() {
     console.log(`[Auto-Scan AI] Đang quét trận đấu... (${currentVN.timeStr})`);
 
     try {
-        const [allOdds, sofaMatches] = await Promise.all([
+        const [allOdds, sofaMatchesResult] = await Promise.all([
             fetchOddsData(),
             fetchSofaScoreLive()
         ]);
 
-        console.log(`[Debug API] Lấy thành công ${sofaMatches.length} trận từ SofaScore live.`);
+        let matchesList = sofaMatchesResult;
 
-        if (!Array.isArray(sofaMatches) || sofaMatches.length === 0) {
-            console.log(`[Thông báo] Hiện tại không có trận đấu live nào từ API.`);
+        // ⭐ Tự động kích hoạt nguồn dự phòng nếu SofaScore không trả về dữ liệu
+        if (!Array.isArray(matchesList) || matchesList.length === 0) {
+            console.log(`[Switching Source] SofaScore trống hoặc giới hạn, đang kích hoạt "The Fooball API"...`);
+            matchesList = await fetchBackupLiveMatches();
+        }
+
+        console.log(`[Debug API] Lấy thành công tổng cộng ${matchesList.length} trận live.`);
+
+        if (!Array.isArray(matchesList) || matchesList.length === 0) {
+            console.log(`[Thông báo] Hiện tại không có trận đấu live nào từ tất cả các nguồn.`);
             return;
         }
 
-        for (let index = 0; index < sofaMatches.length; index++) {
-            const item = sofaMatches[index];
-            const matchId = String(item.id);
+        for (let index = 0; index < matchesList.length; index++) {
+            const item = matchesList[index];
+            const matchId = String(item.id || item.fixture?.id || index);
             const elapsed = calculateExactMinute(item);
-            const homeName = item.homeTeam?.name || 'Đội nhà';
-            const awayName = item.awayTeam?.name || 'Đội khách';
-            const homeScore = item.homeScore?.current ?? 0;
-            const awayScore = item.awayScore?.current ?? 0;
+            
+            const homeName = item.homeTeam?.name || item.teams?.home?.name || item.homeName || 'Đội nhà';
+            const awayName = item.awayTeam?.name || item.teams?.away?.name || item.awayName || 'Đội khách';
+            const homeScore = item.homeScore?.current ?? item.goals?.home ?? 0;
+            const awayScore = item.awayScore?.current ?? item.goals?.away ?? 0;
             const league = parseLeagueName(item);
 
             if (!matchId) continue;
@@ -560,7 +593,7 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            // ⭐ THÊM ĐỘ TRỄ 1 GIÂY GIỮA CÁC TRẬN ĐỂ CHỐNG LỖI 429 TRÊN RAPIDAPI
+            // ⭐ THÊM ĐỘ TRỄ 1 GIÂY GIỮA CÁC TRẬN ĐỂ CHỐNG LỖI 429
             await new Promise(resolve => setTimeout(resolve, 1000));
 
             const logTimeStr = isHT ? 'HT (Nghỉ giữa hiệp)' : `${elapsed}'`;
@@ -597,7 +630,7 @@ async function scanLiveMatches() {
 }
 
 app.get('/', (req, res) => {
-    res.send('Football Live AI Scanner Service is Running!');
+    res.send('Football Live AI Multi-Source Scanner Service is Running!');
 });
 
 app.listen(PORT, () => {
