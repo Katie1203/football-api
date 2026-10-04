@@ -588,7 +588,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
  }
 
  if (price <= 1.40) {
- oddsBonus += 2.0;
+ oddsBonus += 18.0;
  oddsNotes.push(`Odds Over cực thấp (${price}) - Dòng tiền kết tài mạnh`);
  } else if (price <= 1.60) {
  oddsBonus += 13.0;
@@ -694,7 +694,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
  }
 
  const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
- const MIN_SEND_PERCENTAGE = 58.0; 
+ const MIN_SEND_PERCENTAGE = 60.0; 
  const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
 
  return {
@@ -783,27 +783,29 @@ async function scanLiveMatches() {
  const leagueName = parseLeagueName(item, source);
 
  // ==========================================
- // 🛑 RÀO CHẶN 1: BỎ QUA NGAY TỪ ĐẦU NẾU THUỘC GIẢI BỊ LỌC (TRẺ, PHỤ, SIMULATED...)
+ // 🛑 RÀO CHẶN 1: BỎ QUA NGAY NẾU THUỘC GIẢI BỊ LỌC (TRẺ, PHỤ, SIMULATED...)
  // ==========================================
  if (isFilteredLeague(leagueName, homeName, awayName)) {
- console.log(`[Trận #${index + 1}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua từ đầu]: Giải trẻ/Phụ/Không hợp lệ`);
  continue;
  }
 
  // ==========================================
- // 🛑 RÀO CHẶN 2: BỎ QUA NGAY NẾU DƯỚI 45 PHÚT HOẶC NGHỈ GIỮA HIỆP (HT)
+ // 🛑 RÀO CHẶN 2: BỎ QUA NGAY TRẬN CHƯA ĐÁ (0') HOẶC ĐÃ KẾT THÚC (999) TRÁNH RÁC LOG
  // ==========================================
  const elapsed = calculateExactMinute(item, source);
+ if (elapsed === 0 || elapsed === 999) {
+ continue;
+ }
+
  const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
+ // Chỉ giữ lại các trận đang trong Hiệp 2 từ phút 45 đến 92
  if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
- const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
- console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua từ đầu]: Dưới 45 phút, giờ nghỉ HT hoặc ngoài khung (45-92')`);
  continue;
  }
 
  // ==========================================
- // KHI VƯỢT QUA 2 RÀO CHẶN TRÊN, BOT MỚI TIẾN HÀNH GỌI API CHI TIẾT (TIẾT KIỆM LƯỢT)
+ // KHI VƯỢT QUA TẤT CẢ RÀO CHẶN, TIẾN HÀNH PHÂN TÍCH CHI TIẾT
  // ==========================================
  console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
@@ -830,7 +832,7 @@ async function scanLiveMatches() {
  };
  await sendTelegramAlert(pickItem);
  } else {
- console.log(` └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 58%`);
+ console.log(` └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%)`);
  }
  }
  } catch (err) {
