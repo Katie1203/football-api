@@ -694,12 +694,14 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     }
 
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
-    const MIN_SEND_PERCENTAGE = 60.0; 
-    const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
+    
+    // ĐÃ HẠ NGƯỠNG GỬI XUỐNG 58.0%
+    const MIN_SEND_PERCENTAGE = 58.0; 
+    const shouldSend = parseFloat(finalPercentage) >= MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
         efficiency: finalPercentage,
-        detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
+        detailText: matchAnalysis.length > 0 ? matchAnalysis.map(t => `• ${t}`).join('\n') : '• Không có dữ liệu chỉ số thống kê live từ API',
         shouldSend
     };
 }
@@ -726,16 +728,19 @@ function analyzeScorePrediction(item) {
         } else {
             predictionText = `• Khoảng cách ${Math.abs(homeS - awayS)} bàn ở phút ${minute}': Nhịp độ cởi mở, dòng tiền và thế trận ủng hộ việc có thêm bàn thắng nới rộng cách biệt.`;
         }
-    } else if (eff >= 72.0) {
+    } else if (eff >= 70.0) {
         confidenceLevel = "⚡ SÁNG CỬA (RUNG UY TÍN)";
         if (homeS === awayS) {
             predictionText = `• Thế trận giằng co ${homeS}-${homeS} ở phút ${minute}': Các chỉ số sút và phạt góc tích lũy tốt. Bàn thắng có thể đến từ tình huống cố định hoặc đột phá cá nhân.`;
         } else {
             predictionText = `• Đội dẫn bàn tiếp tục duy trì áp lực ở phút ${minute}': Séc-men tấn công tốt, khả năng có bàn thắng thứ ${totalCurrent + 1} là khá sáng.`;
         }
+    } else if (eff >= 58.0) {
+        confidenceLevel = "⚠️ TIỀM NĂNG (THEO DÕI SÁT)";
+        predictionText = `• Đã chạm mốc kích hoạt (${eff}%) ở phút ${minute}': Bắt đầu có tín hiệu chiến thuật, nên quan sát dòng tiền live trước khi vào lệnh.`;
     } else {
-        confidenceLevel = "📊 TRUNG BÌNH (THEO DÕI THÊM)";
-        predictionText = `• Trận đấu đạt mốc ${eff}% ở phút ${minute}': Có tín hiệu nhịp độ nhưng biên độ rủi ro còn cao. Nên chờ line Over hạ nhẹ hoặc quan sát thêm dòng tiền.`;
+        confidenceLevel = "📊 DƯỚI NGƯỠNG (CHỜ ĐỢI)";
+        predictionText = `• Trận đấu đạt mốc ${eff}% ở phút ${minute}': Chưa đủ tín hiệu bứt phá mạnh, cần quan sát thêm diễn biến live trên sân.`;
     }
 
     return {
@@ -754,7 +759,7 @@ async function sendTelegramAlert(item) {
     const message = 
 `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})
 🏆 Giải đấu: ${item.league}
-⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–{item.awayScore} ${item.awayName}
+⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–${item.awayScore} ${item.awayName}
 ⏱ Thời gian: ${timeDisplay}
 
 ⚽ DIỄN BIẾN TỶ SỐ THEO PHÚT:
@@ -782,7 +787,7 @@ ${scoreAnalysis.predictionText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG (HIỆN RÕ MỌI CHI TIẾT LOG)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -846,10 +851,23 @@ async function scanLiveMatches() {
             const metrics = await fetchMatchDetailStats(matchId, source);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
+            
+            // Đọc vị tạm tính cho mọi trận đấu
+            const scoreAnalysis = analyzeScorePrediction({
+                ruleEfficiency: aiAnalysis.efficiency,
+                homeScore,
+                awayScore: actualAwayScore,
+                elapsed: numericElapsed
+            });
+
+            // LUÔN IN CHI TIẾT RA CONSOLE KỂ CẢ KHI DƯỚI 58%
+            console.log(`    📊 [Chi tiết thế trận & Chỉ số]:`);
+            console.log(aiAnalysis.detailText.split('\n').map(line => `        ${line}`).join('\n'));
+            console.log(`    🎯 [Đọc vị tạm tính]: ${scoreAnalysis.confidenceLevel} -> Hiệu suất Rule: ${aiAnalysis.efficiency}%`);
 
             if (aiAnalysis.shouldSend) {
                 const goalTimeline = await fetchMatchIncidents(matchId, source, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                console.log(`    ✅ [ĐẠT CHUẨN GỬI TELEGRAM] (${aiAnalysis.efficiency}%)`);
 
                 const pickItem = {
                     id: matchId,
@@ -866,7 +884,7 @@ async function scanLiveMatches() {
                 };
                 await sendTelegramAlert(pickItem);
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
+                console.log(`    ❌ [Bỏ qua gửi Telegram]: Điểm AI chưa đạt ngưỡng yêu cầu >= 58%`);
             }
         }
     } catch (err) {
