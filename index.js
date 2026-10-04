@@ -25,11 +25,11 @@ function getNextRapidApiKey() {
   return key.trim();
 }
 
-// Nguồn 1: SofaScore (Đã sửa đúng host khớp với gói cước cao cấp trên RapidAPI)
+// Nguồn 1: Live Football (Gói cước cao cấp chính hãng trên RapidAPI)
 const SOFASCORE_HOST = 'free-api-live-football-data.p.rapidapi.com';
-const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
+const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/football-current-live`;
 
-// Nguồn 2: Livescore6
+// Nguồn 2: Livescore6 (Dự phòng tự động)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -146,11 +146,11 @@ function parseLeagueName(item, source) {
   let tournament = '';
 
   if (source === 'sofascore') {
-    category = item.tournament?.category?.name || item.category?.name || '';
-    tournament = item.tournament?.name || item.competitionName || '';
+    category = item.tournament?.category?.name || item.category?.name || item.league?.country || '';
+    tournament = item.tournament?.name || item.competitionName || item.league?.name || '';
   } else {
     category = item._inheritedCategory || item.Cnm || item.categoryName || '';
-    tournament = item._inheritedTournament || item.Snm || item.tournamentName || item.Tname || '';
+    tournament = item._inheritedTournament || item.Snm || item.Tname || item.tournamentName || item.LeagueName || '';
   }
 
   if (LEAGUE_NAME_MAP[tournament]) {
@@ -213,6 +213,9 @@ function calculateExactMinute(item, source) {
     if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
       return item.time.played;
     }
+    // Hỗ trợ quét phút từ cấu trúc live football data mới
+    if (typeof item.minute === 'number' && item.minute > 0) return item.minute;
+    if (typeof item.elapsed === 'number' && item.elapsed > 0) return item.elapsed;
   } else {
     if (typeof item.Tm === 'number' && item.Tm > 0) return item.Tm;
     if (typeof item.time === 'number' && item.time > 0) return item.time;
@@ -261,13 +264,16 @@ async function fetchLiveMatchesDualSource() {
       },
       timeout: 10000
     });
-    const events = response.data?.events || response.data?.liveEvents || [];
+
+    const dataObj = response.data;
+    const events = Array.isArray(dataObj) ? dataObj : (dataObj?.events || dataObj?.liveEvents || dataObj?.matches || dataObj?.response || []);
+    
     if (events.length > 0) {
-      console.log(`[Source: SofaScore] ✅ Lấy thành công ${events.length} trận live.`);
+      console.log(`[Source: Live-Football] ✅ Lấy thành công ${events.length} trận live.`);
       return { source: 'sofascore', matches: events };
     }
   } catch (err) {
-    console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
+    console.warn(`⚠️ [Live-Football Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
   }
 
   try {
@@ -823,7 +829,7 @@ ${item.predictionText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU LỌC SỚM TIẾT KIỆM API)
+// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
   const currentVN = getVietnamTime();
@@ -838,7 +844,7 @@ async function scanLiveMatches() {
 
     const { source, matches } = liveResult;
     if (matches.length === 0) {
-      console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả SofaScore và Livescore6.`);
+      console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả Live-Football và Livescore6.`);
       return;
     }
 
@@ -850,11 +856,11 @@ async function scanLiveMatches() {
       let matchId, homeName, awayName, homeScore, actualAwayScore;
 
       if (source === 'sofascore') {
-        matchId = String(item.id);
-        homeName = item.homeTeam?.name || 'Đội nhà';
-        awayName = item.awayTeam?.name || 'Đội khách';
-        homeScore = item.homeScore?.current ?? 0;
-        actualAwayScore = item.awayScore?.current ?? 0;
+        matchId = String(item.id || item.matchId || item.fixtureId || `lf_${index}`);
+        homeName = item.homeTeam?.name || item.home?.name || item.homeTeam || 'Đội nhà';
+        awayName = item.awayTeam?.name || item.away?.name || item.awayTeam || 'Đội khách';
+        homeScore = item.homeScore?.current ?? item.homeScore ?? item.goals?.home ?? 0;
+        actualAwayScore = item.awayScore?.current ?? item.awayScore ?? item.goals?.away ?? 0;
       } else {
         matchId = String(item.Eid || item.id || item.matchId || `ls6_${index}`);
         
@@ -870,7 +876,7 @@ async function scanLiveMatches() {
 
       const leagueName = parseLeagueName(item, source);
 
-      // 1. LỌC SỚM: Bỏ qua giải rác / giải trẻ ngay lập tức (KHÔNG TỐN REQUEST API PHỤ)
+      // 1. LỌC SỚM: Bỏ qua giải rác / giải trẻ ngay lập tức
       if (isFilteredLeague(leagueName, homeName, awayName)) {
         continue;
       }
@@ -891,7 +897,6 @@ async function scanLiveMatches() {
       validMatchesCount++;
       console.log(`\n[🔥 Trận hợp lệ tiềm năng #${validMatchesCount}] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
-      // Chỉ các trận thực sự sống sót qua bộ lọc sớm mới gọi API lấy thống kê chi tiết
       const metrics = await fetchMatchDetailStats(matchId, source, item);
       const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
       
