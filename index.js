@@ -362,7 +362,7 @@ async function fetchOddsData() {
 }
 
 // ==========================================
-// 7. THỐNG KÊ CHI TIẾT & ĐỌC VỊ THẾ TRẬN
+// 7. THỐNG KÊ CHI TIẾT & ĐỌC VỊ THẾ TRẬN (ĐÃ FIX MỞ RỘNG VÉC-TƠ)
 // ==========================================
 async function fetchMatchDetailStats(matchId, source) {
  if (source === 'sofascore') {
@@ -428,16 +428,29 @@ async function fetchMatchDetailStats(matchId, source) {
  timeout: 6000
  });
 
+ // In log cấu trúc trả về để debug nếu dữ liệu trống
+ // console.log(`[DEBUG LS6 Stats ID ${matchId}]:`, JSON.stringify(response.data).slice(0, 300));
+
  let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, dangerousAttacks = 0, attacks = 0;
  let possessionHome = null, possessionAway = null;
 
  const statsData = response.data;
- let statList = Array.isArray(statsData) ? statsData : (statsData?.statistics || statsData?.stats || []);
+ 
+ // Đệ quy vét cạn mọi tầng dữ liệu trong JSON của Livescore6
+ function extractStatsRecursive(obj) {
+ if (!obj || typeof obj !== 'object') return;
 
- statList.forEach(st => {
- const name = String(st.name || st.type || st.title || '').toLowerCase();
- const homeVal = parseInt(st.home || st.homeValue, 10);
- const awayVal = parseInt(st.away || st.awayValue, 10);
+ if (Array.isArray(obj)) {
+ obj.forEach(item => extractStatsRecursive(item));
+ return;
+ }
+
+ // Kiểm tra nếu object chứa cặp key thông số
+ const name = String(obj.name || obj.type || obj.title || obj.Key || '').toLowerCase();
+ const homeVal = parseInt(obj.home || obj.homeValue || obj.Value1 || obj.H, 10);
+ const awayVal = parseInt(obj.away || obj.awayValue || obj.Value2 || obj.A, 10);
+ 
+ if (name && (!isNaN(homeVal) || !isNaN(awayVal))) {
  const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
 
  if (name.includes('shot on target') || name.includes('sút trúng đích')) shotsOnTarget = Math.max(shotsOnTarget, sumVal);
@@ -452,7 +465,17 @@ async function fetchMatchDetailStats(matchId, source) {
  possessionAway = awayVal;
  }
  }
+ }
+
+ // Tiếp tục duyệt sâu vào các key con
+ Object.keys(obj).forEach(key => {
+ if (obj[key] && typeof obj[key] === 'object') {
+ extractStatsRecursive(obj[key]);
+ }
  });
+ }
+
+ extractStatsRecursive(statsData);
 
  return {
  sofaStats: {
@@ -470,65 +493,6 @@ async function fetchMatchDetailStats(matchId, source) {
  }
  }
 }
-
-function cleanTeamName(name) {
- return String(name || '').toLowerCase().replace(/\b(fc|cf|club|sc|sv|usd|ac|afc|vfb|fsv|cd|nk)\b/g, '').replace(/[^a-z0-9]/g, '').trim();
-}
-
-function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
- if (!Array.isArray(allOdds) || allOdds.length === 0) return null;
-
- const hClean = cleanTeamName(homeName);
- const aClean = cleanTeamName(awayName);
-
- const foundMatch = allOdds.find(m => {
- const mHome = cleanTeamName(m.home_team);
- const mAway = cleanTeamName(m.away_team);
- return (mHome.includes(hClean) || hClean.includes(mHome)) && (mAway.includes(aClean) || aClean.includes(mAway));
- });
-
- if (!foundMatch || !foundMatch.bookmakers?.[0]) return null;
- const totalsMarket = foundMatch.bookmakers[0].markets?.find(mk => mk.key === 'totals');
- const overOutcome = totalsMarket?.outcomes?.find(o => o.name === 'Over');
- if (!overOutcome) return null;
-
- let oddsBonus = 0;
- let oddsNotes = [];
- const overLine = overOutcome.point;
- const price = overOutcome.price;
- const pointDiff = overLine - currentTotalGoals;
-
- if (pointDiff >= 0.75) {
- oddsBonus = 16.0;
- oddsNotes.push(`Line Over giữ mức cao (${overLine}) so với tổng ${currentTotalGoals} bàn`);
- } else if (pointDiff > 0) {
- oddsBonus = 10.0;
- oddsNotes.push(`Line Over (${overLine}) sát mốc nổ bàn`);
- }
-
- if (price <= 1.40) {
- oddsBonus += 18.0;
- oddsNotes.push(`Odds Over cực thấp (${price}) - Dòng tiền kết tài mạnh`);
- } else if (price <= 1.60) {
- oddsBonus += 13.0;
- oddsNotes.push(`Odds Over giảm sâu (${price})`);
- } else if (price <= 1.85) {
- oddsBonus += 8.0;
- oddsNotes.push(`Odds Over ổn định (${price})`);
- } else {
- oddsBonus += 4.0;
- oddsNotes.push(`Odds Over (${price})`);
- }
-
- return {
- bookmaker: foundMatch.bookmakers[0].title,
- line: overLine,
- odds: price,
- oddsBonus,
- oddsNoteText: oddsNotes.join(' | ')
- };
-}
-
 // ==========================================
 // 8. THUẬT TOÁN AI ĐỌC VỊ THẾ TRẬN
 // ==========================================
