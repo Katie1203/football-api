@@ -107,17 +107,17 @@ function parseLeagueName(item, source) {
 }
 
 // ==========================================
-// 2. BỘ LỌC TỐI ƯU: GIỮ HẠNG 1 2 3 4 & LỨA U21+, LỌC BÁN CHUYÊN/PHONG TRÀO
+// 2. BỘ LỌC TỐI ƯU: CHẶN SERIE D, BÁN CHUYÊN & GIỮ HẠNG 1, 2, 3, 4
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    // 1. CHẶN GIẢI TRẺ THẤP (U15-U20), DỰ BỊ, ESPORTS, BÁN CHUYÊN, NGHIỆP DƯ, PHONG TRÀO
-    const strictRejectRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20|youth|juvenil|reserves|reserve|res\.|dự bị|esports|e-soccer|cyber|simulated|friendly|amateur|amateurs|academic|university|phong trào|bán chuyên|regional league|oberliga|tercera|gamma ethniki)\b/i;
+    // 1. CHẶN TRIỆT ĐỂ: SERIE D, GIẢI TRẺ THẤP (U15-U20), BÁN CHUYÊN, NGHIỆP DƯ, PHONG TRÀO
+    const strictRejectRegex = /\b(serie\s*d|u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20|youth|juvenil|reserves|reserve|res\.|dự bị|esports|e-soccer|cyber|simulated|friendly|amateur|amateurs|academic|university|phong trào|bán chuyên|regional league|oberliga|tercera|gamma ethniki)\b/i;
     if (strictRejectRegex.test(textToTest)) return true;
 
     // 2. KIỂM TRA MỞ CHO PHÉP GIẢI HẠNG 2, 3, 4 QUỐC GIA (NAM & NỮ)
-    const validDivisionRegex = /\b(hạng\s*[234]|league\s*[234]|liga\s*[234]|serie\s*[bcd]|division\s*[234]|2nd\s*division|3rd\s*division|4th\s*division|2\.\s*liga|3\.\s*liga|segunda|tercera|championship|1st\s*division|2nd\s*snl|3rd\s*snl)\b/i;
+    const validDivisionRegex = /\b(hạng\s*[234]|league\s*[234]|liga\s*[234]|serie\s*[bc]|division\s*[234]|2nd\s*division|3rd\s*division|4th\s*division|2\.\s*liga|3\.\s*liga|segunda|championship|1st\s*division|2nd\s*snl|3rd\s*snl)\b/i;
     if (validDivisionRegex.test(textToTest)) {
         return false;
     }
@@ -130,19 +130,14 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 
     // 4. WHITELIST - CÁC GIẢI VĐQG / CÚP CHÂU LỤC / NỮ TOP
     const approvedLeagues = [
-        // Cúp Châu Lục & Quốc Tế
         'champions league', 'europa league', 'conference league', 'nations league', 
         'libertadores', 'sudamericana', 'afc champions', 'world cup', 'euro', 'copa america',
-        
-        // Giải Nam VĐQG
-        'premier league', 'ngoại hạng anh', 'laliga', 'tây ban nha', 'serie a', 'ý', 'bundesliga', 'đức', 'ligue 1', 'pháp',
+        'premier league', 'ngoại hạng anh', 'laliga', 'tây ban nha', 'serie a', 'serie b', 'serie c', 'ý', 'bundesliga', 'đức', 'ligue 1', 'pháp',
         'eredivisie', 'hà lan', 'primeira liga', 'bồ đào nha', 'super lig', 'thổ nhĩ kỳ',
         'pro league', 'bỉ', 'premiership', 'scotland', 'super league', 'thụy sĩ',
         'eliteserien', 'na uy', 'superliga', 'đan mạch', 'brasileiro', 'brazil', 'liga profesional', 'argentina', 'mls', 'mỹ',
         'j1 league', 'nhật bản', 'k league 1', 'hàn quốc', 'super league (china)', 'trung quốc',
         'pro league (saudi)', 'ả rập', 'a-league', 'úc', 'thai league 1', 'thái lan', 'v-league 1', 'việt nam',
-        
-        // Giải Nữ Top
         'women\'s world cup', 'world cup women', 'olympic women', 'women\'s champions league',
         'wsl', 'women\'s super league', 'nwsl', 'liga f', 'frauen-bundesliga', 'première ligue', 'arkema', 
         'serie a femminile', 'eredivisie women', 'we league', 'damallsvenskan', 'a-league women', 'vđqg nữ'
@@ -435,12 +430,11 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 }
 
 // ==========================================
-// 8. TELEGRAM ALERT & AUTO SCANNER
+// 8. TELEGRAM ALERT & AUTO SCANNER (LƯỢC BỎ TRẬN THIẾU CHỈ SỐ)
 // ==========================================
 async function sendTelegramAlert(item) {
     if (sentAlerts.has(item.id)) return;
 
-    // PHÂN LOẠI THÔNG BÁO: ĐẠT TỪ 65% BÁO "BIG BET"
     const isBigBet = parseFloat(item.ruleEfficiency) >= 65.0;
     const headerText = isBigBet 
         ? `🔥 BIG BET RUNG CHUỔNG VÀNGGG 🔥 (${item.source.toUpperCase()})` 
@@ -492,21 +486,40 @@ async function scanLiveMatches() {
 
             const leagueName = parseLeagueName(item, source);
 
+            // 1. Chặn giải bán chuyên, Serie D, giải trẻ thấp
             if (isFilteredLeague(leagueName, homeName, awayName)) {
                 skippedCount++;
                 continue;
             }
 
+            // 2. Chặn thời gian không nằm trong khoảng rung (46-98)
             const minute = calculateExactMinute(item, source);
             if (minute < 46 || minute > 98) {
                 skippedCount++;
                 continue;
             }
 
+            // 3. Lấy thông số trận đấu
+            const metrics = await fetchMatchDetailStats(matchId, source);
+            const stats = metrics.sofaStats || {};
+
+            // 4. Kiểm tra bắt buộc có chỉ số thực tế (Lược bỏ ngay nếu không có)
+            const hasTacticalData = Boolean(
+                stats.possession || 
+                (stats.shotsOnTarget > 0) || 
+                (stats.totalShots > 0) || 
+                (stats.corners > 0) || 
+                (stats.redCards > 0)
+            );
+
+            if (!hasTacticalData) {
+                skippedCount++;
+                continue; 
+            }
+
             scannedCount++;
             console.log(`[Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${minute}'] [${leagueName}] ${homeName} ${homeScore}-${awayScore} ${awayName}`);
 
-            const metrics = await fetchMatchDetailStats(matchId, source);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + awayScore);
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
 
@@ -518,10 +531,10 @@ async function scanLiveMatches() {
                     detailText: aiAnalysis.detailText, ruleEfficiency: aiAnalysis.efficiency
                 });
             } else {
-                console.log(`    └─> [Bỏ qua]: Điểm AI (${aiAnalysis.efficiency}%) - Chưa đạt mốc 58% hoặc thiếu chỉ số`);
+                console.log(`    └─> [Bỏ qua]: Điểm AI (${aiAnalysis.efficiency}%) - Chưa đạt mốc 58%`);
             }
         }
-        console.log(`[Thống kê lượt quét]: Đã phân tích ${scannedCount} trận chất lượng (Đã chặn ${skippedCount} trận phụ/bán chuyên).`);
+        console.log(`[Thống kê lượt quét]: Đã phân tích ${scannedCount} trận hợp lệ có đủ chỉ số (Đã lược bỏ ${skippedCount} trận không đạt/thiếu dữ liệu).`);
     } catch (err) {
         console.error(`[API Fetch Error]:`, err.message);
     }
