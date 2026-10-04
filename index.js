@@ -1,4 +1,4 @@
-const express = require('express');
+\const express = require('express');
 const axios = require('axios');
 
 const app = express();
@@ -39,34 +39,13 @@ function getVietnamTime() {
 // 1. BẢNG DỊCH QUỐC GIA & GIẢI ĐẤU VIỆT HÓA
 // ==========================================
 const COUNTRY_MAP = {
-    'England': 'Anh',
-    'Spain': 'Tây Ban Nha',
-    'Italy': 'Ý',
-    'Germany': 'Đức',
-    'France': 'Pháp',
-    'Japan': 'Nhật Bản',
-    'South Korea': 'Hàn Quốc',
-    'Vietnam': 'Việt Nam',
-    'Brazil': 'Brazil',
-    'Argentina': 'Argentina',
-    'Netherlands': 'Hà Lan',
-    'Portugal': 'Bồ Đào Nha',
-    'Turkey': 'Thổ Nhĩ Kỳ',
-    'Saudi Arabia': 'Ả Rập Xê Út',
-    'China': 'Trung Quốc',
-    'Thailand': 'Thái Lan',
-    'Australia': 'Úc',
-    'USA': 'Mỹ',
-    'Norway': 'Na Uy',
-    'Czech Republic': 'Cộng hòa Séc',
-    'Denmark': 'Đan Mạch',
-    'Croatia': 'Croatia',
-    'Poland': 'Ba Lan',
-    'Austria': 'Áo',
-    'World': 'Quốc Tế',
-    'Europe': 'Châu Âu',
-    'Asia': 'Châu Á',
-    'South America': 'Nam Mỹ'
+    'England': 'Anh', 'Spain': 'Tây Ban Nha', 'Italy': 'Ý', 'Germany': 'Đức', 'France': 'Pháp',
+    'Japan': 'Nhật Bản', 'South Korea': 'Hàn Quốc', 'Vietnam': 'Việt Nam', 'Brazil': 'Brazil',
+    'Argentina': 'Argentina', 'Netherlands': 'Hà Lan', 'Portugal': 'Bồ Đào Nha', 'Turkey': 'Thổ Nhĩ Kỳ',
+    'Saudi Arabia': 'Ả Rập Xê Út', 'China': 'Trung Quốc', 'Thailand': 'Thái Lan', 'Australia': 'Úc',
+    'USA': 'Mỹ', 'Norway': 'Na Uy', 'Czech Republic': 'Cộng hòa Séc', 'Denmark': 'Đan Mạch',
+    'Croatia': 'Croatia', 'Poland': 'Ba Lan', 'Austria': 'Áo', 'World': 'Quốc Tế', 'Europe': 'Châu Âu',
+    'Asia': 'Châu Á', 'South America': 'Nam Mỹ'
 };
 
 const LEAGUE_NAME_MAP = {
@@ -81,13 +60,10 @@ const LEAGUE_NAME_MAP = {
     'CONMEBOL Sudamericana': 'Cúp C2 Nam Mỹ (Sudamericana)',
     'World Cup': 'Giải Vô Địch Thế Giới (World Cup)',
     'Club World Cup': 'Giải VĐQG Thế Giới Các CLB',
-    'Friendlies': 'Giao Hữu Quốc Tế',
-    'Club Friendly': 'Giao Hữu CLB',
 
     'Premier League': 'Ngoại Hạng Anh',
     'Championship': 'Hạng Nhất Anh',
     'League One': 'Hạng Hai Anh',
-    'League Two': 'Hạng Ba Anh',
     'FA Cup': 'Cúp FA',
     'EFL Cup': 'Cúp Liên Đoàn Anh',
 
@@ -108,10 +84,7 @@ const LEAGUE_NAME_MAP = {
     'Coupe de France': 'Cúp Quốc Gia Pháp',
 
     'J1 League': 'VĐQG Nhật Bản',
-    'J2 League': 'Hạng 2 Nhật Bản',
-    'J3 League': 'Hạng 3 Nhật Bản',
     'K League 1': 'VĐQG Hàn Quốc',
-    'K League 2': 'Hạng 2 Hàn Quốc',
     'V-League 1': 'V-League Việt Nam',
     'Thai League 1': 'VĐQG Thái Lan',
     'Super League': 'VĐQG Trung Quốc'
@@ -155,45 +128,67 @@ function parseLeagueName(item, source) {
 }
 
 // ==========================================
-// 2. BỘ LỌC THÔNG MINH (GIẢI TRẺ / ESPORTS)
+// 2. BỘ LỌC GIẢI ĐẤU (GIỮ NỮ, U20-U23, HẠNG 3-4, CÚP QG, GIAO HỮU QT/CLB)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
     
-    const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
-    if (youthRegex.test(textToTest)) return true;
+    // 1. Loại bỏ các lứa trẻ quá nhỏ (U15, U16, U17, U18, U19) -> GIỮ LẠI U20, U21, U23
+    const juniorYouthRegex = /\b(u-?1[0-9]|sub-?1[0-9]|under-?1[0-9])\b/i;
+    if (juniorYouthRegex.test(textToTest)) {
+        return true;
+    }
 
-    const filterKeywords = ['simulated', 'srl', 'esports', 'e-soccer'];
-    return filterKeywords.some(kw => textToTest.includes(kw));
+    // 2. Loại bỏ bóng đá ảo / Esports / SRL / Phong trào / Dự bị
+    const strictBlacklist = [
+        'simulated', 'srl', 'esports', 'e-soccer', 'gt sports', 'cyber',
+        'reserves', 'reserve', 'res.', 'dự bị',
+        'amateur', 'amateurs', 'phong trào',
+        'academic', 'university'
+    ];
+
+    if (strictBlacklist.some(kw => textToTest.includes(kw))) {
+        return true;
+    }
+
+    // 3. Ngoại lệ Giao hữu: Giữ giao hữu quốc tế & CLB chuẩn
+    const isInternationalFriendly = textToTest.includes('international friendly') || 
+                                    textToTest.includes('giao hữu quốc tế') ||
+                                    textToTest.includes('club friendly') ||
+                                    textToTest.includes('club friendlies') ||
+                                    textToTest.includes('giao hữu câu lạc bộ');
+
+    if (textToTest.includes('friendly') && !isInternationalFriendly) {
+        return true;
+    }
+
+    return false;
 }
 
 // ==========================================
-// 3. HÀM TÍNH PHÚT CHUẨN XÁC CHO SOFASCORE & LIVESCORE6
+// 3. HÀM TÍNH PHÚT CHUẨN XÁC
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
 
     if (source === 'sofascore') {
-        const statusType = item.status?.type; // 'inprogress', 'halftime', 'finished', etc.
+        const statusType = item.status?.type;
         
         if (statusType !== 'inprogress') return 0;
 
         const description = (item.status?.description || '').toLowerCase();
         
-        // Nếu là Hiệp 1 thì trả về phút trong hiệp 1
         if (description.includes('1st half') || description.includes('h1')) {
             const match = description.match(/(\d+)/);
             return match ? parseInt(match[1], 10) : 20; 
         }
 
-        // Tính phút thi đấu theo Timestamp
         const currentPeriodStart = item.time?.currentPeriodStartTimestamp;
         if (currentPeriodStart) {
             const nowInSeconds = Math.floor(Date.now() / 1000);
             const elapsedSeconds = nowInSeconds - currentPeriodStart;
             const elapsedMinutes = Math.floor(elapsedSeconds / 60);
 
-            // Đang ở Hiệp 2 -> Lấy 45 phút hiệp 1 cộng số phút trôi qua hiệp 2
             if (description.includes('2nd half') || description.includes('h2') || statusType === 'inprogress') {
                 return 45 + elapsedMinutes;
             }
@@ -204,7 +199,6 @@ function calculateExactMinute(item, source) {
         const match = textToSearch.match(/(\d+)/);
         return match ? parseInt(match[1], 10) : 0;
     } else {
-        // Nguồn Livescore6
         const textToSearch = `${item.Eps || ''} ${item.status || ''} ${item.statusText || ''} ${item.Tm || ''} ${item.time || ''}`;
         const lower = textToSearch.toLowerCase();
         
@@ -546,6 +540,9 @@ function cleanTeamName(name) {
         .trim();
 }
 
+// ==========================================
+// 8. PHÂN TÍCH ODDS VALUE NHÀ CÁI
+// ==========================================
 function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
     if (!Array.isArray(allOdds) || allOdds.length === 0) return null;
 
@@ -569,26 +566,29 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
     const price = overOutcome.price;
     const pointDiff = overLine - currentTotalGoals;
 
+    // 1. Mốc Tài Xỉu
     if (pointDiff >= 0.75) {
-        oddsBonus = 16.0;
-        oddsNotes.push(`Line Over giữ mức cao (${overLine}) so với tổng ${currentTotalGoals} bàn`);
+        oddsBonus += 15.0;
+        oddsNotes.push(`Mốc Over giữ cao (${overLine}) so với hiện tại ${currentTotalGoals} bàn`);
     } else if (pointDiff > 0) {
-        oddsBonus = 10.0;
-        oddsNotes.push(`Line Over (${overLine}) sát mốc nổ bàn`);
+        oddsBonus += 8.0;
+        oddsNotes.push(`Mốc Over (${overLine}) sát mốc nổ bàn`);
     }
 
-    if (price <= 1.40) {
+    // 2. Lọc Odds Chuẩn Value (1.70 - 1.95)
+    if (price >= 1.70 && price <= 1.95) {
         oddsBonus += 18.0;
-        oddsNotes.push(`Odds Over cực thấp (${price}) - Dòng tiền kết tài mạnh`);
-    } else if (price <= 1.60) {
-        oddsBonus += 13.0;
-        oddsNotes.push(`Odds Over giảm sâu (${price})`);
-    } else if (price <= 1.85) {
-        oddsBonus += 8.0;
-        oddsNotes.push(`Odds Over ổn định (${price})`);
+        oddsNotes.push(`Odds Over đẹp chuẩn Value (${price}) - Tỷ lệ thắng & lợi nhuận cao`);
+    } else if (price >= 1.96 && price <= 2.10) {
+        oddsBonus += 10.0;
+        oddsNotes.push(`Odds Over vừa phải (${price})`);
+    } else if (price >= 1.50 && price < 1.70) {
+        oddsBonus += 5.0;
+        oddsNotes.push(`Odds Over hơi thấp (${price})`);
     } else {
-        oddsBonus += 4.0;
-        oddsNotes.push(`Odds Over (${price})`);
+        // Odds quá thấp (<1.50) hoặc quá cao (>2.10) => KHÔNG CỘNG ĐIỂM
+        oddsBonus += 0.0;
+        oddsNotes.push(`Odds Over (${price}) - Rủi ro dụ hoặc xịt cao`);
     }
 
     return {
@@ -601,7 +601,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 8. THUẬT TOÁN AI
+// 9. THUẬT TOÁN AI DYNAMIC SCORING
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
@@ -695,11 +695,11 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 }
 
 // ==========================================
-// 9. THÔNG BÁO TELEGRAM
+// 10. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     if (sentAlerts.has(item.id)) {
-        return; // Không gửi lặp lại trận đấu đã thông báo
+        return;
     }
 
     const timeDisplay = `Phút ${item.elapsed}'`;
@@ -731,7 +731,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 11. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -776,14 +776,14 @@ async function scanLiveMatches() {
 
             const leagueName = parseLeagueName(item, source);
 
-            // Bỏ qua giải trẻ / e-sports
+            // BỎ QUA CÁC GIẢI RÁC (ESPORTS, U15-U19, RESERVES...)
             if (isFilteredLeague(leagueName, homeName, awayName)) {
                 continue;
             }
 
             const minute = calculateExactMinute(item, source);
 
-            // CHỈ QUÉT BẮT ĐẦU TỪ PHÚT 46 ĐẾN 98
+            // QUÉT TRẬN TỪ PHÚT 46 ĐẾN PHÚT 98
             if (minute < 46 || minute > 98) {
                 continue;
             }
@@ -822,7 +822,7 @@ async function scanLiveMatches() {
 }
 
 // ==========================================
-// 11. KHỞI CHẠY SERVER EXPRESS
+// 12. KHỞI CHẠY SERVER EXPRESS
 // ==========================================
 app.get('/', (req, res) => {
     res.send('Football Dual-Source AI Scanner Service is Running!');
@@ -831,6 +831,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Chu kỳ quét 7 phút/lần
     setInterval(scanLiveMatches, 7 * 60 * 1000);
 });
