@@ -186,7 +186,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU TRẬN ĐẤU LIVE
+// 4. LẤY DỮ LIỆU TRẬN ĐẤU LIVE (CẬP NHẬT QUÉT SÂU CẤU TRÚC SOFASCORE)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -197,15 +197,46 @@ async function fetchLiveMatchesDualSource() {
             },
             timeout: 10000
         });
-        const events = response.data?.events || response.data?.liveEvents || [];
-        if (events.length > 0) {
-            console.log(`[Source: SofaScore] ✅ Lấy thành công ${events.length} trận live.`);
-            return { source: 'sofascore', matches: events };
+
+        let rawEvents = [];
+        const data = response.data;
+
+        // Quét linh hoạt mọi cấu trúc lồng nhau của SofaScore (events, tournaments, matches, v.v.)
+        if (Array.isArray(data)) {
+            rawEvents = data;
+        } else if (data && typeof data === 'object') {
+            if (Array.isArray(data.events)) rawEvents = data.events;
+            else if (Array.isArray(data.liveEvents)) rawEvents = data.liveEvents;
+            else {
+                // Hàm đệ quy quét tìm tất cả các mảng chứa sự kiện trận đấu nếu API đổi cấu trúc
+                function recursiveFindEvents(obj) {
+                    if (!obj || typeof obj !== 'object') return;
+                    for (const key of Object.keys(obj)) {
+                        if (Array.isArray(obj[key])) {
+                            // Kiểm tra xem mảng có chứa các phần tử giống trận đấu không (có homeTeam hoặc slug/status)
+                            if (obj[key].length > 0 && (obj[key][0].homeTeam || obj[key][0].slug || obj[key][0].status)) {
+                                rawEvents = rawEvents.concat(obj[key]);
+                            } else {
+                                obj[key].forEach(item => recursiveFindEvents(item));
+                            }
+                        } else if (typeof obj[key] === 'object') {
+                            recursiveFindEvents(obj[key]);
+                        }
+                    }
+                }
+                recursiveFindEvents(data);
+            }
+        }
+
+        if (rawEvents.length > 0) {
+            console.log(`[Source: SofaScore] ✅ Lấy thành công ${rawEvents.length} trận live.`);
+            return { source: 'sofascore', matches: rawEvents };
         }
     } catch (err) {
         console.warn(`⚠️ [SofaScore Error]: ${err.message}`);
     }
 
+    // Fallback sang Livescore6 nếu SofaScore lỗi
     try {
         const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
         const resLive = await axios.get(liveUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 });
@@ -232,7 +263,6 @@ async function fetchLiveMatchesDualSource() {
         return { source: 'none', matches: [] };
     }
 }
-
 // ==========================================
 // 5. CHI TIẾT THỐNG KÊ
 // ==========================================
