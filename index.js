@@ -14,11 +14,11 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c';
 
-// Nguồn 1: SofaScore (Lấy danh sách trận đấu Live)[cite: 3]
+// Nguồn 1: SofaScore (Lấy danh sách trận đấu Live)
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore / Live Football (Hỗ trợ lấy chỉ số thống kê trận đấu)[cite: 3]
+// Nguồn 2: Livescore / Live Football (Hỗ trợ lấy chỉ số thống kê trận đấu)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -182,7 +182,7 @@ async function fetchLiveMatchesFromSofaScore() {
  timeout: 10000
  });
  const events = response.data?.events || response.data?.liveEvents || [];
- console.log(`[Source: SofaScore] ✅ Lấy thành công ${events.length} trận live.`);
+ console.log(`[Source: SofaScore] ✅ Lấy thành công ${events.length} trận từ API.`);
  return events;
  } catch (err) {
  console.error(`❌ [SofaScore Live Error]:`, err.message);
@@ -313,7 +313,7 @@ async function fetchMatchDetailStats(matchId, homeName, awayName) {
  }
  }
  } catch (err) {
- // Bỏ qua lỗi Livescore và chuyển sang SofaScore
+ // Bỏ qua lỗi Livescore
  }
 
  try {
@@ -560,7 +560,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 10. QUÉT TỰ ĐỘNG
+// 10. QUÉT TỰ ĐỘNG (ĐÃ LỌC TRẬN LIVE THỰC TẾ)
 // ==========================================
 async function scanLiveMatches() {
  const currentVN = getVietnamTime();
@@ -574,12 +574,26 @@ async function scanLiveMatches() {
  ]);
 
  if (!matches || matches.length === 0) {
- console.log(`[Thông báo]: Không thu thập được trận live nào từ SofaScore.`);
+ console.log(`[Thông báo]: Không thu thập được trận nào từ SofaScore.`);
  return;
  }
 
- for (let index = 0; index < matches.length; index++) {
- const item = matches[index];
+ // CHỈ LỌC CÁC TRẬN ĐANG ĐÁ TRỰC TIẾP (INPROGRESS) TRÁNH DUYỆT RÁC 0' HOẶC 999
+ const liveMatches = matches.filter(item => {
+ const statusType = String(item.status?.type || '').toLowerCase();
+ const statusCode = item.status?.code;
+ return statusType === 'inprogress' || statusCode === 1;
+ });
+
+ console.log(`[Bộ lọc Live] Tổng số trận trả về: ${matches.length} | Trận đang đá thực tế: ${liveMatches.length}`);
+
+ if (liveMatches.length === 0) {
+ console.log(`[Thông báo]: Hiện tại không có trận đấu nào đang trong trạng thái Live.`);
+ return;
+ }
+
+ for (let index = 0; index < liveMatches.length; index++) {
+ const item = liveMatches[index];
  const matchId = String(item.id);
  const homeName = item.homeTeam?.name || 'Đội nhà';
  const awayName = item.awayTeam?.name || 'Đội khách';
