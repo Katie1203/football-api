@@ -105,6 +105,12 @@ const LEAGUE_NAME_MAP = {
 
   'LaLiga': 'VĐQG Tây Ban Nha',
   'LaLiga 2': 'Hạng 2 Tây Ban Nha',
+  'Segunda Division RFEF': 'Hạng 4 Tây Ban Nha (Segunda RFEF)',
+  'Segunda Division RFEF: Group 1': 'Hạng 4 Tây Ban Nha - Bảng 1',
+  'Segunda Division RFEF: Group 2': 'Hạng 4 Tây Ban Nha - Bảng 2',
+  'Segunda Division RFEF: Group 3': 'Hạng 4 Tây Ban Nha - Bảng 3',
+  'Segunda Division RFEF: Group 4': 'Hạng 4 Tây Ban Nha - Bảng 4',
+  'Segunda Division RFEF: Group 5': 'Hạng 4 Tây Ban Nha - Bảng 5',
   'Copa del Rey': 'Cúp Nhà Vua Tây Ban Nha',
 
   'Serie A': 'VĐQG Ý',
@@ -119,6 +125,10 @@ const LEAGUE_NAME_MAP = {
   'Ligue 1': 'VĐQG Pháp',
   'Ligue 2': 'Hạng 2 Pháp',
   'Coupe de France': 'Cúp Quốc Gia Pháp',
+
+  'Elitettan': 'Hạng 2 Nữ Thụy Điển',
+  "Women's Elitettan": 'Hạng 2 Nữ Thụy Điển',
+  'Damallsvenskan': 'VĐQG Nữ Thụy Điển',
 
   'J1 League': 'VĐQG Nhật Bản',
   'J2 League': 'Hạng 2 Nhật Bản',
@@ -168,7 +178,7 @@ function parseLeagueName(item, source) {
 }
 
 // ==========================================
-// 2. BỘ LỌC THÔNG MINH
+// 2. BỘ LỌC THÔNG MINH (BỎ QUA GIẢI RÁC / GIẢI TRẺ / NGHIỆP DƯ)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
   const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
@@ -176,7 +186,12 @@ function isFilteredLeague(leagueName, homeName, awayName) {
   const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
   if (youthRegex.test(textToTest)) return true;
 
-  const filterKeywords = ['simulated', 'srl', 'esports', 'e-soccer'];
+  const filterKeywords = [
+    'simulated', 'srl', 'esports', 'e-soccer', 
+    'amateur', 'youth', 'reserves', 'regional', 'interregional', 
+    'amatör', 'uppland', 'group north', 'group northeast'
+  ];
+  
   return filterKeywords.some(kw => textToTest.includes(kw));
 }
 
@@ -737,7 +752,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, matchInfo) {
     hasTacticalData = true;
   }
 
-  // --- SMART FALLBACK CHO CÁC GIẢI HẠNG DƯỚI / SERIE C KHÔNG CÓ THỐNG KÊ SÚT/GÓC ---
   const currentElapsed = matchInfo.elapsed;
   const currentHome = matchInfo.homeScore;
   const currentAway = matchInfo.awayScore;
@@ -745,7 +759,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, matchInfo) {
 
   if (!hasTacticalData && currentElapsed >= 60) {
     if (totalCurrentGoals === 0 || Math.abs(currentHome - currentAway) === 1) {
-      aiPercentage += 28.0; // Bổ sung điểm dự phòng thông minh dựa vào thời điểm và tỷ số sát nút
+      aiPercentage += 28.0;
       matchAnalysis.push(`🛡️ [Smart Fallback]: Kích hoạt phân tích dự phòng (Phút ${currentElapsed}', Tỷ số ${currentHome}-${currentAway}) - Thế trận nhạy cảm Rung`);
       hasTacticalData = true;
     }
@@ -810,7 +824,7 @@ ${item.predictionText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU LỌC SỚM TIẾT KIỆM API)
 // ==========================================
 async function scanLiveMatches() {
   const currentVN = getVietnamTime();
@@ -828,6 +842,8 @@ async function scanLiveMatches() {
       console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả SofaScore và Livescore6.`);
       return;
     }
+
+    let validMatchesCount = 0;
 
     for (let index = 0; index < matches.length; index++) {
       const item = matches[index];
@@ -855,27 +871,28 @@ async function scanLiveMatches() {
 
       const leagueName = parseLeagueName(item, source);
 
+      // 1. LỌC SỚM: Bỏ qua giải rác / giải trẻ ngay lập tức (KHÔNG TỐN REQUEST API PHỤ)
       if (isFilteredLeague(leagueName, homeName, awayName)) {
-        console.log(`[Trận #${index + 1}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ`);
         continue;
       }
 
+      // 2. LỌC SỚM: Bỏ qua nếu không nằm trong khung phút hiệp 2 (45 - 92)
       const elapsed = calculateExactMinute(item, source);
       const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
       if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
-        const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
-        console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung hiệp 2 (45-92') hoặc HT`);
         continue;
       }
 
+      // 3. LỌC SỚM: Nếu đã gửi cảnh báo rồi thì bỏ qua
       if (sentAlerts.has(matchId)) {
-        console.log(`[Trận #${index + 1}] [ID: ${matchId}] └─> [Bỏ qua]: Đã gửi cảnh báo trận này trước đó.`);
         continue;
       }
 
-      console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
+      validMatchesCount++;
+      console.log(`\n[🔥 Trận hợp lệ tiềm năng #${validMatchesCount}] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
+      // Chỉ các trận thực sự sống sót qua bộ lọc sớm mới gọi API lấy thống kê chi tiết
       const metrics = await fetchMatchDetailStats(matchId, source, item);
       const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
       
@@ -912,6 +929,7 @@ async function scanLiveMatches() {
         console.log(` ❌ [Bỏ qua gửi Telegram]: Điểm AI chưa đạt ngưỡng yêu cầu >= 60%`);
       }
     }
+    console.log(`\n[Hoàn tất quét]: Đã lọc và xử lý ${validMatchesCount} trận đấu thỏa mãn điều kiện.`);
   } catch (err) {
     console.error(`[API Fetch Error]:`, err.message);
   }
