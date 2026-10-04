@@ -407,9 +407,40 @@ async function fetchOddsData() {
 }
 
 // ==========================================
-// 7. THỐNG KÊ CHI TIẾT TRẬN ĐẤU
+// 7. THỐNG KÊ CHI TIẾT TRẬN ĐẤU (BỔ SUNG BÓC TÁCH TRỰC TIẾP TỪ OBJECT BAN ĐẦU)
 // ==========================================
-async function fetchMatchDetailStats(matchId, source) {
+async function fetchMatchDetailStats(matchId, source, matchItem = null) {
+ let stats = {
+ shotsOnTarget: 0,
+ totalShots: 0,
+ corners: 0,
+ redCards: 0,
+ dangerousAttacks: 0,
+ attacks: 0,
+ possession: null
+ };
+
+ // 1. Quét trước các thông số nếu đã có sẵn trong object trận đấu live
+ if (matchItem) {
+ function scanObjectInline(obj) {
+ if (!obj || typeof obj !== 'object') return;
+ for (const key of Object.keys(obj)) {
+ const val = obj[key];
+ const kLower = key.toLowerCase();
+ if (typeof val === 'number' || (typeof val === 'string' && !isNaN(val))) {
+ const num = parseInt(val, 10);
+ if (kLower.includes('shotontarget') || kLower.includes('sot')) stats.shotsOnTarget = Math.max(stats.shotsOnTarget, num);
+ if (kLower.includes('corner') || kLower.includes('rc')) stats.corners = Math.max(stats.corners, num);
+ if (kLower.includes('redcard') || kLower.includes('red')) stats.redCards = Math.max(stats.redCards, num);
+ if (kLower.includes('totalshot') || kLower.includes('shots')) stats.totalShots = Math.max(stats.totalShots, num);
+ } else if (typeof val === 'object') {
+ scanObjectInline(val);
+ }
+ }
+ }
+ scanObjectInline(matchItem);
+ }
+
  if (source === 'sofascore') {
  try {
  const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`, {
@@ -420,8 +451,8 @@ async function fetchMatchDetailStats(matchId, source) {
  timeout: 6000
  });
 
- let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, shotsOffTarget = 0, blockedShots = 0;
- let dangerousAttacks = 0, attacks = 0;
+ let shotsOnTarget = stats.shotsOnTarget, corners = stats.corners, redCards = stats.redCards, totalShots = stats.totalShots, shotsOffTarget = 0, blockedShots = 0;
+ let dangerousAttacks = stats.dangerousAttacks, attacks = stats.attacks;
  let possessionHome = null, possessionAway = null;
  
  const statistics = response.data?.statistics;
@@ -469,8 +500,7 @@ async function fetchMatchDetailStats(matchId, source) {
  possessionStr = `${possessionHome}% - ${possessionAway}%`;
  }
 
- return {
- sofaStats: { 
+ stats = { 
  shotsOnTarget, 
  totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots), 
  shotsOffTarget,
@@ -480,13 +510,8 @@ async function fetchMatchDetailStats(matchId, source) {
  dangerousAttacks,
  attacks,
  possession: possessionStr
- }
  };
- } catch (err) {
- return {
- sofaStats: { shotsOnTarget: 0, totalShots: 0, shotsOffTarget: 0, blockedShots: 0, corners: 0, redCards: 0, dangerousAttacks: 0, attacks: 0, possession: null }
- };
- }
+ } catch (err) {}
  } else {
  try {
  const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${matchId}`, {
@@ -497,7 +522,7 @@ async function fetchMatchDetailStats(matchId, source) {
  timeout: 6000
  });
 
- let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, dangerousAttacks = 0, attacks = 0;
+ let shotsOnTarget = stats.shotsOnTarget, corners = stats.corners, redCards = stats.redCards, totalShots = stats.totalShots, dangerousAttacks = stats.dangerousAttacks, attacks = stats.attacks;
  let possessionHome = null, possessionAway = null;
  
  const statsData = response.data;
@@ -551,8 +576,7 @@ async function fetchMatchDetailStats(matchId, source) {
  possessionStr = `${possessionHome}% - ${possessionAway}%`;
  }
 
- return {
- sofaStats: { 
+ stats = { 
  shotsOnTarget, 
  totalShots: totalShots || shotsOnTarget, 
  corners, 
@@ -560,14 +584,11 @@ async function fetchMatchDetailStats(matchId, source) {
  dangerousAttacks,
  attacks,
  possession: possessionStr
- }
  };
- } catch (err) {
- return {
- sofaStats: { shotsOnTarget: 0, totalShots: 0, corners: 0, redCards: 0, dangerousAttacks: 0, attacks: 0, possession: null }
- };
+ } catch (err) {}
  }
- }
+
+ return { sofaStats: stats };
 }
 
 function cleanTeamName(name) {
@@ -824,7 +845,8 @@ async function scanLiveMatches() {
 
  console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
- const metrics = await fetchMatchDetailStats(matchId, source);
+ // Truyền thêm tham số item vào để bóc tách thông số trực tiếp từ đối tượng live
+ const metrics = await fetchMatchDetailStats(matchId, source, item);
  const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
  
  const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, {
