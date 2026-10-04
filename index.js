@@ -251,88 +251,79 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (XOAY VÒNG KEY)
+// ==========================================
+// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
-  const activeKey = getNextRapidApiKey();
-
-  try {
-    const response = await axios.get(SOFASCORE_LIVE_URL, {
-      headers: {
-        'x-rapidapi-key': activeKey,
-        'x-rapidapi-host': SOFASCORE_HOST
-      },
-      timeout: 10000
-    });
-
-    const dataObj = response.data;
-    const events = Array.isArray(dataObj) ? dataObj : (dataObj?.events || dataObj?.liveEvents || dataObj?.matches || dataObj?.response || []);
-    
-    if (events.length > 0) {
-      console.log(`[Source: Live-Football] ✅ Lấy thành công ${events.length} trận live.`);
-      return { source: 'sofascore', matches: events };
-    }
-  } catch (err) {
-    console.warn(`⚠️ [Live-Football Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
-  }
-
-  try {
-    const currentVN = getVietnamTime();
-    const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
-    const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
-
-    const [resLive, resDate] = await Promise.all([
-      axios.get(liveUrl, { headers: { 'x-rapidapi-key': activeKey, 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null })),
-      axios.get(dateUrl, { headers: { 'x-rapidapi-key': activeKey, 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null }))
-    ]);
-
-    let rawData = [];
-    const seenIds = new Set();
-
-    function processMatchObject(obj, cat = '', tour = '') {
-      if (!obj || typeof obj !== 'object') return;
-
-      const matchId = String(obj.Eid || obj.id || obj.MatchId || '');
-      const hasTeams = obj.T1 || obj.homeTeam || obj.T2 || obj.AwayTeam || (obj.Home && obj.Away);
-
-      if (matchId && hasTeams && !seenIds.has(matchId)) {
-        const eps = String(obj.Eps || obj.status || obj.Trh || obj.MatchStatus || '').toUpperCase();
-        const tm = obj.Tm || obj.Minute || obj.time;
-        
-        const isLiveStatus = eps.includes("'") || eps.includes("LIVE") || eps.includes("1") || eps.includes("IN_PLAY") || (typeof tm === 'number' && tm > 0);
-
-        if (isLiveStatus || (typeof tm === 'number' && tm >= 1 && tm <= 120)) {
-          seenIds.add(matchId);
-          rawData.push({
-            ...obj,
-            _inheritedCategory: obj.Cname || obj.categoryName || obj.country || obj.Cnm || cat,
-            _inheritedTournament: obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || tour
-          });
+    try {
+        const response = await axios.get(SOFASCORE_LIVE_URL, {
+            headers: {
+                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': SOFASCORE_HOST
+            },
+            timeout: 10000
+        });
+        const events = response.data?.events || response.data?.liveEvents || [];
+        if (events.length > 0) {
+            console.log(`[Source: SofaScore] ✅ Lấy thành công ${events.length} trận live.`);
+            return { source: 'sofascore', matches: events };
         }
-      }
-
-      for (const key of Object.keys(obj)) {
-        if (obj[key] !== null && typeof obj[key] === 'object') {
-          processMatchObject(
-            obj[key], 
-            obj.Cname || obj.categoryName || cat, 
-            obj.Snm || obj.Tname || tour
-          );
-        }
-      }
+    } catch (err) {
+        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
     }
 
-    if (resLive && resLive.data) processMatchObject(resLive.data);
-    if (resDate && resDate.data) processMatchObject(resDate.data);
+    try {
+        const response = await axios.get(LIVESCORE_LIVE_URL, {
+            headers: {
+                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': LIVESCORE_HOST
+            },
+            timeout: 10000
+        });
 
-    console.log(`[Source: Livescore6 All-Scope] ✅ Quét vét cạn thành công tổng cộng ${rawData.length} trận live.`);
-    return { source: 'livescore6', matches: rawData };
-  } catch (err) {
-    console.error(`❌ [Livescore6 Backup Error]:`, err.message);
-    return { source: 'none', matches: [] };
-  }
+        let rawData = [];
+        const data = response.data;
+
+        function extractMatchesDeep(obj, inheritedMeta = {}) {
+            if (!obj) return;
+            
+            if (Array.isArray(obj)) {
+                obj.forEach(item => extractMatchesDeep(item, inheritedMeta));
+                return;
+            }
+
+            if (typeof obj === 'object') {
+                const cName = obj.Cname || obj.categoryName || obj.country || inheritedMeta.Cname;
+                const tName = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || inheritedMeta.Tname;
+
+                const hasMatchInfo = obj.Eid || (obj.T1 && obj.T2);
+                const isContainer = obj.Stages || obj.events || obj.Mlist || obj.data;
+
+                if (hasMatchInfo && !isContainer) {
+                    rawData.push({
+                        ...obj,
+                        _inheritedCategory: cName,
+                        _inheritedTournament: tName
+                    });
+                }
+
+                for (const key of Object.keys(obj)) {
+                    if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        extractMatchesDeep(obj[key], { Cname: cName, Tname: tName });
+                    }
+                }
+            }
+        }
+
+        extractMatchesDeep(data);
+
+        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
+        return { source: 'livescore6', matches: rawData };
+    } catch (err) {
+        console.error(`❌ [Livescore6 Backup Error]:`, err.message);
+        return { source: 'none', matches: [] };
+    }
 }
-
 // ==========================================
 // 5. DIỄN BIẾN BÀN THẮNG
 // ==========================================
