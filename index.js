@@ -168,7 +168,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU
+// 3. TÍNH PHÚT TRẬN ĐẤU (ĐÃ FIX ĐỌC HIỆP 2)
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -178,13 +178,20 @@ function calculateExactMinute(item, source) {
 
     if (source === 'sofascore') {
         statusType = String(item.status?.type || item.status?.code || '').toLowerCase();
-        statusDesc = String(item.status?.description || '').toLowerCase();
+        statusDesc = String(item.status?.description || item.statusText || '').toLowerCase();
 
+        // 1. Kiểm tra trạng thái kết thúc hoặc nghỉ giữa hiệp
         if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 999;
-        
-        if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht' || statusType === 'halftime') return 'HT';
-        if (statusType.includes('firsthalf') || statusDesc.includes('1st half') || statusDesc.includes('1st')) return '1ST';
+        if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht' || statusDesc.includes('nghỉ giữa')) return 'HT';
+        if (statusType.includes('firsthalf') || statusDesc.includes('1st half')) return '1ST';
 
+        // 2. Trích xuất số phút từ statusDesc (Ví dụ: "77'", "90+'", "69'", "2nd half")[cite: 4]
+        const matchNum = statusDesc.match(/(\d+)/);
+        if (matchNum) {
+            return parseInt(matchNum[1], 10);
+        }
+
+        // 3. Dự phòng lấy từ time.played
         if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
             return item.time.played;
         }
@@ -798,12 +805,12 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            // 2. Bỏ qua nếu không phải số, đang ở phút <= 45 hoặc đã hết trận (> 92)
-            if (isNaN(numericElapsed) || numericElapsed <= 45 || numericElapsed > 92) {
+            // 2. Bỏ qua nếu không phải số, đang ở phút <= 45 hoặc đã quá 98 phút
+            if (isNaN(numericElapsed) || numericElapsed <= 45 || numericElapsed > 98) {
                 continue;
             }
 
-            // CHỈ QUÉT VÀ IN LOG NHỮNG TRẬN TỪ PHÚT 46 ĐẾN 92
+            // CHỈ QUÉT VÀ IN LOG NHỮNG TRẬN TỪ PHÚT 46 ĐẾN 98 (KỂ CẢ BÙ GIỜ)[cite: 4]
             console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId, source);
