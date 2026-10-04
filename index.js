@@ -63,9 +63,9 @@ const ALERT_STATE_TTL =
 const STATS_CACHE_TTL =
   90 * 1000;
 
-// Quét 3 phút / lần
+// Quét 7 phút / lần để giảm số lượt gọi API
 const SCAN_INTERVAL_MS =
-  3 * 60 * 1000;
+  7 * 60 * 1000;
 
 
 const alertState = new Map();
@@ -4736,7 +4736,6 @@ function evaluateMatchDynamicAI(
   awayScore
 ) {
   const available = stats.availableStats || {};
-
   const attackScore = calculateAttackScore(stats, minute);
   const dangerousScore = calculateDangerousAttackScore(stats, minute);
   const sotScore = calculateSOTScore(stats, minute);
@@ -4748,27 +4747,29 @@ function evaluateMatchDynamicAI(
   const scoreState = calculateScoreStateScore(homeScore, awayScore, minute);
   const timeScore = calculateTimeScore(minute);
 
-  // Thiếu dữ liệu = KHÔNG tham gia Rule. Không còn mặc định 50 điểm.
+  // Dữ liệu thiếu = loại khỏi mẫu số, tuyệt đối không mặc định 50.
+  // Trọng số ưu tiên tín hiệu có liên quan trực tiếp đến bàn thắng.
   const components = [];
   const add = (name, score, weight, isAvailable) => {
     if (isAvailable && Number.isFinite(score)) components.push({ name, score, weight });
   };
 
-  add('dangerous', dangerousScore, 18, !!available.dangerousAttacks);
-  add('momentum', momentum?.score, 16, momentum?.available === true);
-  add('sot', sotScore, 14, !!available.shotsOnTarget);
+  add('dangerous', dangerousScore, 20, !!available.dangerousAttacks);
+  add('momentum', momentum?.score, 22, momentum?.available === true);
+  add('sot', sotScore, 18, !!available.shotsOnTarget);
 
   const styleAvailable = !!(
     available.dangerousAttacks || available.shotsOnTarget ||
     available.attacks || available.corners || available.totalShots
   );
-  add('style', style.score, 11, styleAvailable);
-  add('attack', attackScore, 10, !!available.attacks);
-  add('possession', possessionScore, 8, !!available.possession);
+  add('style', style.score, 9, styleAvailable);
+  add('attack', attackScore, 7, !!available.attacks);
   add('blocked', blockedScore, 6, !!available.blockedShots);
   add('corners', cornerScore, 6, !!available.corners);
-  add('odds', oddsAnalysis?.score, 7, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score));
-  add('cards', cardScore, 2, !!(available.yellowCards || available.redCards));
+  add('odds', oddsAnalysis?.score, 6,
+    oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score));
+  add('possession', possessionScore, 3, !!available.possession);
+  add('cards', cardScore, 1, !!(available.yellowCards || available.redCards));
   add('scoreState', scoreState, 1, true);
   add('time', timeScore, 1, true);
 
@@ -4777,45 +4778,137 @@ function evaluateMatchDynamicAI(
     ? components.reduce((sum, x) => sum + x.score * x.weight, 0) / totalWeight
     : 0;
 
-  // Data confidence chỉ dùng nội bộ/log và để chặn BIG BET khi dữ liệu quá mỏng.
   const dataConfidence = round1(totalWeight);
   const totals = calculateTotals(stats);
   const notes = [];
+  const scoreDiff = Math.abs(safeNumber(homeScore) - safeNumber(awayScore));
 
-  if (available.shotsOnTarget && minute >= 70 && totals.totalShotsOnTarget <= 1) {
-    finalScore -= 8;
-    notes.push('⚠️ SOT quá thấp sau phút 70');
+  // ======================================================
+  // BẰNG CHỨNG TẤN CÔNG GẦN NHẤT
+  // ======================================================
+  let recentEvidence = 0;
+  if (momentum?.available) {
+    if (safeNumber(momentum.totalSOT) >= 1) recentEvidence += 3;
+    if (safeNumber(momentum.totalDangerous) >= 5) recentEvidence += 2;
+    if (safeNumber(momentum.totalBlocked) >= 1) recentEvidence += 1;
+    if (safeNumber(momentum.totalCorners) >= 1) recentEvidence += 1;
+    if (safeNumber(momentum.totalAttack) >= 8) recentEvidence += 1;
   }
-  if (available.dangerousAttacks && totals.totalDangerousAttacks < 30 && minute >= 65) {
-    finalScore -= 5;
+
+  // Các chỉ số tích lũy cả trận không được tự đẩy Rule quá cao.
+  if (available.shotsOnTarget && minute >= 70 && totals.totalShotsOnTarget <= 1) {
+    finalScore -= 9;
+    notes.push('⚠️ SOT quá thấp');
+  }
+  if (available.dangerousAttacks && minute >= 65 && totals.totalDangerousAttacks < 30) {
+    finalScore -= 6;
     notes.push('⚠️ Dangerous Attack thấp');
   }
-  if (momentum?.available && momentum.score >= 85) {
-    finalScore += 4;
-    notes.push('🔥 Momentum cực mạnh');
+
+  // Momentum mới là bằng chứng quan trọng ở cuối trận.
+  if (momentum?.available) {
+    if (momentum.score >= 85 && recentEvidence >= 4) {
+      finalScore += 5;
+      notes.push('🔥 Momentum + hoạt động gần đây rất mạnh');
+    } else if (momentum.score >= 70 && recentEvidence >= 3) {
+      finalScore += 2;
+      notes.push('⚡ Momentum gần đây tốt');
+    }
+
+    if (minute >= 75 && momentum.score < 45) {
+      finalScore -= 7;
+      notes.push('🐢 Trận đang nguội dần');
+    }
+    if (minute >= 80 && recentEvidence <= 1) {
+      finalScore -= 8;
+      notes.push('⚠️ Ít bằng chứng tấn công gần đây');
+    }
+    if (minute >= 86 && recentEvidence <= 2) {
+      finalScore -= 7;
+      notes.push('⚠️ Cuối trận nhưng pressure gần đây chưa đủ');
+    }
+  } else {
+    // Không có snapshot gần đây: càng cuối trận càng phải thận trọng.
+    if (minute >= 80) {
+      finalScore -= 6;
+      notes.push('⚠️ Chưa có Momentum sau phút 80');
+    }
+    if (minute >= 86) {
+      finalScore -= 5;
+      notes.push('⚠️ Thiếu xác nhận diễn biến gần nhất');
+    }
   }
+
+  // Tỷ số cách biệt lớn thường làm nhịp độ giảm, đặc biệt cuối trận.
+  if (scoreDiff >= 3 && minute >= 75) {
+    finalScore -= 8;
+    notes.push('⚠️ Tỷ số cách biệt lớn');
+  } else if (scoreDiff >= 2 && minute >= 82) {
+    finalScore -= 4;
+    notes.push('⚠️ Cách biệt tỷ số làm giảm động lực');
+  }
+
+  // Bonus chỉ khi nhiều tín hiệu trực tiếp đồng thuận.
   if (available.shotsOnTarget && available.dangerousAttacks &&
       totals.totalShotsOnTarget >= 8 && totals.totalDangerousAttacks >= 70) {
-    finalScore += 3;
+    finalScore += 2;
     notes.push('🔥 SOT + Dangerous Attack cao');
   }
-  if (styleAvailable && style.type === 'END_TO_END') {
-    finalScore += 3;
-    notes.push('⚔️ Hai đội đang đôi công');
-  }
-  if (styleAvailable && (style.type === 'HOME_PRESSURE' || style.type === 'AWAY_PRESSURE')) {
+  if (styleAvailable && style.type === 'END_TO_END' &&
+      (!momentum?.available || recentEvidence >= 2)) {
     finalScore += 2;
-    notes.push('🔥 Có đội ép sân rõ rệt');
+    notes.push('⚔️ Hai đội đôi công');
   }
-  if (oddsAnalysis?.found && Number.isFinite(oddsAnalysis?.score) && oddsAnalysis.score >= 85) {
-    finalScore += 2;
-    notes.push('💰 Kèo Over đang mạnh');
+  if (styleAvailable &&
+      (style.type === 'HOME_PRESSURE' || style.type === 'AWAY_PRESSURE') &&
+      (!momentum?.available || recentEvidence >= 2)) {
+    finalScore += 1;
+    notes.push('🔥 Có đội ép sân');
+  }
+  if (oddsAnalysis?.found && Number.isFinite(oddsAnalysis?.score) &&
+      oddsAnalysis.score >= 85) {
+    finalScore += 1;
+    notes.push('💰 Kèo Over hỗ trợ');
+  }
+
+  // ======================================================
+  // TRẦN ĐIỂM THEO CHẤT LƯỢNG BẰNG CHỨNG
+  // Không để Rule 70-80% chỉ nhờ số liệu tích lũy.
+  // ======================================================
+  const directSignals = [
+    !!available.dangerousAttacks,
+    !!available.shotsOnTarget,
+    momentum?.available === true,
+    !!available.corners,
+    !!available.blockedShots,
+    oddsAnalysis?.found === true
+  ].filter(Boolean).length;
+
+  if (directSignals <= 1) finalScore = Math.min(finalScore, 61);
+  else if (directSignals === 2) finalScore = Math.min(finalScore, 68);
+
+  // Sau phút 80: 70%+ cần Momentum thật.
+  if (minute >= 80 && !momentum?.available) {
+    finalScore = Math.min(finalScore, 69);
+  }
+  // Sau phút 86: 70%+ cần có hành động tấn công mới rõ ràng.
+  if (minute >= 86 && (!momentum?.available || recentEvidence < 3)) {
+    finalScore = Math.min(finalScore, 66);
+  }
+  // BIG BET cuối trận phải có tín hiệu gần đây rất rõ.
+  if (minute >= 86 && recentEvidence < 4) {
+    finalScore = Math.min(finalScore, 74);
   }
 
   finalScore = round1(clamp(finalScore, 5, 95));
 
-  // BIG BET cần Rule >=75 và tối thiểu 55% trọng số dữ liệu thực.
-  const reliableBigBet = finalScore >= BIG_BET_PERCENTAGE && dataConfidence >= 55;
+  const reliableBigBet =
+    finalScore >= BIG_BET_PERCENTAGE &&
+    dataConfidence >= 55 &&
+    directSignals >= 3 &&
+    (minute < 80 || momentum?.available === true) &&
+    (minute < 86 || recentEvidence >= 4);
+
   let level = 'KHÔNG ĐỦ ĐIỀU KIỆN';
   if (reliableBigBet && finalScore >= 85) level = '🔥🔥 BIG BET RẤT MẠNH';
   else if (reliableBigBet) level = '🔥 BIG BET';
@@ -4832,8 +4925,9 @@ function evaluateMatchDynamicAI(
     fmt('📊 Possession Pressure', possessionScore, !!available.possession),
     fmt('🧱 Blocked Score', blockedScore, !!available.blockedShots),
     fmt('🚩 Corner Score', cornerScore, !!available.corners),
-    fmt('💰 Odds Score', oddsAnalysis?.score, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score)),
-    fmt('🟨🟥 Card Score', cardScore, !!(available.yellowCards || available.redCards)),
+    fmt('💰 Odds Score', oddsAnalysis?.score,
+      oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score)),
+    `🧭 Recent Evidence: ${momentum?.available ? `${recentEvidence}/8` : 'N/A'}`,
     `📦 Data Confidence: ${dataConfidence}%`
   ];
   if (notes.length) detailLines.push('', ...notes);
@@ -4843,6 +4937,8 @@ function evaluateMatchDynamicAI(
     shouldSend: finalScore >= MIN_SEND_PERCENTAGE,
     isBigBet: reliableBigBet,
     dataConfidence,
+    recentEvidence,
+    directSignals,
     availableComponents: components.map(x => x.name),
     level,
     attackScore: available.attacks ? round1(attackScore) : null,
@@ -4857,12 +4953,11 @@ function evaluateMatchDynamicAI(
     oddsScore: oddsAnalysis?.found ? round1(oddsAnalysis.score) : null,
     scoreState: round1(scoreState),
     timeScore: round1(timeScore),
-    styleType: style.type,
-    styleText: style.text,
+    styleType: styleAvailable ? style.type : 'UNKNOWN',
+    styleText: styleAvailable ? style.text : '📊 THẾ TRẬN: N/A',
     detailText: detailLines.join('\n')
   };
 }
-
 
 // ==========================================================
 // 35. SHOULD SEND ALERT
@@ -5775,7 +5870,7 @@ async function sendTelegramAlert(item, alertDecision) {
   const percentage = safeNumber(item.ai?.efficiency);
   const previous = alertState.get(item.alertKey);
   const alertNumber = previous ? previous.alertCount + 1 : 1;
-  const isBigBet = percentage >= BIG_BET_PERCENTAGE;
+  const isBigBet = item.ai?.isBigBet === true;
 
   const homeScore = safeNumber(item.homeScore);
   const awayScore = safeNumber(item.awayScore);
