@@ -18,7 +18,7 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Kết hợp kép đa endpoint để vét cạn toàn bộ giải đấu)
+// Nguồn 2: Livescore6 (Kết hợp kép đa endpoint)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -168,7 +168,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU (FIX CHUẨN XÁC 100% CHO LIVESCORE6)
+// 3. TÍNH PHÚT TRẬN ĐẤU (FIX CHUẨN XÁC CHO LIVESCORE6)
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -221,7 +221,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 KẾT HỢP ĐẶC BIỆT)
+// 4. LẤY DỮ LIỆU KÉP (VÉT CẠN ĐA ENDPOINT)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -243,7 +243,6 @@ async function fetchLiveMatchesDualSource() {
 
     try {
         const currentVN = getVietnamTime();
-        // Gọi song song cả 2 endpoint: list-live (lấy ngay lập tức các trận đang đá) và list-by-date (lấy toàn bộ các giải trong ngày)
         const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
         const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
 
@@ -612,7 +611,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 // ==========================================
-// 8. THUẬT TOÁN AI
+// 8. THUẬT TOÁN AI ĐÁNH GIÁ
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
@@ -706,14 +705,56 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 }
 
 // ==========================================
+// 8.1. HÀM ĐỌC VỊ TỶ SỐ DỰA TRÊN HIỆU SUẤT RULE
+// ==========================================
+function analyzeScorePrediction(item) {
+    const eff = parseFloat(item.ruleEfficiency);
+    const homeS = item.homeScore;
+    const awayS = item.awayScore;
+    const totalCurrent = homeS + awayS;
+    const minute = item.elapsed;
+
+    let predictionText = "";
+    let confidenceLevel = "TRUNG BÌNH";
+
+    if (eff >= 85.0) {
+        confidenceLevel = "🔥 CỰC KỲ CAO (SIÊU RUNG)";
+        if (homeS === awayS) {
+            predictionText = `• Tỷ số hòa ${homeS}-${homeS} ở phút ${minute}': Sức ép cực lớn từ cả hai phía. Kịch bản rất dễ nổ bàn thắng quyết định, nghiêng về đội gia tăng sức ép cuối trận.`;
+        } else if (Math.abs(homeS - awayS) === 1) {
+            predictionText = `• Đội dưới đang thua sát nút (${homeS}-${awayS}) ở phút ${minute}': Dồn toàn lực gỡ hòa, đồng thời mở ra không gian phản công cho cửa trên. Khả năng nổ thêm bàn rất cao.`;
+        } else {
+            predictionText = `• Khoảng cách ${Math.abs(homeS - awayS)} bàn ở phút ${minute}': Nhịp độ cởi mở, dòng tiền và thế trận ủng hộ việc có thêm bàn thắng nới rộng cách biệt.`;
+        }
+    } else if (eff >= 72.0) {
+        confidenceLevel = "⚡ SÁNG CỬA (RUNG UY TÍN)";
+        if (homeS === awayS) {
+            predictionText = `• Thế trận giằng co ${homeS}-${homeS} ở phút ${minute}': Các chỉ số sút và phạt góc tích lũy tốt. Bàn thắng có thể đến từ tình huống cố định hoặc đột phá cá nhân.`;
+        } else {
+            predictionText = `• Đội dẫn bàn tiếp tục duy trì áp lực ở phút ${minute}': Séc-men tấn công tốt, khả năng có bàn thắng thứ ${totalCurrent + 1} là khá sáng.`;
+        }
+    } else {
+        confidenceLevel = "📊 TRUNG BÌNH (THEO DÕI THÊM)";
+        predictionText = `• Trận đấu đạt mốc ${eff}% ở phút ${minute}': Có tín hiệu nhịp độ nhưng biên độ rủi ro còn cao. Nên chờ line Over hạ nhẹ hoặc quan sát thêm dòng tiền.`;
+    }
+
+    return {
+        confidenceLevel,
+        predictionText
+    };
+}
+
+// ==========================================
 // 9. THÔNG BÁO TELEGRAM
 // ==========================================
 async function sendTelegramAlert(item) {
     const timeDisplay = `Phút ${item.elapsed}'`;
+    const scoreAnalysis = analyzeScorePrediction(item);
+
     const message = 
 `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})
 🏆 Giải đấu: ${item.league}
-⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–${item.awayScore} ${item.awayName}
+⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–{item.awayScore} ${item.awayName}
 ⏱ Thời gian: ${timeDisplay}
 
 ⚽ DIỄN BIẾN TỶ SỐ THEO PHÚT:
@@ -722,7 +763,10 @@ ${item.goalTimeline}
 📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
 ${item.detailText}
 
-🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
+🎯 ĐỌC VỊ TỶ SỐ & XÁC SUẤT:
+• Mức độ: ${scoreAnalysis.confidenceLevel}
+${scoreAnalysis.predictionText}
+
 📈 Hiệu suất Rule: ${item.ruleEfficiency}%`;
 
     try {
@@ -730,7 +774,7 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`    └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`    └─> [Telegram Success] Đã gửi thông báo đọc vị: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
         console.error('    └─> [Telegram Error]:', err.message);
@@ -840,6 +884,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
+    // Chu kỳ quét tự động mỗi 7 phút/lần
     setInterval(scanLiveMatches, 7 * 60 * 1000);
 });
