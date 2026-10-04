@@ -247,12 +247,13 @@ async function fetchMatchIncidents(matchId, homeScore = 0, awayScore = 0) {
 }
 
 // ==========================================
-// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS (ĐÃ BỌC AN TOÀN CHỐNG LỖI 401)
+// 5. LẤY DỮ LIỆU & CHUẨN HÓA KÈO ODDS (CÓ BẢO VỆ CHỐNG LỖI)
 // ==========================================
 async function fetchOddsData() {
     if (!ODDS_API_KEY) return [];
     try {
         const response = await axios.get(ODDS_API_URL, { timeout: 8000 });
+        console.log(`[Odds Engine] ✅ Lấy thành công dữ liệu tỷ lệ từ The-Odds-API (${response.data?.length || 0} trận).`);
         return response.data || [];
     } catch (err) {
         const status = err.response?.status || 'Lỗi mạng';
@@ -272,7 +273,12 @@ async function fetchSofaScoreLive() {
         });
         return response.data?.events || response.data?.liveEvents || [];
     } catch (err) {
-        console.error(`[SofaScore Error]:`, err.message);
+        const status = err.response?.status;
+        if (status === 429) {
+            console.warn(`[SofaScore Warning]: Đã chạm giới hạn tần suất gọi API (Lỗi 429). Bot sẽ tự động thử lại ở vòng quét sau.`);
+        } else {
+            console.error(`[SofaScore Error]:`, err.response?.data?.message || err.message);
+        }
         return [];
     }
 }
@@ -407,24 +413,21 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     let matchAnalysis = [];
-    let aiScore = 40.0; // Điểm cơ sở bắt đầu
+    let aiScore = 40.0;
 
     const stats = metrics.sofaStats || {};
     let hasTacticalData = false;
 
-    // Kiểm soát bóng & Tấn công
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
     }
 
-    // Thẻ đỏ
     if (stats.redCards > 0) {
         aiScore += 22;
         matchAnalysis.push(`🟥 Thẻ đỏ (${stats.redCards} thẻ) - Khoảng trống phòng ngự lớn`);
         hasTacticalData = true;
     }
 
-    // Sút trúng khung thành
     if (stats.shotsOnTarget >= 5) {
         aiScore += 28;
         matchAnalysis.push(`⚡ Sút trúng khung thành dồn dập: ${stats.shotsOnTarget} lần`);
@@ -435,7 +438,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // Sút trượt / Cú sút bị cản phá & Tổng sút
     const nonTargetShots = (stats.shotsOffTarget || 0) + (stats.blockedShots || 0);
     if (stats.totalShots >= 14) {
         aiScore += 20;
@@ -447,7 +449,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // Phạt góc
     if (stats.corners >= 7) {
         aiScore += 18;
         matchAnalysis.push(`🚩 Sức ép phạt góc cực lớn: ${stats.corners} quả`);
@@ -458,7 +459,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
         hasTacticalData = true;
     }
 
-    // Phân tích kèo nhà cái
     if (oddsAnalysis) {
         aiScore += oddsAnalysis.scoreBoost;
         matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Over ${oddsAnalysis.line} (Odds: ${oddsAnalysis.odds})`);
@@ -470,7 +470,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
 
     const finalScore = Math.min(Math.max(aiScore, 40.0), 98.0).toFixed(1);
     
-    // Ngưỡng tối thiểu kích hoạt: 60.0%
     const MIN_SEND_PERCENTAGE = 60.0; 
     const shouldSend = parseFloat(finalScore) >= MIN_SEND_PERCENTAGE && hasTacticalData;
 
@@ -601,5 +600,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     scanLiveMatches();
+    // Giãn khoảng thời gian quét định kỳ lên 5 phút để tránh lỗi 429 (Rate Limit) từ SofaScore
     setInterval(scanLiveMatches, 10 * 60 * 1000);
 });
