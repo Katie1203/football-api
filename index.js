@@ -124,13 +124,14 @@ function isFilteredLeague(leagueName, homeName, awayName) {
     const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
     if (youthRegex.test(textToTest)) return true;
 
-    // Chặn triệt để các giải bán chuyên, nghiệp dư, khu vực nhỏ, giải phong trào, điện tử
+    // Chặn triệt để các giải bán chuyên, nghiệp dư, khu vực nhỏ, giải phong trào, điện tử, sinh viên
     const rejectKeywords = [
         'simulated', 'srl', 'esports', 'e-soccer', 'cyber', 
         'reserve', 'reserves', 'u21 reserve', 'amateur', 'phong trào', 
         'bán chuyên', 'nghiệp dư', 'regional', 'campionato primavera', 'academy',
         'state league', 'counties league', 'division one south', 'division one north',
-        'npl', 'nsw', 'semi-professional', 'college', 'university', 'inter-university'
+        'npl', 'nsw', 'semi-professional', 'college', 'university', 'inter-university',
+        'ncaa', '3rd division', '4th division'
     ];
     
     return rejectKeywords.some(kw => textToTest.includes(kw));
@@ -523,7 +524,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG
+// 9. TIẾN TRÌNH QUÉT TỰ ĐỘNG (ĐÃ TỐI ƯU CHẶN TỪ ĐẦU)
 // ==========================================
 async function scanLiveMatches() {
     const currentVN = getVietnamTime();
@@ -539,7 +540,6 @@ async function scanLiveMatches() {
         for (let index = 0; index < sofaMatches.length; index++) {
             const item = sofaMatches[index];
             const matchId = String(item.id);
-            const elapsed = calculateExactMinute(item);
             const homeName = item.homeTeam?.name || 'Đội nhà';
             const awayName = item.awayTeam?.name || 'Đội khách';
             const homeScore = item.homeScore?.current ?? 0;
@@ -549,10 +549,13 @@ async function scanLiveMatches() {
             if (!matchId) continue;
             if (sentAlerts.has(matchId)) continue;
 
+            // 🛑 CHẶN NGAY TỪ ĐẦU TRƯỚC KHI XÉT PHÚT VÀ GỌI API CHI TIẾT
             if (isFilteredLeague(league, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ/Nghiệp dư`);
+                console.log(`[Trận #${index + 1}] [${league}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Chặn ngay từ đầu (Giải trẻ/Phụ/Nghiệp dư/Đại học)`);
                 continue;
             }
+
+            const elapsed = calculateExactMinute(item);
 
             if (elapsed === 'HT' || elapsed === 999 || typeof elapsed !== 'number' || elapsed < 46 || elapsed > 92) {
                 const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
