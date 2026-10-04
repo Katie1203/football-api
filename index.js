@@ -5772,53 +5772,123 @@ async function sendTelegramAlert(item, alertDecision) {
     return false;
   }
 
-  const percentage = safeNumber(item.ai.efficiency);
+  const percentage = safeNumber(item.ai?.efficiency);
   const previous = alertState.get(item.alertKey);
   const alertNumber = previous ? previous.alertCount + 1 : 1;
-  const isBigBet = item.ai.isBigBet === true;
-  const totalGoals = safeNumber(item.homeScore) + safeNumber(item.awayScore);
+  const isBigBet = percentage >= BIG_BET_PERCENTAGE;
 
-  let matchStateText = 'Thế trận đang cân bằng.';
-  if (item.ai.styleType === 'HOME_PRESSURE') matchStateText = '🔥 Chủ nhà đang ép sân mạnh.';
-  else if (item.ai.styleType === 'AWAY_PRESSURE') matchStateText = '🔥 Đội khách đang ép sân mạnh.';
-  else if (item.ai.styleType === 'END_TO_END') matchStateText = '⚔️ Hai đội đang ĐÔI CÔNG mạnh.';
-  else if (item.ai.styleType === 'BALANCED_ACTIVE') matchStateText = '⚡ Hai đội vẫn đang duy trì tấn công.';
-  else if (item.ai.styleType === 'LOW_TEMPO') matchStateText = '🐢 Nhịp trận đấu đang thấp.';
+  const homeScore = safeNumber(item.homeScore);
+  const awayScore = safeNumber(item.awayScore);
+  const totalGoals = homeScore + awayScore;
+
+  // Kết quả dự đoán FT đã được predictFinalScore() tạo trong analyzeOneMatch().
+  const scorePrediction = item.scorePrediction || {
+    home: homeScore,
+    away: awayScore,
+    text: `${homeScore}-${awayScore}`,
+    expectedExtraGoals: 0,
+    likelyScorer: 'Chưa đủ tín hiệu',
+    confidence: 'THẤP'
+  };
+
+  const hasPredictedHome = Number.isFinite(Number(scorePrediction.home));
+  const hasPredictedAway = Number.isFinite(Number(scorePrediction.away));
+  const predictedHome = hasPredictedHome ? Number(scorePrediction.home) : homeScore;
+  const predictedAway = hasPredictedAway ? Number(scorePrediction.away) : awayScore;
+
+  let remainingGoals;
+  if (hasPredictedHome && hasPredictedAway) {
+    remainingGoals = Math.max(0, predictedHome + predictedAway - totalGoals);
+  } else {
+    remainingGoals = Math.max(0, safeNumber(scorePrediction.expectedExtraGoals));
+  }
+
+  let matchStateText = '⚖️ Thế trận đang cân bằng.';
+  if (item.ai?.styleType === 'HOME_PRESSURE') matchStateText = '🔥 Chủ nhà đang ép sân mạnh.';
+  else if (item.ai?.styleType === 'AWAY_PRESSURE') matchStateText = '🔥 Đội khách đang ép sân mạnh.';
+  else if (item.ai?.styleType === 'END_TO_END') matchStateText = '⚔️ Hai đội đang đôi công mạnh.';
+  else if (item.ai?.styleType === 'BALANCED_ACTIVE') matchStateText = '⚡ Hai đội đang duy trì thế trận tấn công.';
+  else if (item.ai?.styleType === 'LOW_TEMPO') matchStateText = '🐢 Nhịp độ trận đấu hiện chưa cao.';
 
   let momentumText = '⚡ Momentum: Đang thu thập.';
-  if (item.momentum?.available) {
-    if (item.momentum.score >= 85) momentumText = '🔥 Momentum tấn công đang tăng RẤT MẠNH.';
-    else if (item.momentum.score >= 70) momentumText = '⚡ Momentum tấn công đang tăng mạnh.';
-    else if (item.momentum.score >= 55) momentumText = '⚡ Momentum tấn công ở mức khá.';
-    else momentumText = '⚡ Momentum tấn công chưa mạnh.';
+  if (item.momentum?.available && Number.isFinite(Number(item.momentum.score))) {
+    const momentumScore = Number(item.momentum.score);
+    if (momentumScore >= 85) momentumText = '🔥 Momentum: Tấn công tăng rất mạnh.';
+    else if (momentumScore >= 70) momentumText = '⚡ Momentum: Tấn công đang tăng mạnh.';
+    else if (momentumScore >= 55) momentumText = '⚡ Momentum: Tấn công ở mức khá.';
+    else momentumText = '⚡ Momentum: Chưa có sự gia tăng mạnh.';
   }
 
   let oddsText = '💰 Kèo nhà cái: N/A.';
-  if (item.odds?.found && Number.isFinite(item.odds?.point) && Number.isFinite(item.odds?.price)) {
-    oddsText = `💰 Live Over ${item.odds.point} @${Number(item.odds.price).toFixed(2)}.`;
+  if (item.odds?.found) {
+    if (item.odds.text && !String(item.odds.text).toLowerCase().includes('không tìm')) {
+      oddsText = String(item.odds.text);
+    } else if (
+      item.odds.point !== undefined &&
+      item.odds.point !== null &&
+      Number.isFinite(Number(item.odds.price))
+    ) {
+      oddsText = `💰 Live Over ${item.odds.point} @${Number(item.odds.price).toFixed(2)}.`;
+    }
+  }
+  if (oddsText !== '💰 Kèo nhà cái: N/A.' && !oddsText.startsWith('💰')) {
+    oddsText = `💰 ${oddsText}`;
+  }
+
+  let likelyScorer = scorePrediction.likelyScorer || 'Chưa đủ tín hiệu';
+  const scorerLower = String(likelyScorer).toLowerCase();
+  if (scorerLower === 'chủ nhà' || scorerLower === 'home') {
+    likelyScorer = `Chủ nhà - ${item.homeName}`;
+  } else if (scorerLower === 'đội khách' || scorerLower === 'away' || scorerLower === 'khách') {
+    likelyScorer = `Đội khách - ${item.awayName}`;
+  }
+
+  let goalPredictionText;
+  if (remainingGoals >= 3) {
+    goalPredictionText = `Trận đấu có khả năng xuất hiện thêm khoảng ${remainingGoals} bàn thắng.`;
+  } else if (remainingGoals === 2) {
+    goalPredictionText = 'Trận đấu có khả năng xuất hiện thêm khoảng 2 bàn thắng.';
+  } else if (remainingGoals === 1) {
+    goalPredictionText = 'Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG.';
+  } else {
+    goalPredictionText = 'Tín hiệu bàn thắng tiếp theo chưa đủ mạnh.';
   }
 
   const bigBetLine = isBigBet ? '\n🔥 BIG BET' : '';
+
   const message = `🔔 RUNG CHUÔNG VÀNGGGG🔔
 🏆 Giải đấu: ${cleanTelegramText(item.league)}
-⚔️ Trận đấu: ${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
+⚔️ Trận đấu: ${cleanTelegramText(item.homeName)} ${homeScore}-${awayScore} ${cleanTelegramText(item.awayName)}
 ⏱️ Thời gian: Phút ${item.minute}'
 
 ⚽ DIỄN BIẾN TỶ SỐ:
-• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số: ${item.homeScore}-${item.awayScore})
+• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số: ${homeScore}-${awayScore})
 
 📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
 • ${matchStateText}
 • ${momentumText}
 • ${oddsText}
 
-🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
+🔮 DỰ ĐOÁN TỶ SỐ FT:
+• ${scorePrediction.text || `${predictedHome}-${predictedAway}`}
+
+⚽ DỰ KIẾN BÀN CÒN LẠI:
+• +${remainingGoals} bàn
+
+🎯 ĐỘI CÓ KHẢ NĂNG GHI BÀN:
+• ${cleanTelegramText(likelyScorer)}
+
+🎯 Nhận định: ${goalPredictionText}
 📈 Hiệu suất Rule: ${percentage.toFixed(1)}%${bigBetLine}`;
 
   try {
     await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-      { chat_id: TELEGRAM_CHAT_ID, text: message, disable_web_page_preview: true },
+      {
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        disable_web_page_preview: true
+      },
       { timeout: 10000 }
     );
 
@@ -5830,7 +5900,9 @@ async function sendTelegramAlert(item, alertDecision) {
       updatedAt: Date.now()
     });
 
-    console.log(`[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}% | Data ${item.ai.dataConfidence}%`);
+    console.log(
+      `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | Rule ${percentage.toFixed(1)}% | FT ${scorePrediction.text} | Còn +${remainingGoals} bàn`
+    );
     return true;
   } catch (e) {
     console.error('[Telegram Error]', e.response?.data || e.message);
