@@ -18,7 +18,7 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Dự phòng mở rộng toàn bộ trận đấu)
+// Nguồn 2: Livescore6 (Dự phòng quét toàn diện)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;
 
@@ -222,7 +222,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 MỞ RỘNG)
+// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 MỞ RỘNG TOÀN DIỆN)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -254,38 +254,39 @@ async function fetchLiveMatchesDualSource() {
         let rawData = [];
         const data = response.data;
 
-        function collectAllMatches(node, inheritedMeta = {}) {
-            if (!node) return;
-            if (Array.isArray(node)) {
-                node.forEach(item => collectAllMatches(item, inheritedMeta));
+        function deepScanLivescore6(obj, currentCategory = '', currentTournament = '') {
+            if (!obj) return;
+
+            if (Array.isArray(obj)) {
+                obj.forEach(item => deepScanLivescore6(item, currentCategory, currentTournament));
                 return;
             }
-            if (typeof node === 'object') {
-                const cName = node.Cname || node.categoryName || node.country || inheritedMeta.Cname;
-                const tName = node.Snm || node.Tname || node.tournamentName || node.LeagueName || inheritedMeta.Tname;
 
-                const hasMatchInfo = node.Eid || node.matchId || (node.T1 && node.T2);
-                const isContainer = node.Stages || node.events || node.Mlist || node.data;
+            if (typeof obj === 'object') {
+                const cat = obj.Cname || obj.categoryName || obj.country || currentCategory;
+                const tour = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || currentTournament;
 
-                if (hasMatchInfo && !isContainer) {
+                const isMatch = (obj.Eid || obj.matchId || obj.Id) && (obj.T1 || obj.homeTeam || obj.T2);
+                
+                if (isMatch) {
                     rawData.push({
-                        ...node,
-                        _inheritedCategory: cName,
-                        _inheritedTournament: tName
+                        ...obj,
+                        _inheritedCategory: cat,
+                        _inheritedTournament: tour
                     });
                 }
 
-                for (const key of Object.keys(node)) {
-                    if (typeof node[key] === 'object' && node[key] !== null) {
-                        collectAllMatches(node[key], { Cname: cName, Tname: tName });
+                for (const key of Object.keys(obj)) {
+                    if (typeof obj[key] === 'object' && obj[key] !== null) {
+                        deepScanLivescore6(obj[key], cat, tour);
                     }
                 }
             }
         }
 
-        collectAllMatches(data);
+        deepScanLivescore6(data);
 
-        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
+        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công toàn bộ ${rawData.length} trận live.`);
         return { source: 'livescore6', matches: rawData };
     } catch (err) {
         console.error(`❌ [Livescore6 Backup Error]:`, err.message);
