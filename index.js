@@ -30,7 +30,7 @@ function getVietnamTime() {
  const now = new Date();
  const vnTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
  return {
- dateStr: vnTime.toISOString().slice(0, 10), // YYYY-MM-DD
+ dateStr: vnTime.toISOString().slice(0, 10),
  timeStr: vnTime.toISOString().slice(11, 19)
  };
 }
@@ -83,30 +83,24 @@ const LEAGUE_NAME_MAP = {
  'Club World Cup': 'Giải VĐQG Thế Giới Các CLB',
  'Friendlies': 'Giao Hữu Quốc Tế',
  'Club Friendly': 'Giao Hữu CLB',
-
  'Premier League': 'Ngoại Hạng Anh',
  'Championship': 'Hạng Nhất Anh',
  'League One': 'Hạng Hai Anh',
  'League Two': 'Hạng Ba Anh',
  'FA Cup': 'Cúp FA',
  'EFL Cup': 'Cúp Liên Đoàn Anh',
-
  'LaLiga': 'VĐQG Tây Ban Nha',
  'LaLiga 2': 'Hạng 2 Tây Ban Nha',
  'Copa del Rey': 'Cúp Nhà Vua Tây Ban Nha',
-
  'Serie A': 'VĐQG Ý',
  'Serie B': 'Hạng 2 Ý',
  'Coppa Italia': 'Cúp Quốc Gia Ý',
-
  'Bundesliga': 'VĐQG Đức',
  '2. Bundesliga': 'Hạng 2 Đức',
  'DFB Pokal': 'Cúp Quốc Gia Đức',
-
  'Ligue 1': 'VĐQG Pháp',
  'Ligue 2': 'Hạng 2 Pháp',
  'Coupe de France': 'Cúp Quốc Gia Pháp',
-
  'J1 League': 'VĐQG Nhật Bản',
  'J2 League': 'Hạng 2 Nhật Bản',
  'J3 League': 'Hạng 3 Nhật Bản',
@@ -136,7 +130,6 @@ function parseLeagueName(item, source) {
  }
 
  const translatedCategory = COUNTRY_MAP[category] || category;
-
  let translatedTournament = tournament
  .replace(/\bPremier League\b/gi, 'Giải VĐQG')
  .replace(/\bDivision 1\b/gi, 'Hạng 1')
@@ -159,7 +152,6 @@ function parseLeagueName(item, source) {
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
  const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
- 
  const youthRegex = /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i;
  if (youthRegex.test(textToTest)) return true;
 
@@ -740,7 +732,7 @@ ${item.detailText}
 }
 
 // ==========================================
-// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG (LỌC TRIỆT ĐỂ TRẬN < 45 PHÚT)
+// 10. TIẾN TRÌNH QUÉT TỰ ĐỘNG
 // ==========================================
 async function scanLiveMatches() {
  const currentVN = getVietnamTime();
@@ -762,7 +754,7 @@ async function scanLiveMatches() {
  for (let index = 0; index < matches.length; index++) {
  const item = matches[index];
  
- const matchId, homeName, awayName, homeScore, actualAwayScore;
+ let matchId, homeName, awayName, homeScore, actualAwayScore;
 
  if (source === 'sofascore') {
  matchId = String(item.id);
@@ -772,7 +764,6 @@ async function scanLiveMatches() {
  actualAwayScore = item.awayScore?.current ?? 0;
  } else {
  matchId = String(item.Eid || item.id || item.matchId || `ls6_${index}`);
- 
  homeName = (item.T1 && item.T1[0] && (item.T1[0].Nm || item.T1[0].Name)) || item.homeTeam?.name || 'Đội nhà';
  awayName = (item.T2 && item.T2[0] && (item.T2[0].Nm || item.T2[0].Name)) || item.awayTeam?.name || 'Đội khách';
 
@@ -793,7 +784,6 @@ async function scanLiveMatches() {
  const elapsed = calculateExactMinute(item, source);
  const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
- // BỔ SUNG: Kiểm tra và loại bỏ hoàn toàn các trận < 45 phút, HT hoặc đã kết thúc (> 92)
  if (isNaN(numericElapsed) || numericElapsed < 45 || numericElapsed > 92) {
  const timeLabel = (elapsed === 'HT' || elapsed === 999) ? elapsed : `${elapsed}'`;
  console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Ngoài khung hiệp 2 (yêu cầu từ 45' đến 92')`);
@@ -817,6 +807,8 @@ async function scanLiveMatches() {
  homeName,
  awayName,
  homeScore,
+ awayScore: actualAwayScore,
+ elapsed: numericElapsed,
  goalTimeline,
  detailText: aiAnalysis.detailText,
  ruleEfficiency: aiAnalysis.efficiency
