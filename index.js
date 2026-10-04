@@ -15,7 +15,6 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '7795416740';
 // Danh sách các RapidAPI Key tự động xoay vòng để tăng gấp đôi hạn mức và chống nghẽn
 const RAPIDAPI_KEYS = [
   '555e7a3fa7mshf8f27713bedc219p1fb72fjsnbf65b7120b2c',
-  'f00cdf8303msh374792a917698bbp1f02cbjsn3bc6445978c1'
 ];
 
 let currentKeyIndex = 0;
@@ -26,8 +25,8 @@ function getNextRapidApiKey() {
   return key.trim();
 }
 
-// Nguồn 1: SofaScore
-const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
+// Nguồn 1: SofaScore (Đã sửa đúng host khớp với gói cước cao cấp trên RapidAPI)
+const SOFASCORE_HOST = 'free-api-live-football-data.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
 // Nguồn 2: Livescore6
