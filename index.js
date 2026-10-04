@@ -183,9 +183,15 @@ function calculateExactMinute(item, source) {
  if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft') || statusType === 'ft') return 999;
  if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht') return 'HT';
 
- if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
+ if (item.status?.type === 'inprogress') {
+ if (typeof item.time?.current === 'number' && item.time.current > 0) {
+ return item.time.current;
+ }
+ if (typeof item.time?.played === 'number' && item.time.played > 0) {
  return item.time.played;
  }
+ }
+
  if (typeof item.minute === 'number' && item.minute > 0) return item.minute;
  } else {
  if (typeof item.Tm === 'number' && item.Tm > 0) return item.Tm;
@@ -807,8 +813,8 @@ async function scanLiveMatches() {
  }
 
  // ==========================================
- // KHI VƯỢT QUA TẤT CẢ RÀO CHẶN, TIẾN HÀNH ĐỌC DIỄN BIẾN TỪNG PHÚT
- // ==========================================
+// KHI VƯỢT QUA TẤT CẢ RÀO CHẶN, TIẾN HÀNH ĐỌC DIỄN BIẾN TỪNG PHÚT
+// ==========================================
  console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
  const metrics = await fetchMatchDetailStats(matchId, source);
