@@ -18,7 +18,7 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'f69ce7a0d9msh6127bf346b0c
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Kết hợp kép đa endpoint để vét cạn toàn bộ giải đấu)
+// Nguồn 2: Livescore6
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -155,7 +155,7 @@ function parseLeagueName(item, source) {
 }
 
 // ==========================================
-// 2. BỘ LỌC THÔNG MINH
+// 2. BỘ LỌC THÔNG MINH (GIẢI TRẺ / ESPORTS)
 // ==========================================
 function isFilteredLeague(leagueName, homeName, awayName) {
     const textToTest = `${leagueName} ${homeName} ${awayName}`.toLowerCase();
@@ -168,7 +168,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU & LỌC HIỆP 1 / HT
+// 3. TÍNH PHÚT TRẬN ĐẤU
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -182,10 +182,7 @@ function calculateExactMinute(item, source) {
 
         if (statusType.includes('ended') || statusType.includes('finished') || statusDesc.includes('ft')) return 999;
         
-        // Nhận diện Nghỉ giữa hiệp (HT)
         if (statusType.includes('halftime') || statusDesc.includes('ht') || statusType === 'ht' || statusType === 'halftime') return 'HT';
-
-        // Nhận diện Đang đá Hiệp 1
         if (statusType.includes('firsthalf') || statusDesc.includes('1st half') || statusDesc.includes('1st')) return '1ST';
 
         if (item.time && typeof item.time.played === 'number' && item.time.played > 0) {
@@ -210,11 +207,7 @@ function calculateExactMinute(item, source) {
             const textStr = String(rawText).trim().toUpperCase();
 
             if (textStr.includes('FT') || textStr.includes('AET') || textStr.includes('PEN') || textStr.includes('FINISHED')) return 999;
-            
-            // Nhận diện Nghỉ giữa hiệp (HT)
             if (textStr.includes('HT') || textStr === '10' || textStr.includes('HALF TIME') || textStr.includes('HALFTIME')) return 'HT';
-
-            // Nhận diện Đang đá Hiệp 1
             if (textStr.includes('1ST') || textStr.includes('1H')) return '1ST';
 
             const matchNum = textStr.match(/(\d+)/);
@@ -248,7 +241,7 @@ async function fetchLiveMatchesDualSource() {
             return { source: 'sofascore', matches: events };
         }
     } catch (err) {
-        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
+        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Chuyển sang nguồn dự phòng Livescore6...`);
     }
 
     try {
@@ -300,7 +293,7 @@ async function fetchLiveMatchesDualSource() {
         if (resLive && resLive.data) processMatchObject(resLive.data);
         if (resDate && resDate.data) processMatchObject(resDate.data);
 
-        console.log(`[Source: Livescore6 All-Scope] ✅ Quét vét cạn thành công tổng cộng ${rawData.length} trận live.`);
+        console.log(`[Source: Livescore6] ✅ Quét thành công ${rawData.length} trận live.`);
         return { source: 'livescore6', matches: rawData };
     } catch (err) {
         console.error(`❌ [Livescore6 Backup Error]:`, err.message);
@@ -762,7 +755,7 @@ async function scanLiveMatches() {
 
         const { source, matches } = liveResult;
         if (matches.length === 0) {
-            console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả SofaScore và Livescore6.`);
+            console.log(`[Thông báo]: Không thu thập được trận đấu nào.`);
             return;
         }
 
@@ -792,27 +785,25 @@ async function scanLiveMatches() {
 
             const leagueName = parseLeagueName(item, source);
 
+            // Bỏ qua giải trẻ / e-sports (im lặng)
             if (isFilteredLeague(leagueName, homeName, awayName)) {
-                console.log(`[Trận #${index + 1}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Giải trẻ/Phụ`);
                 continue;
             }
 
             const elapsed = calculateExactMinute(item, source);
             const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
-            // BỘ LỌC CHẶT CHẼ: BỎ QUA HIỆP 1 VÀ NGHỈ GIỮA HIỆP (HT)
+            // 1. Bỏ qua nếu đang là Hiệp 1 (1ST) hoặc Nghỉ giữa hiệp (HT)
             if (elapsed === 'HT' || elapsed === '1ST') {
-                console.log(`[Trận #${index + 1}] [Trạng thái: ${elapsed}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Đang nghỉ giữa hiệp (HT) hoặc đang đá Hiệp 1`);
                 continue;
             }
 
-            // CHỈ GIỮ LẠI HIỆP 2 (Từ phút 46 đến 92)
-            if (isNaN(numericElapsed) || numericElapsed < 46 || numericElapsed > 92) {
-                const timeLabel = (elapsed === 999) ? 'FT' : `${elapsed}'`;
-                console.log(`[Trận #${index + 1}] [Phút: ${timeLabel}] [${leagueName}] ${homeName} vs ${awayName} └─> [Bỏ qua]: Không thuộc khung Hiệp 2 (46'-92')`);
+            // 2. Bỏ qua nếu không phải số, đang ở phút <= 45 hoặc đã hết trận (> 92)
+            if (isNaN(numericElapsed) || numericElapsed <= 45 || numericElapsed > 92) {
                 continue;
             }
 
+            // CHỈ QUÉT VÀ IN LOG NHỮNG TRẬN TỪ PHÚT 46 ĐẾN 92
             console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
             const metrics = await fetchMatchDetailStats(matchId, source);
