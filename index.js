@@ -222,7 +222,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 MỞ RỘNG TOÀN DIỆN)
+// 4. LẤY DỮ LIỆU KÉP (VÉT CẠN TOÀN DIỆN CHO LIVESCORE6)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -239,7 +239,7 @@ async function fetchLiveMatchesDualSource() {
             return { source: 'sofascore', matches: events };
         }
     } catch (err) {
-        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
+        console.warn(`⚠️️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
     }
 
     try {
@@ -254,6 +254,7 @@ async function fetchLiveMatchesDualSource() {
         let rawData = [];
         const data = response.data;
 
+        // Cải tiến cấu trúc vét cạn toàn diện bóc tách tất cả các tầng danh mục và mảng sự kiện trận đấu
         function deepScanLivescore6(obj, currentCategory = '', currentTournament = '') {
             if (!obj) return;
 
@@ -263,10 +264,11 @@ async function fetchLiveMatchesDualSource() {
             }
 
             if (typeof obj === 'object') {
-                const cat = obj.Cname || obj.categoryName || obj.country || currentCategory;
-                const tour = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || currentTournament;
+                const cat = obj.Cname || obj.categoryName || obj.country || obj.Cnm || currentCategory;
+                const tour = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || obj.Snam || currentTournament;
 
-                const isMatch = (obj.Eid || obj.matchId || obj.Id) && (obj.T1 || obj.homeTeam || obj.T2);
+                // Kiểm tra xem node hiện tại có phải là trận đấu hoặc chứa danh sách sự kiện con không
+                const isMatch = (obj.Eid || obj.matchId || obj.Id) && (obj.T1 || obj.homeTeam || obj.T2 || obj.AwayTeam);
                 
                 if (isMatch) {
                     rawData.push({
@@ -276,8 +278,9 @@ async function fetchLiveMatchesDualSource() {
                     });
                 }
 
+                // Duyệt qua tất cả các thuộc tính bên trong object kể cả các nhánh lồng nhau sâu
                 for (const key of Object.keys(obj)) {
-                    if (typeof obj[key] === 'object' && obj[key] !== null) {
+                    if (obj[key] !== null && (typeof obj[key] === 'object' || Array.isArray(obj[key]))) {
                         deepScanLivescore6(obj[key], cat, tour);
                     }
                 }
@@ -835,6 +838,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Đặt chu kỳ quét 120 giây (2 phút) để né lỗi Rate Limit (429) của RapidAPI
     setInterval(scanLiveMatches, 720000);
 });
