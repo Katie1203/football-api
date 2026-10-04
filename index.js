@@ -173,7 +173,7 @@ function isFilteredLeague(leagueName, homeName, awayName) {
 }
 
 // ==========================================
-// 3. TÍNH PHÚT TRẬN ĐẤU (BÓC TÁCH CHUẨN XÁC 100% TỪ EPS)
+// 3. TÍNH PHÚT TRẬN ĐẤU (AN TOÀN TUYỆT ĐỐI KHÔNG LỖI EPS)
 // ==========================================
 function calculateExactMinute(item, source) {
     if (!item) return 0;
@@ -192,7 +192,9 @@ function calculateExactMinute(item, source) {
             return item.time.played;
         }
     } else {
-        const epsStr = String(item.Eps || item.status || item.matchStatus || '').trim().toUpperCase();
+        // Bắt an toàn tất cả các biến có thể chứa trạng thái phút đấu từ Livescore6
+        const rawEps = item.Eps || item.status || item.matchStatus || item.Epsint || '';
+        const epsStr = String(rawEps).trim().toUpperCase();
         
         if (epsStr.includes('FT') || epsStr.includes('AET') || epsStr.includes('PEN')) return 999;
         if (epsStr.includes('HT') || eps === '10' || epsStr.includes('HALF')) return 'HT';
@@ -208,7 +210,6 @@ function calculateExactMinute(item, source) {
 
     return 0;
 }
-
 // ==========================================
 // 4. LẤY DỮ LIỆU KÉP (VÉT CẠN SÂU TOÀN CỤC KHÔNG BỎ SÓT TRẬN)
 // ==========================================
