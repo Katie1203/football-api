@@ -18,9 +18,8 @@ const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '555e7a3fa7mshf8f27713bedc
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-// Nguồn 2: Livescore6 (Dự phòng tự động khi SofaScore lỗi)
+// Nguồn 2: Livescore6 (Kết hợp kép đa endpoint để vét cạn toàn bộ giải đấu)
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
-const LIVESCORE_LIVE_URL = `https://${LIVESCORE_HOST}/matches/v2/list-live?Timezone=-7&Category=soccer`;
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
 const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`;
@@ -31,7 +30,7 @@ function getVietnamTime() {
     const now = new Date();
     const vnTime = new Date(now.getTime() + (7 * 60 * 60 * 1000));
     return {
-        dateStr: vnTime.toISOString().slice(0, 10),
+        dateStr: vnTime.toISOString().slice(0, 10), // YYYY-MM-DD
         timeStr: vnTime.toISOString().slice(11, 19)
     };
 }
@@ -59,14 +58,15 @@ const COUNTRY_MAP = {
     'Australia': 'Úc',
     'USA': 'Mỹ',
     'Norway': 'Na Uy',
-    'Estonia': 'Estonia',
-    'India': 'Ấn Độ',
-    'South Africa': 'Nam Phi',
+    'Czech Republic': 'Cộng hòa Séc',
+    'Denmark': 'Đan Mạch',
+    'Croatia': 'Croatia',
+    'Poland': 'Ba Lan',
+    'Austria': 'Áo',
     'World': 'Quốc Tế',
     'Europe': 'Châu Âu',
     'Asia': 'Châu Á',
-    'South America': 'Nam Mỹ',
-    'Africa': 'Châu Phi'
+    'South America': 'Nam Mỹ'
 };
 
 const LEAGUE_NAME_MAP = {
@@ -187,18 +187,10 @@ function calculateExactMinute(item, source) {
             return item.time.played;
         }
     } else {
-        // --- XỬ LÝ VÉT CẠN THỜI GIAN CHO LIVESCORE6 ---
-        // Kiểm tra các trường số nguyên thường chứa phút thi đấu trực tiếp
         if (typeof item.Tm === 'number' && item.Tm > 0) return item.Tm;
         if (typeof item.time === 'number' && item.time > 0) return item.time;
         if (typeof item.minute === 'number' && item.minute > 0) return item.minute;
 
-        // Kiểm tra trường Tr1 hoặc trạng thái thời gian động nếu có dạng số phút
-        if (typeof item.Tr1 === 'number' && item.Tr1 > 45 && item.Tr1 <= 120) {
-            // Đôi khi trường Tr1 lưu nhầm phút nếu cấu trúc thay đổi, ta check thêm
-        }
-
-        // Quét tất cả các chuỗi có thể chứa thông tin phút (Eps, status, matchStatus, reason, v.v.)
         const rawStatusTexts = [
             item.Eps,
             item.status,
@@ -215,11 +207,9 @@ function calculateExactMinute(item, source) {
             if (textStr.includes('FT') || textStr.includes('AET') || textStr.includes('PEN') || textStr.includes('FINISHED')) return 999;
             if (textStr.includes('HT') || textStr === '10' || textStr.includes('HALF TIME')) return 'HT';
 
-            // Tìm chuỗi số đứng đầu hoặc đứng trong ngoặc/nháy (VD: "61'", "61", "H2 61'")
             const matchNum = textStr.match(/(\d+)/);
             if (matchNum) {
                 const val = parseInt(matchNum[1], 10);
-                // Nếu giá trị nằm trong khoảng thời gian trận đấu hợp lệ (1 đến 120 phút)
                 if (val > 0 && val <= 120) {
                     return val;
                 }
@@ -231,7 +221,7 @@ function calculateExactMinute(item, source) {
 }
 
 // ==========================================
-// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6)
+// 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 KẾT HỢP ĐẶC BIỆT)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     try {
@@ -252,51 +242,56 @@ async function fetchLiveMatchesDualSource() {
     }
 
     try {
-        const response = await axios.get(LIVESCORE_LIVE_URL, {
-            headers: {
-                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
-                'x-rapidapi-host': LIVESCORE_HOST
-            },
-            timeout: 10000
-        });
+        const currentVN = getVietnamTime();
+        // Gọi song song cả 2 endpoint: list-live (lấy ngay lập tức các trận đang đá) và list-by-date (lấy toàn bộ các giải trong ngày)
+        const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
+        const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
+
+        const [resLive, resDate] = await Promise.all([
+            axios.get(liveUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null })),
+            axios.get(dateUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null }))
+        ]);
 
         let rawData = [];
-        const data = response.data;
+        const seenIds = new Set();
 
-        function extractMatchesDeep(obj, inheritedMeta = {}) {
-            if (!obj) return;
-            
-            if (Array.isArray(obj)) {
-                obj.forEach(item => extractMatchesDeep(item, inheritedMeta));
-                return;
-            }
+        function processMatchObject(obj, cat = '', tour = '') {
+            if (!obj || typeof obj !== 'object') return;
 
-            if (typeof obj === 'object') {
-                const cName = obj.Cname || obj.categoryName || obj.country || inheritedMeta.Cname;
-                const tName = obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || inheritedMeta.Tname;
+            const matchId = String(obj.Eid || obj.id || obj.MatchId || '');
+            const hasTeams = obj.T1 || obj.homeTeam || obj.T2 || obj.AwayTeam || (obj.Home && obj.Away);
 
-                const hasMatchInfo = obj.Eid || (obj.T1 && obj.T2);
-                const isContainer = obj.Stages || obj.events || obj.Mlist || obj.data;
+            if (matchId && hasTeams && !seenIds.has(matchId)) {
+                const eps = String(obj.Eps || obj.status || obj.Trh || obj.MatchStatus || '').toUpperCase();
+                const tm = obj.Tm || obj.Minute || obj.time;
+                
+                const isLiveStatus = eps.includes("'") || eps.includes("LIVE") || eps.includes("1") || eps.includes("IN_PLAY") || (typeof tm === 'number' && tm > 0);
 
-                if (hasMatchInfo && !isContainer) {
+                if (isLiveStatus || (typeof tm === 'number' && tm >= 1 && tm <= 120)) {
+                    seenIds.add(matchId);
                     rawData.push({
                         ...obj,
-                        _inheritedCategory: cName,
-                        _inheritedTournament: tName
+                        _inheritedCategory: obj.Cname || obj.categoryName || obj.country || obj.Cnm || cat,
+                        _inheritedTournament: obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || tour
                     });
                 }
+            }
 
-                for (const key of Object.keys(obj)) {
-                    if (typeof obj[key] === 'object' && obj[key] !== null) {
-                        extractMatchesDeep(obj[key], { Cname: cName, Tname: tName });
-                    }
+            for (const key of Object.keys(obj)) {
+                if (obj[key] !== null && typeof obj[key] === 'object') {
+                    processMatchObject(
+                        obj[key], 
+                        obj.Cname || obj.categoryName || cat, 
+                        obj.Snm || obj.Tname || tour
+                    );
                 }
             }
         }
 
-        extractMatchesDeep(data);
+        if (resLive && resLive.data) processMatchObject(resLive.data);
+        if (resDate && resDate.data) processMatchObject(resDate.data);
 
-        console.log(`[Source: Livescore6 Backup] ✅ Lấy thành công ${rawData.length} trận live.`);
+        console.log(`[Source: Livescore6 All-Scope] ✅ Quét vét cạn thành công tổng cộng ${rawData.length} trận live.`);
         return { source: 'livescore6', matches: rawData };
     } catch (err) {
         console.error(`❌ [Livescore6 Backup Error]:`, err.message);
@@ -735,10 +730,10 @@ ${item.detailText}
             chat_id: TELEGRAM_CHAT_ID,
             text: message
         });
-        console.log(`        └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
+        console.log(`    └─> [Telegram Success] Đã gửi thông báo: ${item.homeName} vs ${item.awayName} (${item.ruleEfficiency}%)`);
         sentAlerts.add(item.id);
     } catch (err) {
-        console.error('        └─> [Telegram Error]:', err.message);
+        console.error('    └─> [Telegram Error]:', err.message);
     }
 }
 
@@ -845,6 +840,6 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
     scanLiveMatches();
-    // Đặt chu kỳ quét liên tục mỗi 60 giây (1 phút)
-    setInterval(scanLiveMatches, 7 * 60 * 1000); // 7 phút quét một lầns
+    // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
+    setInterval(scanLiveMatches, 7 * 60 * 1000);
 });
