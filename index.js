@@ -1,3 +1,4 @@
+
 const express = require('express');
 const axios = require('axios');
 
@@ -1132,11 +1133,10 @@ async function fetchLiveMatchesFromSofaScore() {
       );
 
 
-    return (
-      r.data?.events ||
-      r.data?.liveEvents ||
-      []
-    );
+    const list = r.data?.events || r.data?.liveEvents || [];
+    const rows = Array.isArray(list) ? list : [];
+    console.log(`[Sofa Live] HTTP ${r.status} | live: ${rows.length}`);
+    return rows;
 
   } catch (e) {
 
@@ -1180,16 +1180,12 @@ async function fetchLiveMatchesFromFlashScore() {
       );
 
 
-    return (
-      Array.isArray(r.data)
-        ? r.data
-        : (
-            r.data?.data ||
-            r.data?.matches ||
-            r.data?.events ||
-            []
-          )
-    );
+    const list = Array.isArray(r.data)
+      ? r.data
+      : (r.data?.data || r.data?.matches || r.data?.events || []);
+    const rows = Array.isArray(list) ? list : [];
+    console.log(`[FlashScore Live] HTTP ${r.status} | live: ${rows.length}`);
+    return rows;
 
   } catch (e) {
 
@@ -1235,14 +1231,13 @@ async function fetchLiveMatchesFromLiveFootball() {
       );
 
 
-    return (
-      r.data?.result ||
-      r.data?.matches ||
-      []
-    );
+    const list = r.data?.result || r.data?.matches || r.data?.data || [];
+    const rows = Array.isArray(list) ? list : [];
+    console.log(`[LiveFootball] HTTP ${r.status} | live: ${rows.length}`);
+    return rows;
 
   } catch (e) {
-
+    handleRapidApiError('LiveFootball', e);
     return [];
   }
 }
@@ -5360,6 +5355,11 @@ function extractHomeName(raw) {
     raw?.homeName ??
     raw?.home_name ??
     raw?.participant1?.name ??
+    raw?.participants?.[0]?.name ??
+    raw?.team1?.name ??
+    raw?.team_home?.name ??
+    raw?.localteam?.name ??
+    raw?.localTeam?.name ??
     'Home'
   );
 }
@@ -5376,6 +5376,11 @@ function extractAwayName(raw) {
     raw?.awayName ??
     raw?.away_name ??
     raw?.participant2?.name ??
+    raw?.participants?.[1]?.name ??
+    raw?.team2?.name ??
+    raw?.team_away?.name ??
+    raw?.visitorteam?.name ??
+    raw?.visitorTeam?.name ??
     'Away'
   );
 }
@@ -6204,95 +6209,56 @@ async function sendTelegramAlert(item, alertDecision) {
 
 async function fetchAllLiveMatches() {
 
-  const [
-    primary,
-    sofa,
-    flash,
-    football
-  ] = await Promise.allSettled([
+  const sourceJobs = [
+    ['Primary', 'primary-rapidapi', fetchLiveMatchesFromPrimaryRapidApi],
+    ['Sofa', 'sofascore', fetchLiveMatchesFromSofaScore],
+    ['FlashScore', 'flashscore', fetchLiveMatchesFromFlashScore],
+    ['LiveFootball', 'live-football', fetchLiveMatchesFromLiveFootball]
+  ];
 
-    fetchLiveMatchesFromPrimaryRapidApi(),
-
-    fetchLiveMatchesFromSofaScore(),
-
-    fetchLiveMatchesFromFlashScore(),
-
-    fetchLiveMatchesFromLiveFootball()
-
-  ]);
-
+  const settled = await Promise.allSettled(
+    sourceJobs.map(([, , fn]) => fn())
+  );
 
   const all = [];
+  const counts = {};
 
-  if (
-    primary.status ===
-    'fulfilled'
-  ) {
+  settled.forEach((result, index) => {
+    const [label, source] = sourceJobs[index];
 
-    for (const raw of primary.value) {
-      all.push(formatLiveMatch(raw, 'primary-rapidapi'));
+    if (result.status !== 'fulfilled') {
+      counts[source] = 0;
+      console.log(`[Source] ${label}: ERROR | 0 trận`);
+      return;
     }
-  }
 
-  if (
-    sofa.status ===
-    'fulfilled'
-  ) {
+    const rows = Array.isArray(result.value) ? result.value : [];
+    let valid = 0;
+    let invalid = 0;
 
-    for (
-      const raw of
-      sofa.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'sofascore'
-        )
-      );
+    for (const raw of rows) {
+      const match = formatLiveMatch(raw, source);
+      if (isPlaceholderMatch(match)) {
+        invalid += 1;
+        continue;
+      }
+      all.push(match);
+      valid += 1;
     }
-  }
 
+    counts[source] = valid;
+    console.log(
+      `[Source] ${label}: ${rows.length} raw | ${valid} hợp lệ` +
+      (invalid ? ` | ${invalid} placeholder bỏ qua` : '')
+    );
+  });
 
-  if (
-    flash.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      flash.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'flashscore'
-        )
-      );
-    }
-  }
-
-
-  if (
-    football.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      football.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'live-football'
-        )
-      );
-    }
-  }
-
+  console.log(
+    `[Sources] Primary: ${counts['primary-rapidapi'] || 0}` +
+    ` | Sofa: ${counts.sofascore || 0}` +
+    ` | FlashScore: ${counts.flashscore || 0}` +
+    ` | LiveFootball: ${counts['live-football'] || 0}`
+  );
 
   return all;
 }
@@ -6308,82 +6274,54 @@ function deduplicateMatches(
   matches
 ) {
 
-  const uniqueMap =
-    new Map();
-
+  const uniqueMap = new Map();
 
   const SOURCE_PRIORITY = {
-
     'primary-rapidapi': 4,
-
     sofascore: 3,
-
     flashscore: 2,
-
     'live-football': 1
-
   };
 
-
-  for (
-    const match of matches
-  ) {
-
-    const key =
-      createMatchKey(
-        match.homeName,
-        match.awayName
-      );
-
-
-    if (!key || key === '_') {
-      continue;
+  // Khi 2 nguồn cùng trả một trận, ưu tiên record có clock/phút sử dụng được.
+  // Chỉ dùng source priority khi chất lượng clock tương đương.
+  function clockQuality(match) {
+    if (!match || isPlaceholderMatch(match)) return -10;
+    const rawMinute = calculateExactMinute(match.raw);
+    const clock = classifyMatchClock(match.raw, rawMinute);
+    if (clock.kind === 'MINUTE' && Number.isFinite(clock.minute)) {
+      if (clock.minute >= 46 && clock.minute <= 92) return 100;
+      return 70;
     }
+    if (clock.kind === 'HALFTIME') return 50;
+    if (clock.kind === 'INTERRUPTED') return 30;
+    if (clock.kind === 'FINISHED') return 20;
+    return 0;
+  }
 
+  for (const match of matches) {
+    if (!match || isPlaceholderMatch(match)) continue;
 
-    const existing =
-      uniqueMap.get(key);
+    const key = createMatchKey(match.homeName, match.awayName);
+    if (!key || key === '_') continue;
 
-
+    const existing = uniqueMap.get(key);
     if (!existing) {
-
-      uniqueMap.set(
-        key,
-        match
-      );
-
+      uniqueMap.set(key, match);
       continue;
     }
 
+    const cq = clockQuality(match);
+    const eq = clockQuality(existing);
+    const cp = SOURCE_PRIORITY[match.source] || 0;
+    const ep = SOURCE_PRIORITY[existing.source] || 0;
 
-    const currentPriority =
-      SOURCE_PRIORITY[
-        match.source
-      ] || 0;
-
-
-    const existingPriority =
-      SOURCE_PRIORITY[
-        existing.source
-      ] || 0;
-
-
-    if (
-      currentPriority >
-      existingPriority
-    ) {
-
-      uniqueMap.set(
-        key,
-        match
-      );
+    if (cq > eq || (cq === eq && cp > ep)) {
+      uniqueMap.set(key, match);
     }
   }
 
-
-  return Array.from(
-    uniqueMap.values()
-  );
+  return Array.from(uniqueMap.values());
 }
 
 
