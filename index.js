@@ -6776,85 +6776,56 @@ async function scanLiveMatches() {
       const match of uniqueMatches
     ) {
 
+      const matchLabel = `${match.homeName} vs ${match.awayName}`;
+      console.log(`\n[SCAN] ${matchLabel}`);
+
       if (isPlaceholderMatch(match)) {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=PLACEHOLDER_MATCH`
-        );
+        console.log(`❌ Bỏ qua: dữ liệu trận không hợp lệ/placeholder`);
         continue;
       }
 
-      const minuteRaw =
-        calculateExactMinute(
-          match.raw
-        );
-
-      const rawLiveTime =
-        match.raw?.status?.liveTime ??
-        match.raw?.status?.live_time ??
-        match.raw?.liveTime ??
-        match.raw?.live_time ??
-        null;
-
-      const rawStatus =
-        match.raw?.status?.type ??
-        match.raw?.status?.description ??
-        match.raw?.status?.name ??
-        match.raw?.status ??
-        null;
-
+      const minuteRaw = calculateExactMinute(match.raw);
       const clock = classifyMatchClock(match.raw, minuteRaw);
 
-      console.log(
-        `[Minute Debug] ${match.homeName} vs ${match.awayName} | source=${match.source} | parsed=${clock.minute ?? 'UNKNOWN'} | liveTime=${JSON.stringify(rawLiveTime)} | status=${typeof rawStatus === 'object' ? JSON.stringify(rawStatus) : rawStatus}`
-      );
-
       if (clock.kind === 'INTERRUPTED') {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=INTERRUPTED | raw=${clock.raw}`
-        );
+        console.log(`⏱ API status: ${clock.raw || 'IR'}`);
+        console.log(`❌ Bỏ qua: trận đang Interrupted`);
         continue;
       }
 
       if (clock.kind === 'HALFTIME') {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=HALFTIME | raw=${clock.raw}`
-        );
+        console.log(`⏱ API status: ${clock.raw || 'HT'}`);
+        console.log(`❌ Bỏ qua: đang nghỉ giữa hiệp`);
         continue;
       }
 
       if (clock.kind === 'FINISHED') {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=FINISHED | raw=${clock.raw}`
-        );
+        console.log(`⏱ API status: ${clock.raw || 'FT'}`);
+        console.log(`❌ Bỏ qua: trận đã kết thúc`);
         continue;
       }
 
       if (clock.kind === 'UNKNOWN') {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=UNKNOWN_MINUTE | raw=${clock.raw}`
-        );
+        console.log(`⏱ API minute: UNKNOWN`);
+        console.log(`❌ Bỏ qua: không xác định được phút`);
         continue;
       }
 
       const minute = clock.minute;
+      console.log(`⏱ API minute: ${minute}'`);
 
       if (minute < 46) {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=BELOW_46 | minute=${minute}`
-        );
+        console.log(`❌ Bỏ qua: dưới phút 46`);
         continue;
       }
 
       if (minute > 92) {
-        console.log(
-          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=ABOVE_92 | minute=${minute}`
-        );
+        console.log(`❌ Bỏ qua: quá phút 92`);
         continue;
       }
 
-      console.log(
-        `[Minute Filter] OK | ${match.homeName} vs ${match.awayName} | minute=${minute} -> AI ANALYSIS`
-      );
+      console.log(`✅ Đủ điều kiện 46-92`);
+      console.log(`🤖 Bắt đầu phân tích AI...`);
 
       if (
         isFilteredLeague(
