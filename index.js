@@ -7170,7 +7170,7 @@ app.listen(
 
 
     console.log(
-      `Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`
+      `Auto scan every ${SCAN_INTERVAL_MS / 420000} minutes`
     );
 
 
