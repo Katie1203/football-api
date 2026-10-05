@@ -52,8 +52,18 @@ const sentAlerts = new Set();
 // ==========================================
 // KHỞI TẠO SQLITE AN TOÀN CHO FILE .EXE (ELECTRON)
 // ==========================================
-const electronApp = electron.app || (electron.remote && electron.remote.app);
-const userdataPath = electronApp ? electronApp.getPath('userData') : __dirname;
+// Kiểm tra xem có đang chạy trong môi trường Electron hay không một cách an toàn
+let userdataPath = __dirname;
+try {
+    const electron = require('electron');
+    const electronApp = electron.app || (electron.remote && electron.remote.app);
+    if (electronApp) {
+        userdataPath = electronApp.getPath('userData');
+    }
+} catch (e) {
+    // Nếu không có electron (chạy trên Render/Server), tự động dùng thư mục hiện tại __dirname
+}
+
 const dbPath = path.join(userdataPath, 'picks_history.db');
 
 const db = new sqlite3.Database(dbPath, (err) => {
