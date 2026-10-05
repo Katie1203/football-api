@@ -14,6 +14,16 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
+// RapidAPI chính: dùng đúng gói Free API Live Football Data mà bạn đã đăng ký.
+// Có thể đổi host trên Render bằng RAPIDAPI_HOST mà không cần sửa code.
+const PRIMARY_RAPIDAPI_HOST = (process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com').trim();
+const PRIMARY_LIVE_PATH = (process.env.RAPIDAPI_LIVE_PATH || '/football-live').trim();
+const PRIMARY_LIVE_URL = `https://${PRIMARY_RAPIDAPI_HOST}${PRIMARY_LIVE_PATH.startsWith('/') ? PRIMARY_LIVE_PATH : '/' + PRIMARY_LIVE_PATH}`;
+
+// Các nguồn cũ chỉ dùng fallback nếu bật rõ ràng trên Render.
+// Mặc định TẮT để key gói chính không bị gọi nhầm sang API khác và tránh 429.
+const ENABLE_LEGACY_RAPIDAPI_FALLBACKS = String(process.env.ENABLE_LEGACY_RAPIDAPI_FALLBACKS || 'false').toLowerCase() === 'true';
+
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL =
   `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
@@ -959,6 +969,52 @@ function calculateExactMinute(item) {
 // 6. FETCH LIVE MATCHES
 // ==========================================================
 
+function rapidApiErrorInfo(e) {
+  const h = e.response?.headers || {};
+  return {
+    status: e.response?.status || null,
+    message: e.response?.data?.message || e.response?.data?.error || e.message,
+    remaining: h['x-ratelimit-remaining'] ?? h['x-ratelimit-requests-remaining'] ?? null,
+    reset: h['x-ratelimit-reset'] ?? h['x-ratelimit-requests-reset'] ?? null
+  };
+}
+
+function extractPrimaryLiveArray(data) {
+  if (Array.isArray(data)) return data;
+  const candidates = [
+    data?.response, data?.data, data?.matches, data?.events, data?.result,
+    data?.response?.matches, data?.response?.events, data?.data?.matches, data?.data?.events
+  ];
+  for (const value of candidates) {
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+async function fetchLiveMatchesFromPrimaryRapidApi() {
+  if (!PAID_RAPIDAPI_KEY) {
+    console.error('[Primary RapidAPI] Thiếu RAPIDAPI_KEY');
+    return [];
+  }
+
+  try {
+    const r = await axios.get(PRIMARY_LIVE_URL, {
+      headers: {
+        'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+        'x-rapidapi-host': PRIMARY_RAPIDAPI_HOST
+      },
+      timeout: 12000
+    });
+
+    const rows = extractPrimaryLiveArray(r.data);
+    console.log(`[Primary RapidAPI] ${PRIMARY_RAPIDAPI_HOST}${PRIMARY_LIVE_PATH} -> HTTP ${r.status} | live rows: ${rows.length}`);
+    return rows;
+  } catch (e) {
+    console.error('[Primary RapidAPI]', rapidApiErrorInfo(e));
+    return [];
+  }
+}
+
 async function fetchLiveMatchesFromSofaScore() {
 
   try {
@@ -996,10 +1052,7 @@ async function fetchLiveMatchesFromSofaScore() {
 
   } catch (e) {
 
-    console.error(
-      '[Sofa Live]',
-      e.message
-    );
+    console.error('[Sofa Live]', rapidApiErrorInfo(e));
 
     return [];
   }
@@ -1274,6 +1327,13 @@ function mergeStats(target, source) {
     if (value > 0) {
       target[key] = value;
     }
+  }
+
+  if (source.availableStats) {
+    target.availableStats = {
+      ...(target.availableStats || {}),
+      ...source.availableStats
+    };
   }
 
   if (source.hasData) {
@@ -6050,83 +6110,31 @@ async function sendTelegramAlert(item, alertDecision) {
 
 async function fetchAllLiveMatches() {
 
-  const [
-    sofa,
-    flash,
-    football
-  ] = await Promise.allSettled([
+  // Nguồn chính luôn là host trong RAPIDAPI_HOST.
+  // Không dùng cùng một RapidAPI key để tự động gọi Sofa/Flash API khác,
+  // vì subscription/quota của RapidAPI được tính theo từng API product.
+  const primaryRaw = await fetchLiveMatchesFromPrimaryRapidApi();
+  const all = primaryRaw.map(raw => formatLiveMatch(raw, 'primary-rapidapi'));
 
+  if (!ENABLE_LEGACY_RAPIDAPI_FALLBACKS) {
+    return all;
+  }
+
+  const [sofa, flash, football] = await Promise.allSettled([
     fetchLiveMatchesFromSofaScore(),
-
     fetchLiveMatchesFromFlashScore(),
-
     fetchLiveMatchesFromLiveFootball()
-
   ]);
 
-
-  const all = [];
-
-
-  if (
-    sofa.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      sofa.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'sofascore'
-        )
-      );
-    }
+  if (sofa.status === 'fulfilled') {
+    for (const raw of sofa.value) all.push(formatLiveMatch(raw, 'sofascore'));
   }
-
-
-  if (
-    flash.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      flash.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'flashscore'
-        )
-      );
-    }
+  if (flash.status === 'fulfilled') {
+    for (const raw of flash.value) all.push(formatLiveMatch(raw, 'flashscore'));
   }
-
-
-  if (
-    football.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      football.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'live-football'
-        )
-      );
-    }
+  if (football.status === 'fulfilled') {
+    for (const raw of football.value) all.push(formatLiveMatch(raw, 'live-football'));
   }
-
 
   return all;
 }
@@ -6147,6 +6155,8 @@ function deduplicateMatches(
 
 
   const SOURCE_PRIORITY = {
+
+    'primary-rapidapi': 10,
 
     sofascore: 3,
 
