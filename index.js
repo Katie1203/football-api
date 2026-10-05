@@ -5069,134 +5069,171 @@ function evaluateMatchDynamicAI(
   homeScore,
   awayScore
 ) {
-  const available = stats.availableStats || {};
+  const available = stats?.availableStats || {};
+  const analysis = [];
+  let aiPercentage = 35.0;
+  let hasTacticalData = false;
 
-  const attackScore = calculateAttackScore(stats, minute);
-  const dangerousScore = calculateDangerousAttackScore(stats, minute);
-  const sotScore = calculateSOTScore(stats, minute);
-  const blockedScore = calculateBlockedScore(stats);
-  const cornerScore = calculateCornerScore(stats);
-  const possessionScore = calculatePossessionPressureScore(stats);
-  const cardScore = calculateCardScore(stats);
-  const style = calculateMatchStyleScore(stats);
-  const scoreState = calculateScoreStateScore(homeScore, awayScore, minute);
-  const timeScore = calculateTimeScore(minute);
+  const n = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  const totalSOT = n(stats.homeShotsOnTarget) + n(stats.awayShotsOnTarget);
+  const totalShots = n(stats.homeTotalShots) + n(stats.awayTotalShots);
+  const totalCorners = n(stats.homeCorners) + n(stats.awayCorners);
+  const totalRed = n(stats.homeRedCards) + n(stats.awayRedCards);
+  const totalBig = n(stats.homeBigChances) + n(stats.awayBigChances);
+  const totalBox = n(stats.homeShotsInsideBox) + n(stats.awayShotsInsideBox);
 
-  // Thiếu dữ liệu = KHÔNG tham gia Rule. Không còn mặc định 50 điểm.
-  const components = [];
-  const add = (name, score, weight, isAvailable) => {
-    if (isAvailable && Number.isFinite(score)) components.push({ name, score, weight });
-  };
-
-  add('dangerous', dangerousScore, 18, !!available.dangerousAttacks);
-  add('momentum', momentum?.score, 16, momentum?.available === true);
-  add('sot', sotScore, 14, !!available.shotsOnTarget);
-
-  const styleAvailable = !!(
-    available.dangerousAttacks || available.shotsOnTarget ||
-    available.attacks || available.corners || available.totalShots
-  );
-  add('style', style.score, 11, styleAvailable);
-  add('attack', attackScore, 10, !!available.attacks);
-  add('possession', possessionScore, 8, !!available.possession);
-  add('blocked', blockedScore, 6, !!available.blockedShots);
-  add('corners', cornerScore, 6, !!available.corners);
-  add('odds', oddsAnalysis?.score, 7, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score));
-  add('cards', cardScore, 2, !!(available.yellowCards || available.redCards));
-  add('scoreState', scoreState, 1, true);
-  add('time', timeScore, 1, true);
-
-  const totalWeight = components.reduce((sum, x) => sum + x.weight, 0);
-  let finalScore = totalWeight > 0
-    ? components.reduce((sum, x) => sum + x.score * x.weight, 0) / totalWeight
-    : 0;
-
-  // Data confidence chỉ dùng nội bộ/log và để chặn BIG BET khi dữ liệu quá mỏng.
-  const dataConfidence = round1(totalWeight);
-  const totals = calculateTotals(stats);
-  const notes = [];
-
-  if (available.shotsOnTarget && minute >= 70 && totals.totalShotsOnTarget <= 1) {
-    finalScore -= 8;
-    notes.push('⚠️ SOT quá thấp sau phút 70');
-  }
-  if (available.dangerousAttacks && totals.totalDangerousAttacks < 30 && minute >= 65) {
-    finalScore -= 5;
-    notes.push('⚠️ Dangerous Attack thấp');
-  }
-  if (momentum?.available && momentum.score >= 85) {
-    finalScore += 4;
-    notes.push('🔥 Momentum cực mạnh');
-  }
-  if (available.shotsOnTarget && available.dangerousAttacks &&
-      totals.totalShotsOnTarget >= 8 && totals.totalDangerousAttacks >= 70) {
-    finalScore += 3;
-    notes.push('🔥 SOT + Dangerous Attack cao');
-  }
-  if (styleAvailable && style.type === 'END_TO_END') {
-    finalScore += 3;
-    notes.push('⚔️ Hai đội đang đôi công');
-  }
-  if (styleAvailable && (style.type === 'HOME_PRESSURE' || style.type === 'AWAY_PRESSURE')) {
-    finalScore += 2;
-    notes.push('🔥 Có đội ép sân rõ rệt');
-  }
-  if (oddsAnalysis?.found && Number.isFinite(oddsAnalysis?.score) && oddsAnalysis.score >= 85) {
-    finalScore += 2;
-    notes.push('💰 Kèo Over đang mạnh');
+  // 1) POSSESSION H2: giữ đúng thang điểm yêu cầu.
+  if (available.possession) {
+    const hp = n(stats.homePossession);
+    const ap = n(stats.awayPossession);
+    const maxPoss = Math.max(hp, ap);
+    analysis.push(`📊 Kiểm soát bóng H2: ${hp}% - ${ap}%`);
+    if (maxPoss >= 70) {
+      aiPercentage += 15; hasTacticalData = true;
+      analysis.push('   └ Kiểm soát áp đảo cực mạnh → +15%');
+    } else if (maxPoss >= 60) {
+      aiPercentage += 10; hasTacticalData = true;
+      analysis.push('   └ Kiểm soát lấn lướt → +10%');
+    }
   }
 
-  finalScore = round1(clamp(finalScore, 5, 95));
+  // 2) RED CARD H2.
+  if (available.redCards && totalRed > 0) {
+    aiPercentage += 15; hasTacticalData = true;
+    analysis.push(`🟥 Thẻ đỏ H2: ${totalRed} → +15%`);
+  }
 
-  // BIG BET cần Rule >=75 và tối thiểu 55% trọng số dữ liệu thực.
-  const reliableBigBet = finalScore >= BIG_BET_PERCENTAGE && dataConfidence >= 55;
+  // 3) SOT H2.
+  if (available.shotsOnTarget) {
+    analysis.push(`🎯 SOT H2: ${n(stats.homeShotsOnTarget)}-${n(stats.awayShotsOnTarget)}`);
+    if (totalSOT >= 6) { aiPercentage += 18; hasTacticalData = true; analysis.push('   └ SOT cực mạnh → +18%'); }
+    else if (totalSOT >= 4) { aiPercentage += 12; hasTacticalData = true; analysis.push('   └ SOT mạnh → +12%'); }
+    else if (totalSOT >= 2) { aiPercentage += 6; hasTacticalData = true; analysis.push('   └ Có SOT → +6%'); }
+  }
+
+  // 4) TOTAL SHOTS H2.
+  if (available.totalShots) {
+    analysis.push(`⚽ Tổng sút H2: ${n(stats.homeTotalShots)}-${n(stats.awayTotalShots)}`);
+    if (totalShots >= 15) { aiPercentage += 15; hasTacticalData = true; analysis.push('   └ Tấn công cực mạnh → +15%'); }
+    else if (totalShots >= 10) { aiPercentage += 10; hasTacticalData = true; analysis.push('   └ Tấn công mạnh → +10%'); }
+    else if (totalShots >= 6) { aiPercentage += 5; hasTacticalData = true; analysis.push('   └ Có sức ép tấn công → +5%'); }
+  }
+
+  // 5) CORNERS H2.
+  if (available.corners) {
+    analysis.push(`🚩 Corner H2: ${n(stats.homeCorners)}-${n(stats.awayCorners)}`);
+    if (totalCorners >= 8) { aiPercentage += 12; hasTacticalData = true; analysis.push('   └ Corner rất cao → +12%'); }
+    else if (totalCorners >= 4) { aiPercentage += 6; hasTacticalData = true; analysis.push('   └ Corner tốt → +6%'); }
+  }
+
+  // 6) ÉP SÂN / ĐÔI CÔNG H2: dùng engine pressure hiện có, chỉ khi có dữ liệu tấn công thật.
+  const styleAvailable = !!(available.dangerousAttacks || available.shotsOnTarget || available.attacks || available.totalShots || available.corners);
+  const style = styleAvailable ? detectMatchStyle(stats) : { type: 'UNKNOWN', text: '⚖️ Chưa đủ dữ liệu xác định thế trận', score: 0 };
+  let pressureBonus = 0;
+  let openGameBonus = 0;
+  if (style.type === 'END_TO_END') {
+    // Phân cấp bằng SOT + shots của cả hai bên.
+    if (n(stats.homeShotsOnTarget) >= 3 && n(stats.awayShotsOnTarget) >= 3 && n(stats.homeTotalShots) >= 6 && n(stats.awayTotalShots) >= 6) openGameBonus = 15;
+    else if (n(stats.homeShotsOnTarget) >= 2 && n(stats.awayShotsOnTarget) >= 2 && n(stats.homeTotalShots) >= 4 && n(stats.awayTotalShots) >= 4) openGameBonus = 10;
+    else openGameBonus = 5;
+    aiPercentage += openGameBonus; hasTacticalData = true;
+    analysis.push(`⚔️ Đôi công H2 → +${openGameBonus}%`);
+  } else if (style.type === 'HOME_PRESSURE' || style.type === 'AWAY_PRESSURE') {
+    const home = style.type === 'HOME_PRESSURE';
+    const dSOT = home ? n(stats.homeShotsOnTarget) : n(stats.awayShotsOnTarget);
+    const dShots = home ? n(stats.homeTotalShots) : n(stats.awayTotalShots);
+    const dPoss = home ? n(stats.homePossession) : n(stats.awayPossession);
+    if (dSOT >= 4 && dShots >= 9 && (!available.possession || dPoss >= 60)) pressureBonus = 15;
+    else if (dSOT >= 3 && dShots >= 7) pressureBonus = 10;
+    else if (dSOT >= 2 && dShots >= 5) pressureBonus = 5;
+    if (pressureBonus > 0) {
+      aiPercentage += pressureBonus; hasTacticalData = true;
+      analysis.push(`🔥 ${home ? 'Chủ nhà' : 'Đội khách'} ép sân H2 → +${pressureBonus}%`);
+    }
+  }
+
+  // 7) BIG CHANCE / SHOTS INSIDE BOX: bonus nhỏ, tránh double count quá mạnh.
+  if (available.bigChances) {
+    if (totalBig >= 3) { aiPercentage += 6; analysis.push(`🚨 Big Chances H2: ${totalBig} → +6%`); }
+    else if (totalBig >= 1) { aiPercentage += 3; analysis.push(`🚨 Big Chances H2: ${totalBig} → +3%`); }
+  }
+  if (available.shotsInsideBox && totalBox >= 8) {
+    aiPercentage += 5; analysis.push(`🥅 Sút trong vòng cấm H2: ${totalBox} → +5%`);
+  }
+
+  // 8) LIVE O/U: giữ đúng thang +12/+10 cho line và +12/+10/+8/+4 cho giá.
+  // Chỉ áp dụng khi odds object có point/price thực; 1X2/pre-match không được cộng.
+  let liveOddsBonus = 0;
+  const currentGoals = n(homeScore) + n(awayScore);
+  const overLine = Number(oddsAnalysis?.point ?? oddsAnalysis?.line);
+  const overPrice = Number(oddsAnalysis?.price ?? oddsAnalysis?.odds);
+  const liveOU = oddsAnalysis?.found === true && oddsAnalysis?.displayOnly !== true &&
+    Number.isFinite(overLine) && Number.isFinite(overPrice);
+  if (liveOU) {
+    const pointDiff = overLine - currentGoals;
+    if (pointDiff >= 0.75) liveOddsBonus += 12;
+    else if (pointDiff > 0) liveOddsBonus += 10;
+    if (overPrice <= 1.40) liveOddsBonus += 12;
+    else if (overPrice <= 1.60) liveOddsBonus += 10;
+    else if (overPrice <= 1.85) liveOddsBonus += 8;
+    else liveOddsBonus += 4;
+    aiPercentage += liveOddsBonus; hasTacticalData = true;
+    analysis.push(`💰 Live O/U ${overLine} | Over ${overPrice.toFixed(2)} → +${liveOddsBonus}%`);
+  }
+
+  // 9) MOMENTUM: thưởng khi áp lực hiện tại mạnh, trừ khi trận nguội về cuối.
+  const momentumScore = momentum?.available === true && Number.isFinite(Number(momentum.score)) ? Number(momentum.score) : null;
+  if (momentumScore !== null) {
+    analysis.push(`📈 Momentum 10 phút: ${round1(momentumScore)}%`);
+    if (momentumScore >= 75) { aiPercentage += 12; analysis.push('   └ Momentum cực mạnh → +12%'); }
+    else if (momentumScore >= 60) { aiPercentage += 8; analysis.push('   └ Momentum mạnh → +8%'); }
+    else if (momentumScore >= 50) { aiPercentage += 4; analysis.push('   └ Momentum khá → +4%'); }
+
+    if (minute >= 65 && momentumScore < 25) { aiPercentage -= 15; analysis.push('🧊 Áp lực hiện tại rất yếu → -15%'); }
+    if (minute >= 75 && momentumScore < 35) { aiPercentage -= 12; analysis.push("🧊 75'+ Momentum thấp → -12%"); }
+    if (minute >= 85 && momentumScore < 45) { aiPercentage -= 15; analysis.push('⏳ Cuối trận sức ép giảm → -15%'); }
+  }
+
+  // 10) Quality penalty.
+  if (available.totalShots && available.shotsOnTarget && totalShots >= 10 && totalSOT <= 1) {
+    aiPercentage -= 10;
+    analysis.push('⚠️ Sút nhiều nhưng chất lượng thấp → -10%');
+  }
+
+  aiPercentage = round1(clamp(aiPercentage, 0, 98));
+
+  let shouldSend = aiPercentage >= MIN_SEND_PERCENTAGE && hasTacticalData;
+  // Cuối trận: stats tích lũy đẹp không được tự gửi nếu áp lực hiện tại đã chết.
+  if (minute >= 85 && momentumScore !== null && momentumScore < 35) shouldSend = false;
+
+  const qualityAttack =
+    (available.shotsOnTarget && totalSOT >= 4) ||
+    (available.bigChances && totalBig >= 2) ||
+    (available.shotsInsideBox && totalBox >= 6);
+
+  const isBigBet = aiPercentage >= BIG_BET_PERCENTAGE &&
+    momentumScore !== null && momentumScore >= 55 && qualityAttack;
+
   let level = 'KHÔNG ĐỦ ĐIỀU KIỆN';
-  if (reliableBigBet && finalScore >= 85) level = '🔥🔥 BIG BET RẤT MẠNH';
-  else if (reliableBigBet) level = '🔥 BIG BET';
-  else if (finalScore >= 68) level = '⚡ TÍN HIỆU MẠNH';
-  else if (finalScore >= MIN_SEND_PERCENTAGE) level = '🔔 CÓ TÍN HIỆU';
-
-  const fmt = (name, score, ok) => `${name}: ${ok ? `${round1(score)}%` : 'N/A'}`;
-  const detailLines = [
-    fmt('🔥 Dangerous Attack Score', dangerousScore, !!available.dangerousAttacks),
-    fmt('⚡ Momentum Score', momentum?.score, momentum?.available === true),
-    fmt('🎯 SOT Score', sotScore, !!available.shotsOnTarget),
-    fmt('⚔️ Đôi công/Ép sân', style.score, styleAvailable),
-    fmt('🚀 Attack Score', attackScore, !!available.attacks),
-    fmt('📊 Possession Pressure', possessionScore, !!available.possession),
-    fmt('🧱 Blocked Score', blockedScore, !!available.blockedShots),
-    fmt('🚩 Corner Score', cornerScore, !!available.corners),
-    fmt('💰 Odds Score', oddsAnalysis?.score, oddsAnalysis?.found === true && Number.isFinite(oddsAnalysis?.score)),
-    fmt('🟨🟥 Card Score', cardScore, !!(available.yellowCards || available.redCards)),
-    `📦 Data Confidence: ${dataConfidence}%`
-  ];
-  if (notes.length) detailLines.push('', ...notes);
+  if (isBigBet && aiPercentage >= 85) level = '🔥🔥 BIG BET RẤT MẠNH';
+  else if (isBigBet) level = '🔥 BIG BET';
+  else if (aiPercentage >= 68) level = '⚡ TÍN HIỆU MẠNH';
+  else if (shouldSend) level = '🔔 CÓ TÍN HIỆU';
 
   return {
-    efficiency: finalScore,
-    shouldSend: finalScore >= MIN_SEND_PERCENTAGE,
-    isBigBet: reliableBigBet,
-    dataConfidence,
-    availableComponents: components.map(x => x.name),
+    efficiency: aiPercentage,
+    shouldSend,
+    isBigBet,
     level,
-    attackScore: available.attacks ? round1(attackScore) : null,
-    dangerousScore: available.dangerousAttacks ? round1(dangerousScore) : null,
-    momentumScore: momentum?.available ? round1(momentum.score) : null,
-    sotScore: available.shotsOnTarget ? round1(sotScore) : null,
-    blockedScore: available.blockedShots ? round1(blockedScore) : null,
-    cornerScore: available.corners ? round1(cornerScore) : null,
-    possessionScore: available.possession ? round1(possessionScore) : null,
-    cardScore: (available.yellowCards || available.redCards) ? round1(cardScore) : null,
-    styleScore: styleAvailable ? round1(style.score) : null,
-    oddsScore: oddsAnalysis?.found ? round1(oddsAnalysis.score) : null,
-    scoreState: round1(scoreState),
-    timeScore: round1(timeScore),
+    pressureBonus,
+    openGameBonus,
+    momentumScore: momentumScore !== null ? round1(momentumScore) : null,
     styleType: style.type,
     styleText: style.text,
-    detailText: detailLines.join('\n')
+    oddsScore: liveOU ? liveOddsBonus : null,
+    detailText: analysis.map(x => `• ${x}`).join('\n')
   };
 }
-
 
 // ==========================================================
 // 35. SHOULD SEND ALERT
@@ -5239,7 +5276,7 @@ function shouldSendAlert(matchId, currentPercentage, currentMinute, allowBigBet 
 
   return {
     send: true,
-    bigBet: current >= BIG_BET_PERCENTAGE,
+    bigBet: allowBigBet === true && current >= BIG_BET_PERCENTAGE,
     reason: 'Cảnh báo đầu tiên'
   };
 }
@@ -6690,7 +6727,7 @@ async function analyzeOneMatch(
   }
 
   const ruleValue = Number(ai.efficiency) || 0;
-  const bigBetText = ruleValue >= BIG_BET_PERCENTAGE ? ' 🔥 BIG BET' : '';
+  const bigBetText = ai.isBigBet ? ' 🔥 BIG BET' : '';
 
   let compactStatus = '❌ KHÔNG GỬI';
   if (ai.shouldSend && alertDecision.send) {
