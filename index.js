@@ -681,6 +681,55 @@ function parseMinuteValue(value) {
 // CALCULATE EXACT MINUTE
 // ==========================================================
 
+function collectMinuteCandidatesDeep(root) {
+  const out = [];
+  const seen = new Set();
+  const keyRe = /^(minute|minutes|matchminute|match_minute|liveminute|live_minute|elapsed|elapsedtime|elapsed_time|livetime|live_time|clock|timer|matchtime|match_time|currentminute|current_minute|played|time)$/i;
+
+  function walk(value, key = '', depth = 0) {
+    if (value == null || depth > 6) return;
+    if (typeof value === 'object') {
+      if (seen.has(value)) return;
+      seen.add(value);
+      if (Array.isArray(value)) {
+        for (const v of value.slice(0, 30)) walk(v, key, depth + 1);
+        return;
+      }
+      for (const [k, v] of Object.entries(value)) {
+        if (keyRe.test(k)) {
+          if (v && typeof v === 'object') {
+            for (const subKey of ['short', 'long', 'value', 'current', 'minute', 'minutes', 'elapsed']) {
+              if (v[subKey] !== undefined) out.push(v[subKey]);
+            }
+          } else {
+            out.push(v);
+          }
+        }
+        if (v && typeof v === 'object') walk(v, k, depth + 1);
+      }
+    }
+  }
+  walk(root);
+  return out;
+}
+
+function compactClockDebug(item) {
+  const pick = {
+    minute: item?.minute,
+    minutes: item?.minutes,
+    matchMinute: item?.matchMinute ?? item?.match_minute,
+    liveMinute: item?.liveMinute ?? item?.live_minute,
+    elapsed: item?.elapsed ?? item?.elapsedTime ?? item?.elapsed_time,
+    liveTime: item?.status?.liveTime ?? item?.status?.live_time ?? item?.liveTime ?? item?.live_time,
+    status: item?.status,
+    time: item?.time,
+    clock: item?.clock,
+    timer: item?.timer,
+    matchTime: item?.matchTime ?? item?.match_time
+  };
+  try { return JSON.stringify(pick); } catch (_) { return '[unserializable]'; }
+}
+
 function calculateExactMinute(item) {
 
   if (!item) {
@@ -853,6 +902,10 @@ function calculateExactMinute(item) {
 
   ];
 
+
+  // Fallback: một số response Primary thay đổi vị trí field phút giữa các trận.
+  // Chỉ quét các key liên quan clock/time, không lấy số từ score hoặc ID.
+  candidates.push(...collectMinuteCandidatesDeep(item));
 
   for (
     const v of candidates
@@ -6237,7 +6290,8 @@ async function fetchAllLiveMatches() {
     ['Primary', 'primary-rapidapi', fetchLiveMatchesFromPrimaryRapidApi],
     ['Sofa', 'sofascore', fetchLiveMatchesFromSofaScore],
     ['FlashScore', 'flashscore', fetchLiveMatchesFromFlashScore],
-    ['LiveFootball', 'live-football', fetchLiveMatchesFromLiveFootball]
+    // Legacy LiveFootball host đang trả 403 'not subscribed' với gói hiện tại.
+    // Không gọi nguồn này để tránh request lỗi; Primary RapidAPI vẫn là nguồn chính.
   ];
 
   const settled = await Promise.allSettled(
@@ -6799,6 +6853,7 @@ async function scanLiveMatches() {
 
       if (clock.kind === 'UNKNOWN') {
         console.log(`⏱ API minute: UNKNOWN`);
+        console.log(`🔎 Time raw: ${compactClockDebug(match.raw)}`);
         console.log(`❌ Bỏ qua: không xác định được phút`);
         continue;
       }
