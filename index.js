@@ -50,9 +50,8 @@ const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey
 const sentAlerts = new Set();
 
 // ==========================================
-// KHỞI TẠO SQLITE AN TOÀN CHO FILE .EXE (ELECTRON)
+// KHỞI TẠO SQLITE AN TOÀN CHO CẢ CLOUD (RENDER) & ELECTRON
 // ==========================================
-// Kiểm tra xem có đang chạy trong môi trường Electron hay không một cách an toàn
 let userdataPath = __dirname;
 try {
     const electron = require('electron');
@@ -61,7 +60,7 @@ try {
         userdataPath = electronApp.getPath('userData');
     }
 } catch (e) {
-    // Nếu không có electron (chạy trên Render/Server), tự động dùng thư mục hiện tại __dirname
+    // Chạy trên Render/Server Linux sẽ tự động nhảy vào đây mà không bị sập app
 }
 
 const dbPath = path.join(userdataPath, 'picks_history.db');
