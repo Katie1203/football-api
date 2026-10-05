@@ -979,6 +979,83 @@ function calculateExactMinute(item) {
 
 
 // ==========================================================
+// MATCH CLOCK / STATUS CLASSIFICATION FOR FILTER LOGS
+// Does not invent a minute when the provider only returns a state.
+// ==========================================================
+
+function classifyMatchClock(item, minuteRaw) {
+  const liveTime =
+    item?.status?.liveTime ??
+    item?.status?.live_time ??
+    item?.liveTime ??
+    item?.live_time ??
+    null;
+
+  const short = String(
+    liveTime?.short ??
+    liveTime?.shortKey ??
+    liveTime ??
+    ''
+  ).trim().toLowerCase();
+
+  const long = String(
+    liveTime?.long ??
+    item?.status?.description ??
+    item?.status?.type ??
+    item?.status?.name ??
+    item?.stage ??
+    item?.state ??
+    ''
+  ).trim().toLowerCase();
+
+  const combined = `${short} ${long}`;
+
+  if (
+    /(^|\\s)(ir|int|interrupted|suspended|susp)(\\s|$)/i.test(combined) ||
+    combined.includes('interrupted') ||
+    combined.includes('suspended')
+  ) {
+    return { kind: 'INTERRUPTED', minute: null, raw: short || long || 'IR' };
+  }
+
+  if (
+    minuteRaw === 'HT' ||
+    /(^|\\s)(ht|half[ -]?time)(\\s|$)/i.test(combined)
+  ) {
+    return { kind: 'HALFTIME', minute: null, raw: short || long || 'HT' };
+  }
+
+  if (
+    minuteRaw === 999 ||
+    /(^|\\s)(ft|finished|ended|full[ -]?time|cancelled|canceled|postponed)(\\s|$)/i.test(combined)
+  ) {
+    return { kind: 'FINISHED', minute: null, raw: short || long || 'FT' };
+  }
+
+  const minute = typeof minuteRaw === 'number'
+    ? minuteRaw
+    : parseInt(minuteRaw, 10);
+
+  if (Number.isFinite(minute) && minute > 0 && minute < 999) {
+    return { kind: 'MINUTE', minute, raw: short || String(minuteRaw) };
+  }
+
+  return { kind: 'UNKNOWN', minute: null, raw: short || long || 'N/A' };
+}
+
+function isPlaceholderMatch(match) {
+  const home = String(match?.homeName || '').trim().toLowerCase();
+  const away = String(match?.awayName || '').trim().toLowerCase();
+
+  return (
+    !home || !away ||
+    (home === 'home' && away === 'away') ||
+    home === 'home team' || away === 'away team' ||
+    home === 'unknown' || away === 'unknown'
+  );
+}
+
+// ==========================================================
 // 6. FETCH LIVE MATCHES
 // ==========================================================
 
@@ -6699,14 +6776,18 @@ async function scanLiveMatches() {
       const match of uniqueMatches
     ) {
 
+      if (isPlaceholderMatch(match)) {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=PLACEHOLDER_MATCH`
+        );
+        continue;
+      }
+
       const minuteRaw =
         calculateExactMinute(
           match.raw
         );
 
-
-      // Debug từng trận trước khi lọc phút. Điều này giúp phân biệt
-      // "API không trả trận" với "API có trận nhưng parser đọc sai phút".
       const rawLiveTime =
         match.raw?.status?.liveTime ??
         match.raw?.status?.live_time ??
@@ -6721,43 +6802,59 @@ async function scanLiveMatches() {
         match.raw?.status ??
         null;
 
+      const clock = classifyMatchClock(match.raw, minuteRaw);
+
       console.log(
-        `[Minute Debug] ${match.homeName} vs ${match.awayName} | source=${match.source} | parsed=${minuteRaw} | liveTime=${JSON.stringify(rawLiveTime)} | status=${typeof rawStatus === 'object' ? JSON.stringify(rawStatus) : rawStatus}`
+        `[Minute Debug] ${match.homeName} vs ${match.awayName} | source=${match.source} | parsed=${clock.minute ?? 'UNKNOWN'} | liveTime=${JSON.stringify(rawLiveTime)} | status=${typeof rawStatus === 'object' ? JSON.stringify(rawStatus) : rawStatus}`
       );
 
-      if (
-        minuteRaw === 'HT'
-      ) {
-        console.log(`[Minute Filter] SKIP HT | ${match.homeName} vs ${match.awayName}`);
+      if (clock.kind === 'INTERRUPTED') {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=INTERRUPTED | raw=${clock.raw}`
+        );
         continue;
       }
 
-
-      const minute =
-        typeof minuteRaw ===
-        'number'
-          ? minuteRaw
-          : parseInt(
-              minuteRaw,
-              10
-            );
-
-
-      if (
-        !Number.isFinite(minute) ||
-        minute < 46 ||
-        minute > 92
-      ) {
+      if (clock.kind === 'HALFTIME') {
         console.log(
-          `[Minute Filter] OUT | ${match.homeName} vs ${match.awayName} | minute=${Number.isFinite(minute) ? minute : 'N/A'}`
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=HALFTIME | raw=${clock.raw}`
+        );
+        continue;
+      }
+
+      if (clock.kind === 'FINISHED') {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=FINISHED | raw=${clock.raw}`
+        );
+        continue;
+      }
+
+      if (clock.kind === 'UNKNOWN') {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=UNKNOWN_MINUTE | raw=${clock.raw}`
+        );
+        continue;
+      }
+
+      const minute = clock.minute;
+
+      if (minute < 46) {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=BELOW_46 | minute=${minute}`
+        );
+        continue;
+      }
+
+      if (minute > 92) {
+        console.log(
+          `[Minute Filter] SKIP | ${match.homeName} vs ${match.awayName} | reason=ABOVE_92 | minute=${minute}`
         );
         continue;
       }
 
       console.log(
-        `[Minute Filter] OK 46-92 | ${match.homeName} vs ${match.awayName} | minute=${minute}`
+        `[Minute Filter] OK | ${match.homeName} vs ${match.awayName} | minute=${minute} -> AI ANALYSIS`
       );
-
 
       if (
         isFilteredLeague(
@@ -6766,15 +6863,16 @@ async function scanLiveMatches() {
           match.awayName
         )
       ) {
+        console.log(
+          `[League Filter] SKIP | ${match.homeName} vs ${match.awayName} | league=${match.league}`
+        );
         continue;
       }
-
 
       eligibleMatches.push(
         match
       );
     }
-
 
     console.log(
       `[Live] Đủ điều kiện phút 46-92: ${eligibleMatches.length}`
