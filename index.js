@@ -37,6 +37,11 @@ const primaryWorkingDetailRoute = { value: null };
 const SOURCE_429_COOLDOWN_MS = 60 * 60 * 1000;
 const sourceCooldownUntil = new Map();
 
+// Trận Interrupted thường vẫn nằm trong feed live rất lâu.
+// Sau lần đầu gặp IR, tạm ẩn khỏi log/scan 60 phút rồi mới kiểm tra lại.
+const INTERRUPTED_COOLDOWN_MS = 60 * 60 * 1000;
+const interruptedCooldownUntil = new Map();
+
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL =
   `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
@@ -108,6 +113,10 @@ let scanRunning = false;
 function cleanupState() {
 
   const now = Date.now();
+
+  for (const [key, until] of interruptedCooldownUntil.entries()) {
+    if (!until || until <= now) interruptedCooldownUntil.delete(key);
+  }
 
   for (const [id, state] of alertState.entries()) {
 
@@ -2472,7 +2481,7 @@ function parseDirectKeys(
 // ==========================================================
 async function fetchPrimaryRapidApiStats(matchId) {
   const empty = createEmptyStats();
-  if (!PAID_RAPIDAPI_KEY || !PRIMARY_RAPIDAPI_HOST || !matchId) return empty;
+  if (!PAID_RAPIDAPI_KEY || !PRIMARY_RAPIDAPI_HOST || !matchId || sourceInCooldown('Primary Stats')) return empty;
 
   const headers = {
     'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
@@ -2880,8 +2889,12 @@ async function fetchMatchDetailStats(match) {
 
   // 2) LiveFootball Premium là nguồn statistics chính.
   if (match.source === 'primary-rapidapi') {
-    const primaryStats = await fetchPrimaryRapidApiStats(match.id);
-    mergeStats(stats, primaryStats);
+    if (match.providerId) {
+      const primaryStats = await fetchPrimaryRapidApiStats(match.providerId);
+      mergeStats(stats, primaryStats);
+    } else {
+      console.log(`[Primary Stats] ${match.homeName} vs ${match.awayName} | SKIP: provider không trả match/event ID thật`);
+    }
   }
 
   // 3) SofaScore chỉ BỔ SUNG trường còn thiếu, không tạo trận quét.
@@ -5501,8 +5514,7 @@ function extractAwayName(raw) {
 // 38. MATCH ID
 // ==========================================================
 
-function extractMatchId(raw, source) {
-
+function extractProviderMatchId(raw) {
   const id =
     raw?.id ??
     raw?.eventId ??
@@ -5513,11 +5525,17 @@ function extractMatchId(raw, source) {
     raw?.gameId ??
     raw?.game_id;
 
-  if (
-    id !== undefined &&
-    id !== null
-  ) {
-    return String(id);
+  return (id !== undefined && id !== null && String(id).trim() !== '')
+    ? String(id)
+    : null;
+}
+
+function extractMatchId(raw, source) {
+
+  const id = extractProviderMatchId(raw);
+
+  if (id) {
+    return id;
   }
 
   const home =
@@ -5562,6 +5580,9 @@ function formatLiveMatch(
 
   return {
     id,
+
+    // ID thật do provider cấp. Không dùng fallback tên đội để gọi endpoint detail/stats.
+    providerId: extractProviderMatchId(raw),
 
     source,
 
@@ -6819,6 +6840,14 @@ async function scanLiveMatches() {
     ) {
 
       const matchLabel = `${match.homeName} vs ${match.awayName}`;
+      const statusCacheKey = createMatchKey(match.homeName, match.awayName);
+      const irUntil = interruptedCooldownUntil.get(statusCacheKey) || 0;
+
+      // Không spam cùng một trận IR ở mỗi vòng 7 phút. Sau 60 phút bot tự kiểm tra lại.
+      if (irUntil > Date.now()) {
+        continue;
+      }
+
       console.log(`\n[SCAN] ${matchLabel}`);
 
       if (isPlaceholderMatch(match)) {
@@ -6830,8 +6859,9 @@ async function scanLiveMatches() {
       const clock = classifyMatchClock(match.raw, minuteRaw);
 
       if (clock.kind === 'INTERRUPTED') {
+        interruptedCooldownUntil.set(statusCacheKey, Date.now() + INTERRUPTED_COOLDOWN_MS);
         console.log(`⏱ API status: ${clock.raw || 'IR'}`);
-        console.log(`❌ Bỏ qua: trận đang Interrupted`);
+        console.log(`❌ Bỏ qua: trận đang Interrupted | tạm ẩn 60 phút`);
         continue;
       }
 
@@ -7217,7 +7247,7 @@ app.listen(
     );
 
 
-    // Sau đó 3 phút / lần
+    // Sau đó 7 phút / lần
     setInterval(
       () => {
 
