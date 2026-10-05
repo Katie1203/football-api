@@ -793,9 +793,19 @@ function calculateExactMinute(item) {
 
     item.status?.minute,
 
+    // Primary LiveFootball: status.liveTime can be either an object
+    // ({ short: "52'", long: "52:14" }) or a direct string.
+    item.status?.liveTime,
+
     item.status?.liveTime?.short,
 
     item.status?.liveTime?.long,
+
+    item.status?.live_time,
+
+    item.status?.live_time?.short,
+
+    item.status?.live_time?.long,
 
     item.status?.minutes,
 
@@ -6695,9 +6705,30 @@ async function scanLiveMatches() {
         );
 
 
+      // Debug từng trận trước khi lọc phút. Điều này giúp phân biệt
+      // "API không trả trận" với "API có trận nhưng parser đọc sai phút".
+      const rawLiveTime =
+        match.raw?.status?.liveTime ??
+        match.raw?.status?.live_time ??
+        match.raw?.liveTime ??
+        match.raw?.live_time ??
+        null;
+
+      const rawStatus =
+        match.raw?.status?.type ??
+        match.raw?.status?.description ??
+        match.raw?.status?.name ??
+        match.raw?.status ??
+        null;
+
+      console.log(
+        `[Minute Debug] ${match.homeName} vs ${match.awayName} | source=${match.source} | parsed=${minuteRaw} | liveTime=${JSON.stringify(rawLiveTime)} | status=${typeof rawStatus === 'object' ? JSON.stringify(rawStatus) : rawStatus}`
+      );
+
       if (
         minuteRaw === 'HT'
       ) {
+        console.log(`[Minute Filter] SKIP HT | ${match.homeName} vs ${match.awayName}`);
         continue;
       }
 
@@ -6717,8 +6748,15 @@ async function scanLiveMatches() {
         minute < 46 ||
         minute > 92
       ) {
+        console.log(
+          `[Minute Filter] OUT | ${match.homeName} vs ${match.awayName} | minute=${Number.isFinite(minute) ? minute : 'N/A'}`
+        );
         continue;
       }
+
+      console.log(
+        `[Minute Filter] OK 46-92 | ${match.homeName} vs ${match.awayName} | minute=${minute}`
+      );
 
 
       if (
