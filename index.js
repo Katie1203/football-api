@@ -1,10 +1,7 @@
 const express = require('express');
 const axios = require('axios');
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-app.use(express.json());
-
+const path = require('path'); // <--- Đảm bảo đã có dòng này ở đầu file
+const sqlite3 = require('sqlite3').verbose();
 // ==========================================
 // HỆ THỐNG HỨNG LOG ĐỂ ĐẨY LÊN GIAO DIỆN WEB
 // ==========================================
