@@ -1412,7 +1412,14 @@ function mergeStats(target, source) {
     }
   }
 
-  if (source.hasData) {
+  if (source.availableStats && typeof source.availableStats === 'object') {
+    target.availableStats = {
+      ...(target.availableStats || {}),
+      ...source.availableStats
+    };
+  }
+
+  if (source.hasData || Object.values(source.availableStats || {}).some(Boolean)) {
     target.hasData = true;
   }
 
@@ -2592,6 +2599,13 @@ function parseStatsFromRawMatch(
     stats
   );
 
+  // Primary LiveFootball thường lồng statistics sâu trong object live.
+  // Quét toàn bộ raw match để không bỏ sót stats chỉ vì provider đổi nesting.
+  recursivelyParseStats(
+    raw,
+    stats
+  );
+
 
   const candidates = [
 
@@ -2740,6 +2754,11 @@ async function fetchMatchDetailStats(
       stats.homeShotsOffTarget +
 
       stats.homeBlockedShots;
+
+    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
+      stats.availableStats.totalShots = true;
+      stats.hasData = true;
+    }
   }
 
 
@@ -2754,6 +2773,11 @@ async function fetchMatchDetailStats(
       stats.awayShotsOffTarget +
 
       stats.awayBlockedShots;
+
+    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
+      stats.availableStats.totalShots = true;
+      stats.hasData = true;
+    }
   }
 
 
@@ -6338,6 +6362,23 @@ function hasUsefulStats(
   }
 
 
+  const available = stats.availableStats || {};
+
+  // Dữ liệu 0-0 vẫn là dữ liệu thật nếu API đã trả field đó.
+  if (
+    available.attacks ||
+    available.dangerousAttacks ||
+    available.shotsOnTarget ||
+    available.totalShots ||
+    available.blockedShots ||
+    available.corners ||
+    available.possession ||
+    available.yellowCards ||
+    available.redCards
+  ) {
+    return true;
+  }
+
   return (
 
     stats.homeAttacks > 0 ||
@@ -6498,12 +6539,26 @@ async function analyzeOneMatch(
     !odds.found
   ) {
 
-    console.log(
-      ` └─> Không có statistics/odds đủ để phân tích`
-    );
+    const availableKeys = Object.entries(stats.availableStats || {})
+      .filter(([, value]) => value)
+      .map(([key]) => key);
+
+    console.log(` ├─ Statistics: N/A | source=${stats.source || match.source}`);
+    console.log(` ├─ Available fields: ${availableKeys.length ? availableKeys.join(', ') : 'none'}`);
+    console.log(` ├─ Odds match: N/A`);
+    console.log(` └─> Bỏ qua: API không trả statistics/odds đủ để phân tích`);
 
     return null;
   }
+
+  const availableKeys = Object.entries(stats.availableStats || {})
+    .filter(([, value]) => value)
+    .map(([key]) => key);
+
+  console.log(
+    ` ├─ Statistics: ${hasUsefulStats(stats) ? 'OK' : 'N/A'} | fields=${availableKeys.length ? availableKeys.join(',') : 'none'} | source=${stats.source || match.source}`
+  );
+  console.log(` ├─ Odds match: ${odds.found ? 'OK' : 'N/A'}`);
 
 
   // ======================================================
