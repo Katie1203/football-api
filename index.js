@@ -1,7 +1,15 @@
 const express = require('express');
 const axios = require('axios');
-const path = require('path'); // <--- Đảm bảo đã có dòng này ở đầu file
+const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+let electron = null;
+try { electron = require('electron'); } catch (_) { electron = null; }
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.use(express.json());
+
 // ==========================================
 // HỆ THỐNG HỨNG LOG ĐỂ ĐẨY LÊN GIAO DIỆN WEB
 // ==========================================
@@ -47,19 +55,10 @@ const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey
 const sentAlerts = new Set();
 
 // ==========================================
-// KHỞI TẠO SQLITE AN TOÀN CHO CẢ CLOUD (RENDER) & ELECTRON
+// KHỞI TẠO SQLITE AN TOÀN CHO FILE .EXE (ELECTRON)
 // ==========================================
-let userdataPath = __dirname;
-try {
-    const electron = require('electron');
-    const electronApp = electron.app || (electron.remote && electron.remote.app);
-    if (electronApp) {
-        userdataPath = electronApp.getPath('userData');
-    }
-} catch (e) {
-    // Chạy trên Render/Server Linux sẽ tự động nhảy vào đây mà không bị sập app
-}
-
+const electronApp = electron ? (electron.app || (electron.remote && electron.remote.app)) : null;
+const userdataPath = electronApp ? electronApp.getPath('userData') : __dirname;
 const dbPath = path.join(userdataPath, 'picks_history.db');
 
 const db = new sqlite3.Database(dbPath, (err) => {
@@ -252,124 +251,250 @@ async function fetchSofaScoreLive() {
     }
 }
 
-async function fetchSofaScoreStats(matchId) {
-    const empty = {
-        shotsOnTarget: 0, totalShots: 0, blockedShots: 0, corners: 0,
-        possession: 0, dangerousAttacks: 0, redCards: 0,
-        available: {}, source: 'none'
+function sofaEmptyH2Stats(source = 'none') {
+    return {
+        shotsOnTarget: 0, totalShots: 0, shotsOffTarget: 0, blockedShots: 0,
+        corners: 0, possession: 0, dangerousAttacks: 0, attacks: 0,
+        bigChances: 0, bigChancesMissed: 0, finalThirdEntries: 0,
+        goalkeeperSaves: 0, yellowCards: 0, redCards: 0, fouls: 0,
+        available: {}, source
+    };
+}
+
+function sofaNumber(v) {
+    if (typeof v === 'string') v = v.replace('%', '').trim();
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+}
+
+function normalizeSofaPeriod(v) {
+    return String(v ?? '').toUpperCase().replace(/[\s_-]+/g, '');
+}
+
+function parseSofaPeriodBlock(periodBlock, source) {
+    const out = sofaEmptyH2Stats(source);
+    const groups = Array.isArray(periodBlock?.groups) ? periodBlock.groups : [];
+
+    const mapKey = (key, name) => {
+        const k = String(key || '');
+        const n = String(name || '').toLowerCase();
+        if (k === 'shotsOnGoal' || n.includes('shots on target')) return 'shotsOnTarget';
+        if (k === 'totalShotsOnGoal' || n === 'total shots') return 'totalShots';
+        if (k === 'shotsOffGoal' || n.includes('shots off')) return 'shotsOffTarget';
+        if (k === 'blockedScoringAttempt' || n.includes('blocked')) return 'blockedShots';
+        if (k === 'cornerKicks' || n.includes('corner')) return 'corners';
+        if (k === 'ballPossession' || n.includes('possession')) return 'possession';
+        if (k === 'dangerousAttacks' || n.includes('dangerous attack')) return 'dangerousAttacks';
+        if (k === 'attacks' || n === 'attacks') return 'attacks';
+        if (k === 'bigChanceCreated' || n === 'big chances') return 'bigChances';
+        if (k === 'bigChanceMissed' || n.includes('big chances missed')) return 'bigChancesMissed';
+        if (k === 'finalThirdEntries' || n.includes('final third')) return 'finalThirdEntries';
+        if (k === 'goalkeeperSaves' || n.includes('goalkeeper saves')) return 'goalkeeperSaves';
+        if (k === 'yellowCards' || n.includes('yellow card')) return 'yellowCards';
+        if (k === 'redCards' || n.includes('red card')) return 'redCards';
+        if (k === 'fouls' || n === 'fouls') return 'fouls';
+        return null;
     };
 
-    try {
-        const response = await axios.get(
-            `https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`,
-            {
+    for (const group of groups) {
+        const items = group?.statisticsItems || group?.statistics || group?.items || [];
+        if (!Array.isArray(items)) continue;
+        for (const st of items) {
+            const field = mapKey(st?.key, st?.name);
+            if (!field) continue;
+
+            const home = st?.home ?? st?.homeValue ?? st?.valueHome ?? st?.home_value ?? st?.values?.[0];
+            const away = st?.away ?? st?.awayValue ?? st?.valueAway ?? st?.away_value ?? st?.values?.[1];
+            const hasHome = home !== undefined && home !== null && home !== '';
+            const hasAway = away !== undefined && away !== null && away !== '';
+            if (!hasHome && !hasAway) continue;
+
+            const h = sofaNumber(home), a = sofaNumber(away);
+            // Possession is a percentage, not an additive count.
+            out[field] = field === 'possession' ? (h + a) / 2 : h + a;
+            out.available[field] = true;
+        }
+    }
+    return out;
+}
+
+function findSofaPeriodArray(data) {
+    const direct = [
+        data?.statistics,
+        data?.data?.statistics,
+        data?.response?.statistics,
+        data?.result?.statistics
+    ];
+    for (const x of direct) {
+        if (Array.isArray(x) && x.some(p => p && p.period !== undefined)) return x;
+    }
+
+    // Limited recursive fallback for alternate Sofa wrappers.
+    const seen = new Set();
+    function walk(obj, depth) {
+        if (!obj || typeof obj !== 'object' || depth > 4 || seen.has(obj)) return null;
+        seen.add(obj);
+        if (Array.isArray(obj)) {
+            if (obj.some(p => p && typeof p === 'object' && p.period !== undefined &&
+                (Array.isArray(p.groups) || p.statisticsItems))) return obj;
+            for (const x of obj) {
+                const r = walk(x, depth + 1);
+                if (r) return r;
+            }
+            return null;
+        }
+        for (const v of Object.values(obj)) {
+            const r = walk(v, depth + 1);
+            if (r) return r;
+        }
+        return null;
+    }
+    return walk(data, 0) || [];
+}
+
+function deriveSofaH2FromAllMinus1st(allStats, firstStats) {
+    const out = sofaEmptyH2Stats('sofa-ALL-minus-1ST');
+    // Only additive fields may be subtracted. Possession is deliberately excluded.
+    const additive = [
+        'shotsOnTarget','totalShots','shotsOffTarget','blockedShots','corners',
+        'dangerousAttacks','attacks','bigChances','bigChancesMissed',
+        'finalThirdEntries','goalkeeperSaves','yellowCards','redCards','fouls'
+    ];
+    for (const field of additive) {
+        if (allStats.available[field] && firstStats.available[field]) {
+            out[field] = Math.max(0, sofaNumber(allStats[field]) - sofaNumber(firstStats[field]));
+            out.available[field] = true;
+        }
+    }
+    return out;
+}
+
+async function fetchSofaScoreStats(matchId) {
+    const urls = [
+        `https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`,
+        `https://${SOFASCORE_HOST}/matches/get-statistics?matchId=${matchId}`
+    ];
+
+    for (let i = 0; i < urls.length; i++) {
+        try {
+            const response = await axios.get(urls[i], {
                 headers: {
                     'x-rapidapi-key': SOFASCORE_RAPIDAPI_KEY.trim(),
                     'x-rapidapi-host': SOFASCORE_HOST
                 },
-                timeout: 6000
+                timeout: 7000
+            });
+
+            const periods = findSofaPeriodArray(response.data);
+            const periodNames = periods.map(p => String(p?.period ?? '')).filter(Boolean);
+            const h2 = periods.find(p => ['2ND','2','SECONDHALF','2NDHALF'].includes(normalizeSofaPeriod(p?.period)));
+
+            if (h2) {
+                const parsed = parseSofaPeriodBlock(h2, 'sofa-2ND');
+                console.log(`    ├─ [Sofa JSON Statistics] H2=2ND | fields=${Object.keys(parsed.available).join(',') || 'none'}`);
+                if (Object.keys(parsed.available).length) return parsed;
             }
-        );
 
-        const periods = Array.isArray(response.data?.statistics)
-            ? response.data.statistics : [];
-
-        // AI H2: tuyệt đối ưu tiên period 2ND, không lấy statistics[0] (thường là ALL).
-        const h2 = periods.find(p => {
-            const x = String(p?.period || '').toUpperCase().replace(/\s+/g, '');
-            return x === '2ND' || x === '2' || x === 'SECONDHALF' || x === '2NDHALF';
-        });
-
-        if (!h2) {
-            console.log(`    ├─ [Sofa Stats] HTTP 200 | periods=${periods.map(p => p?.period).filter(Boolean).join(',') || 'N/A'} | H2=NOT FOUND`);
-            return empty;
-        }
-
-        const result = { ...empty, source: 'sofa-2ND', available: {} };
-        const groups = Array.isArray(h2.groups) ? h2.groups : [];
-
-        const setStat = (type, home, away, mode = 'sum') => {
-            const hp = home !== undefined && home !== null && home !== '';
-            const ap = away !== undefined && away !== null && away !== '';
-            if (!hp && !ap) return;
-
-            const num = v => {
-                if (typeof v === 'string') v = v.replace('%', '').trim();
-                const n = Number(v);
-                return Number.isFinite(n) ? n : 0;
-            };
-            const h = num(home), a = num(away);
-            result[type] = mode === 'avg' ? (h + a) / 2 : h + a;
-            result.available[type] = true;
-        };
-
-        for (const group of groups) {
-            for (const st of (group.statisticsItems || [])) {
-                const key = String(st.key || '').trim();
-                const name = String(st.name || '').toLowerCase();
-                const home = st.home ?? st.homeValue;
-                const away = st.away ?? st.awayValue;
-
-                if (key === 'shotsOnGoal' || name.includes('shots on target')) setStat('shotsOnTarget', home, away);
-                else if (key === 'totalShotsOnGoal' || name === 'total shots') setStat('totalShots', home, away);
-                else if (key === 'blockedScoringAttempt' || name.includes('blocked')) setStat('blockedShots', home, away);
-                else if (key === 'cornerKicks' || name.includes('corner')) setStat('corners', home, away);
-                else if (key === 'ballPossession' || name.includes('possession')) setStat('possession', home, away, 'avg');
-                else if (key === 'dangerousAttacks' || name.includes('dangerous attack')) setStat('dangerousAttacks', home, away);
-                else if (key === 'redCards' || name.includes('red card')) setStat('redCards', home, away);
+            // JSON fallback: ALL - 1ST gives 46' -> current for additive counters.
+            const all = periods.find(p => ['ALL','FULL','MATCH'].includes(normalizeSofaPeriod(p?.period)));
+            const first = periods.find(p => ['1ST','1','FIRSTHALF','1STHALF'].includes(normalizeSofaPeriod(p?.period)));
+            if (all && first) {
+                const allParsed = parseSofaPeriodBlock(all, 'sofa-ALL');
+                const firstParsed = parseSofaPeriodBlock(first, 'sofa-1ST');
+                const derived = deriveSofaH2FromAllMinus1st(allParsed, firstParsed);
+                if (Object.keys(derived.available).length) {
+                    console.log(`    ├─ [Sofa JSON Statistics] H2=ALL-1ST | fields=${Object.keys(derived.available).join(',')}`);
+                    return derived;
+                }
             }
-        }
 
-        console.log(`    ├─ [Sofa Stats] H2=OK | fields=${Object.keys(result.available).join(',') || 'none'}`);
-        return result;
-    } catch (err) {
-        const status = err?.response?.status;
-        console.log(`    ├─ [Sofa Stats] HTTP ${status || 'ERR'} | ${status === 429 ? 'QUOTA/RATE LIMIT' : status === 401 || status === 403 ? 'KEY/SUBSCRIPTION' : err.message}`);
-        return empty;
+            const topKeys = response.data && typeof response.data === 'object'
+                ? Object.keys(response.data).slice(0, 12).join(',') : 'none';
+            const preview = (() => {
+                try { return JSON.stringify(response.data).slice(0, 300); } catch (_) { return ''; }
+            })();
+            console.log(`    ├─ [Sofa Stats DEBUG] endpoint=${i === 0 ? 'eventId' : 'matchId'} | HTTP ${response.status} | periods=${periodNames.join(',') || 'N/A'} | topKeys=${topKeys}`);
+            if (!periods.length) console.log(`    │  └─ response=${preview || 'EMPTY'}`);
+        } catch (err) {
+            const status = err?.response?.status;
+            console.log(`    ├─ [Sofa Stats] ${i === 0 ? 'eventId' : 'matchId'} | HTTP ${status || 'ERR'} | ${err.message}`);
+            if ([401,403,429].includes(status)) break;
+        }
     }
-}
 
+    return sofaEmptyH2Stats('none');
+}
 
 const sofaGraphCache = new Map();
 
-async function fetchSofaGraph(matchId, elapsed) {
-    const empty = { available: false, score: 0, points: 0 };
-    const cached = sofaGraphCache.get(String(matchId));
-    if (cached && Date.now() - cached.time < 5 * 60 * 1000) return cached.data;
+async function fetchSofaScoreGraph(matchId, elapsed) {
+    const empty = { available: false, score: 0, points: 0, source: 'none' };
+    const key = String(matchId);
+    const cached = sofaGraphCache.get(key);
+    if (cached && Date.now() - cached.time < 4 * 60 * 1000) return cached.data;
 
     try {
-        const response = await axios.get(
-            `https://${SOFASCORE_HOST}/matches/get-graph?matchId=${matchId}`,
-            {
-                headers: {
-                    'x-rapidapi-key': SOFASCORE_RAPIDAPI_KEY.trim(),
-                    'x-rapidapi-host': SOFASCORE_HOST
-                },
-                timeout: 6000
-            }
-        );
+        const response = await axios.get(`https://${SOFASCORE_HOST}/matches/get-graph?matchId=${matchId}`, {
+            headers: {
+                'x-rapidapi-key': SOFASCORE_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': SOFASCORE_HOST
+            },
+            timeout: 7000
+        });
 
+        // User's Sofa Graph JSON: graphPoints[] with minute/value.
         const points = response.data?.graphPoints || response.data?.data?.graphPoints || [];
-        const from = Math.max(46, elapsed - 9);
-        const recent = Array.isArray(points) ? points.filter(p => {
-            const m = Number(p?.minute);
-            return Number.isFinite(m) && m >= from && m <= elapsed;
-        }) : [];
+        if (!Array.isArray(points) || !points.length) {
+            console.log(`    ├─ [Sofa JSON Graph] N/A | HTTP ${response.status} | graphPoints=0`);
+            return empty;
+        }
 
-        if (!recent.length) return empty;
+        // Only second-half graph. Recent window is used for momentum,
+        // while the Statistics JSON represents 46' -> current.
+        const h2Points = points.filter(p => {
+            const minute = Number(p?.minute);
+            return Number.isFinite(minute) && minute >= 46 && minute <= elapsed;
+        });
+        const fromMinute = Math.max(46, elapsed - 9);
+        const recent = h2Points.filter(p => Number(p?.minute) >= fromMinute);
 
-        let pressure = 0;
-        for (const p of recent) pressure += Math.abs(Number(p?.value) || 0);
-        const avg = pressure / recent.length;
-        const score = Math.max(20, Math.min(95, 30 + avg * 3.5));
+        if (!recent.length) {
+            console.log(`    ├─ [Sofa JSON Graph] H2 points=${h2Points.length} | recent=0`);
+            return empty;
+        }
 
-        const data = { available: true, score: Number(score.toFixed(1)), points: recent.length };
-        sofaGraphCache.set(String(matchId), { time: Date.now(), data });
+        let homePressure = 0, awayPressure = 0, intensity = 0;
+        for (const p of recent) {
+            const v = sofaNumber(p?.value);
+            intensity += Math.abs(v);
+            if (v > 0) homePressure += v;
+            else if (v < 0) awayPressure += Math.abs(v);
+        }
+
+        const avgIntensity = intensity / recent.length;
+        const activePoints = recent.filter(p => Math.abs(sofaNumber(p?.value)) >= 2).length;
+        const score = Math.max(20, Math.min(95,
+            30 + avgIntensity * 3.2 + Math.min(15, activePoints * 1.5)
+        ));
+
+        const data = {
+            available: true,
+            score: Number(score.toFixed(1)),
+            points: recent.length,
+            h2Points: h2Points.length,
+            homePressure: Number(homePressure.toFixed(1)),
+            awayPressure: Number(awayPressure.toFixed(1)),
+            source: 'sofa-graph-H2-recent'
+        };
+        sofaGraphCache.set(key, { time: Date.now(), data });
+        console.log(`    ├─ [Sofa JSON Graph] H2=${h2Points.length} pts | recent=${recent.length} | momentum=${data.score}%`);
         return data;
     } catch (err) {
+        console.log(`    ├─ [Sofa Graph] HTTP ${err?.response?.status || 'ERR'} | ${err.message}`);
         return empty;
     }
 }
+
 
 async function fetchRapidApiMatchStats(matchId) {
     try {
@@ -387,12 +512,13 @@ async function fetchRapidApiMatchStats(matchId) {
     }
 }
 
-async function fetchMatchDetailStats(matchId) {
-    const [sofaStats, rapidStats] = await Promise.all([
+async function fetchMatchDetailStats(matchId, elapsed) {
+    const [sofaStats, rapidStats, sofaGraph] = await Promise.all([
         fetchSofaScoreStats(matchId),
-        fetchRapidApiMatchStats(matchId)
+        fetchRapidApiMatchStats(matchId),
+        fetchSofaScoreGraph(matchId, elapsed)
     ]);
-    return { sofaStats, rapidStats };
+    return { sofaStats, rapidStats, sofaGraph };
 }
 
 function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoals) {
@@ -423,128 +549,113 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 }
 
 function evaluateMatchDynamicAI(metrics, elapsed, oddsAnalysis, homeScore, awayScore) {
-    const sofa = metrics.sofaStats || {};
-    const rapid = metrics.rapidStats || {};
+    const st = metrics.sofaStats || sofaEmptyH2Stats();
     const graph = metrics.sofaGraph || { available: false, score: 0 };
-    const available = sofa.available || {};
+    const a = st.available || {};
     const h2Minutes = Math.max(1, elapsed - 45);
-
-    const rate10 = value => (Number(value) || 0) / h2Minutes * 10;
-    const band = (v, bands, fallback) => {
-        for (const [min, score] of bands) if (v >= min) return score;
+    const rate10 = v => sofaNumber(v) / h2Minutes * 10;
+    const band = (v, rows, fallback) => {
+        for (const [min, score] of rows) if (v >= min) return score;
         return fallback;
     };
 
-    const sotRate = rate10(sofa.shotsOnTarget);
-    const shotsRate = rate10(sofa.totalShots);
-    const blockedRate = rate10(sofa.blockedShots);
-    const cornersRate = rate10(sofa.corners);
-    const dangerousRate = rate10(sofa.dangerousAttacks);
-
-    const scores = {
-        momentum: graph.score,
-        sot: band(sotRate, [[2.6,95],[2,88],[1.5,78],[1.1,68],[0.75,58],[0.45,45]], 28),
-        dangerous: band(dangerousRate, [[12,95],[9,87],[7,78],[5,68],[3.5,58],[2.2,46]], 30),
-        shots: band(shotsRate, [[7,94],[5.5,86],[4.3,77],[3.3,67],[2.4,57],[1.6,45]], 30),
-        blocked: band(blockedRate, [[2.4,90],[1.8,82],[1.3,72],[0.9,62],[0.5,52],[0.2,42]], 32),
-        corners: band(cornersRate, [[2.4,92],[1.8,84],[1.3,74],[0.9,64],[0.55,54],[0.25,44]], 32),
-        possession: available.possession ? Math.max(40, Math.min(78, 50 + Math.abs((sofa.possession || 50) - 50) * 1.1)) : 0,
+    const rates = {
+        sot: rate10(st.shotsOnTarget), dangerous: rate10(st.dangerousAttacks),
+        shots: rate10(st.totalShots), blocked: rate10(st.blockedShots),
+        corners: rate10(st.corners)
+    };
+    const score = {
+        momentum: graph.score || 0,
+        sot: band(rates.sot, [[2.6,95],[2,88],[1.5,78],[1.1,68],[.75,58],[.45,45]], 28),
+        dangerous: band(rates.dangerous, [[12,95],[9,87],[7,78],[5,68],[3.5,58],[2.2,46]], 30),
+        shots: band(rates.shots, [[7,94],[5.5,86],[4.3,77],[3.3,67],[2.4,57],[1.6,45]], 30),
+        blocked: band(rates.blocked, [[2.4,90],[1.8,82],[1.3,72],[.9,62],[.5,52],[.2,42]], 32),
+        corners: band(rates.corners, [[2.4,92],[1.8,84],[1.3,74],[.9,64],[.55,54],[.25,44]], 32),
+        possession: a.possession ? Math.max(40, Math.min(78, 50 + Math.abs(sofaNumber(st.possession) - 50) * 1.1)) : 0,
         odds: oddsAnalysis?.scoreBoost || 0
     };
 
-    // AI V3 weights: Graph 25, SOT 20, Dangerous 15, Shots 12,
-    // Blocked 8, Corners 8, Possession 5, Odds 5, Context 2.
-    // Missing data is removed from denominator — never replaced by fake 50.
-    const components = [];
-    const add = (name, score, weight, ok) => {
-        if (ok && Number.isFinite(score)) components.push({ name, score, weight });
+    const parts = [];
+    const add = (name, val, weight, ok) => {
+        if (ok && Number.isFinite(val)) parts.push({name, val, weight});
     };
+    add('Momentum', score.momentum, 25, graph.available);
+    add('SOT H2', score.sot, 20, !!a.shotsOnTarget);
+    add('Dangerous H2', score.dangerous, 15, !!a.dangerousAttacks);
+    add('Shots H2', score.shots, 12, !!a.totalShots);
+    add('Blocked H2', score.blocked, 8, !!a.blockedShots);
+    add('Corners H2', score.corners, 8, !!a.corners);
+    add('Possession H2', score.possession, 5, !!a.possession);
+    add('Odds', score.odds, 5, !!oddsAnalysis);
 
-    add('Momentum', scores.momentum, 25, graph.available === true);
-    add('SOT H2/10m', scores.sot, 20, !!available.shotsOnTarget);
-    add('Dangerous H2/10m', scores.dangerous, 15, !!available.dangerousAttacks);
-    add('Shots H2/10m', scores.shots, 12, !!available.totalShots);
-    add('Blocked H2/10m', scores.blocked, 8, !!available.blockedShots);
-    add('Corners H2/10m', scores.corners, 8, !!available.corners);
-    add('Possession H2', scores.possession, 5, !!available.possession);
-    add('Odds', scores.odds, 5, !!oddsAnalysis);
+    const diff = Math.abs(sofaNumber(homeScore) - sofaNumber(awayScore));
+    let context = diff <= 1 ? 72 : diff === 2 ? 48 : 30;
+    if (a.redCards && st.redCards > 0) context = Math.min(88, context + 10);
+    add('Context', context, 2, true);
 
-    const scoreDiff = Math.abs((Number(homeScore) || 0) - (Number(awayScore) || 0));
-    let contextScore = scoreDiff <= 1 ? 72 : scoreDiff === 2 ? 48 : 30;
-    if (available.redCards && (sofa.redCards || 0) > 0) contextScore = Math.min(88, contextScore + 10);
-    add('Context', contextScore, 2, true);
+    const totalWeight = parts.reduce((n,p) => n+p.weight, 0);
+    let ai = totalWeight ? parts.reduce((n,p) => n+p.val*p.weight,0)/totalWeight : 0;
 
-    const totalWeight = components.reduce((a, x) => a + x.weight, 0);
-    let aiScore = totalWeight
-        ? components.reduce((a, x) => a + x.score * x.weight, 0) / totalWeight
-        : 0;
-
-    // Recent Surge: Graph strong + direct H2 pressure.
     let surge = 0;
     if (graph.available) {
         if (graph.score >= 80) surge += 5;
         else if (graph.score >= 70) surge += 3;
         else if (graph.score >= 60) surge += 1.5;
     }
-    if (available.shotsOnTarget && sotRate >= 1.5) surge += 3;
-    if (available.corners && cornersRate >= 1.3) surge += 1;
-    if (available.blockedShots && blockedRate >= 1.0) surge += 1;
+    if (a.shotsOnTarget && rates.sot >= 1.5) surge += 3;
+    if (a.corners && rates.corners >= 1.3) surge += 1;
+    if (a.blockedShots && rates.blocked >= 1) surge += 1;
     surge = Math.min(10, surge);
-    aiScore += surge;
+    ai += surge;
 
-    // Score/late-game penalties.
     let penalty = 0;
-    if (scoreDiff >= 5 && elapsed >= 65) penalty += 12;
-    else if (scoreDiff >= 3 && elapsed >= 70) penalty += 9;
-    else if (scoreDiff >= 2 && elapsed >= 82) penalty += 5;
+    if (diff >= 5 && elapsed >= 65) penalty += 12;
+    else if (diff >= 3 && elapsed >= 70) penalty += 9;
+    else if (diff >= 2 && elapsed >= 82) penalty += 5;
     if (elapsed >= 86 && (!graph.available || graph.score < 60)) penalty += 4;
-    aiScore -= penalty;
+    ai -= penalty;
 
-    const directSignals = [
-        graph.available, available.shotsOnTarget, available.dangerousAttacks,
-        available.totalShots, available.blockedShots, available.corners,
-        available.possession, !!oddsAnalysis
+    const signals = [
+        graph.available, a.shotsOnTarget, a.dangerousAttacks, a.totalShots,
+        a.blockedShots, a.corners, a.possession, !!oddsAnalysis
     ].filter(Boolean).length;
 
-    if (directSignals <= 1) aiScore = Math.min(aiScore, 55);
-    else if (directSignals === 2) aiScore = Math.min(aiScore, 62);
-    if (elapsed <= 52 && (!graph.available || graph.score < 70)) aiScore = Math.min(aiScore, 64);
-    if (elapsed >= 80 && (!graph.available || graph.score < 60)) aiScore = Math.min(aiScore, 67);
-    if (elapsed >= 86 && (!graph.available || graph.score < 70)) aiScore = Math.min(aiScore, 64);
+    if (signals <= 1) ai = Math.min(ai, 55);
+    else if (signals === 2) ai = Math.min(ai, 62);
+    if (elapsed >= 80 && (!graph.available || graph.score < 60)) ai = Math.min(ai, 67);
+    if (elapsed >= 86 && (!graph.available || graph.score < 70)) ai = Math.min(ai, 64);
 
-    const finalScore = Math.max(5, Math.min(95, aiScore));
+    const finalScore = Number(Math.max(5, Math.min(95, ai)).toFixed(1));
     const confidence = totalWeight;
-
-    const fmt = (label, score, ok, extra = '') =>
-        `• ${label}: ${ok ? `${score.toFixed(1)}%${extra}` : 'N/A'}`;
-
+    const show = (label,val,ok,extra='') => `• ${label}: ${ok ? `${Number(val).toFixed(1)}%${extra}` : 'N/A'}`;
     const detail = [
-        fmt('⚡ Momentum/Graph', scores.momentum, graph.available),
-        fmt('🎯 SOT H2', scores.sot, !!available.shotsOnTarget, available.shotsOnTarget ? ` | ${sotRate.toFixed(1)}/10m` : ''),
-        fmt('🔥 Dangerous H2', scores.dangerous, !!available.dangerousAttacks, available.dangerousAttacks ? ` | ${dangerousRate.toFixed(1)}/10m` : ''),
-        fmt('🥅 Shots H2', scores.shots, !!available.totalShots, available.totalShots ? ` | ${shotsRate.toFixed(1)}/10m` : ''),
-        fmt('🧱 Blocked H2', scores.blocked, !!available.blockedShots),
-        fmt('🚩 Corners H2', scores.corners, !!available.corners, available.corners ? ` | ${cornersRate.toFixed(1)}/10m` : ''),
-        fmt('📊 Possession H2', scores.possession, !!available.possession),
-        fmt('💰 Odds', scores.odds, !!oddsAnalysis),
+        `• 📡 H2 Stats source: ${st.source || 'none'} (46'→${elapsed}')`,
+        show('⚡ Sofa Graph', score.momentum, graph.available, graph.available ? ` | ${graph.points} điểm gần nhất` : ''),
+        show('🎯 SOT H2', score.sot, !!a.shotsOnTarget, a.shotsOnTarget ? ` | ${st.shotsOnTarget} | ${rates.sot.toFixed(1)}/10m` : ''),
+        show('🔥 Dangerous H2', score.dangerous, !!a.dangerousAttacks, a.dangerousAttacks ? ` | ${st.dangerousAttacks}` : ''),
+        show('🥅 Total Shots H2', score.shots, !!a.totalShots, a.totalShots ? ` | ${st.totalShots}` : ''),
+        show('🧱 Blocked H2', score.blocked, !!a.blockedShots, a.blockedShots ? ` | ${st.blockedShots}` : ''),
+        show('🚩 Corners H2', score.corners, !!a.corners, a.corners ? ` | ${st.corners}` : ''),
+        show('📊 Possession H2', score.possession, !!a.possession),
+        show('💰 Odds', score.odds, !!oddsAnalysis),
         `• 🚀 Recent Surge: +${surge.toFixed(1)}`,
         `• ⚠️ Penalty: -${penalty.toFixed(1)}`,
-        `• 📦 Data Confidence: ${confidence}% | Signals ${directSignals}/8`
+        `• 📦 Data Confidence: ${confidence}% | Signals ${signals}/8`
     ];
 
-    // Rapid source remains a diagnostic fallback; it is NOT mixed into H2 score
-    // because this endpoint may return whole-match cumulative statistics.
-    if ((rapid.rapidShotsTarget || rapid.rapidCorners) && !available.shotsOnTarget) {
-        detail.push(`• ℹ️ Rapid stats có dữ liệu nhưng không cộng AI H2 vì chưa xác nhận period 2ND`);
+    // Legacy Rapid stats are retained as fallback diagnostics only because
+    // their period is not proven H2; they must not contaminate 46'→current AI.
+    if (metrics.rapidStats && !a.shotsOnTarget &&
+        (metrics.rapidStats.rapidShotsTarget || metrics.rapidStats.rapidCorners)) {
+        detail.push('• ℹ️ Rapid stats: có dữ liệu nhưng không cộng AI vì chưa xác nhận riêng H2');
     }
 
-    const score1 = Number(finalScore.toFixed(1));
     return {
-        efficiency: score1,
-        betType: oddsAnalysis ? `Over ${oddsAnalysis.line} (${score1}%)` : `Over H2 (${score1}%)`,
+        efficiency: finalScore,
+        betType: oddsAnalysis ? `Over ${oddsAnalysis.line} (${finalScore}%)` : `Over H2 (${finalScore}%)`,
         detailText: detail.join('\n'),
-        shouldSend: score1 >= 58.0,
-        isBigBet: score1 >= 75.0 && confidence >= 55 && graph.available && directSignals >= 3
+        shouldSend: finalScore >= 58,
+        isBigBet: finalScore >= 75 && confidence >= 55 && graph.available && signals >= 3
     };
 }
 
@@ -608,7 +719,7 @@ async function scanLiveMatches() {
             }
 
             if (elapsed < 46) {
-                console.log(`    └─> [Bỏ qua]: Chưa vào vùng quét H2 (${elapsed}' < 46')`);
+                console.log(`    └─> [Bỏ qua]: Chưa vào H2 (${elapsed}' < 46')`);
                 continue;
             }
 
@@ -813,7 +924,7 @@ app.get('/', (req, res) => {
     <div id="tab-rulelab" class="tab-content">
         <div class="lab-card">
             <h4>🔬 Rule AI: Quét Sút Trúng Đích & Góc Phút Cuối</h4>
-            <p>• Ngưỡng quét: Phút 46 đến 92.<br>• AI V3 ưu tiên Statistics H2 (2ND) + Sofa Graph/Momentum; Odds chỉ hỗ trợ.<br>• Trọng số: Momentum 25%, SOT 20%, Dangerous 15%, Shots 12%, Blocked 8%, Corners 8%, Possession 5%, Odds 5%, Context 2%.<br>• Dữ liệu thiếu được loại khỏi mẫu số, không mặc định 50%. Cảnh báo từ 58%, BIG BET từ 75% khi đủ bằng chứng.</p>
+            <p>• Ngưỡng thời gian kích hoạt: Phút 70 đến 90 của trận đấu.<br>• Điều kiện lọc: Đội bóng chịu áp lực cao, số cú sút trúng đích tối thiểu, xuất hiện thẻ đỏ hoặc biến động dòng tiền Over từ nhà cái.<br>• Tự động gửi cảnh báo tức thì qua kênh Telegram cấu hình sẵn.</p>
         </div>
     </div>
 
@@ -939,6 +1050,6 @@ app.listen(PORT, () => {
     loadSentAlertsFromDB();
     setTimeout(() => {
         scanLiveMatches();
-        setInterval(scanLiveMatches, 3 * 60 * 1000);
+        setInterval(scanLiveMatches, 5 * 60 * 1000);
     }, 2000);
 });
