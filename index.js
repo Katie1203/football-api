@@ -18,6 +18,20 @@ const ODDS_API_KEY = process.env.ODDS_API_KEY;
 const PRIMARY_RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
 const PRIMARY_LIVE_URL = `https://${PRIMARY_RAPIDAPI_HOST}/football-current-live`;
 
+// Primary Premium: match-detail/statistics adapter.
+// API này dùng nhiều tên route giữa các version. Bot thử các route detail phổ biến
+// trên CÙNG host/subscription hiện tại; dừng ngay khi tìm được response 200 có stats.
+const PRIMARY_DETAIL_ROUTE_BUILDERS = [
+  (id) => ({ path: '/football-get-match-detail', params: { eventid: id } }),
+  (id) => ({ path: '/football-get-match-detail', params: { matchid: id } }),
+  (id) => ({ path: '/football-match-detail', params: { eventid: id } }),
+  (id) => ({ path: '/football-match-detail', params: { matchid: id } }),
+  (id) => ({ path: '/football-get-match-statistics', params: { eventid: id } }),
+  (id) => ({ path: '/football-get-match-statistics', params: { matchid: id } })
+];
+const primaryWorkingDetailRoute = { value: null };
+
+
 // Legacy sources chỉ làm fallback. Khi một nguồn trả 429, bot tạm nghỉ nguồn đó
 // để không đốt quota / spam request trong các vòng quét tiếp theo.
 const SOURCE_429_COOLDOWN_MS = 60 * 60 * 1000;
@@ -1227,6 +1241,11 @@ async function fetchLiveMatchesFromFlashScore() {
       const message = r.data?.message || r.data?.error ||
         (typeof r.data === 'string' ? r.data.slice(0, 300) : 'HTTP error');
       console.log(`[FlashScore Live] HTTP ${r.status} | ERROR: ${message}`);
+      if (r.status === 429) {
+        sourceCooldownUntil.set('FlashScore Live', Date.now() + SOURCE_429_COOLDOWN_MS);
+        sourceCooldownUntil.set('FlashScore Stats', Date.now() + SOURCE_429_COOLDOWN_MS);
+        console.log('[FlashScore Live] 429 -> tạm nghỉ nguồn bổ sung này 60 phút.');
+      }
       return [];
     }
 
@@ -2447,6 +2466,71 @@ function parseDirectKeys(
 }
 
 
+
+// ==========================================================
+// 9B. PRIMARY RAPIDAPI PREMIUM - MATCH DETAIL / STATISTICS
+// ==========================================================
+async function fetchPrimaryRapidApiStats(matchId) {
+  const empty = createEmptyStats();
+  if (!PAID_RAPIDAPI_KEY || !PRIMARY_RAPIDAPI_HOST || !matchId) return empty;
+
+  const headers = {
+    'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+    'x-rapidapi-host': PRIMARY_RAPIDAPI_HOST
+  };
+
+  let probes = PRIMARY_DETAIL_ROUTE_BUILDERS.map(build => build(matchId));
+  if (primaryWorkingDetailRoute.value) {
+    const preferred = probes.find(x => x.path === primaryWorkingDetailRoute.value.path &&
+      Object.keys(x.params)[0] === primaryWorkingDetailRoute.value.paramKey);
+    if (preferred) probes = [preferred];
+  }
+
+  for (const probe of probes) {
+    const url = `https://${PRIMARY_RAPIDAPI_HOST}${probe.path}`;
+    try {
+      const r = await axios.get(url, { headers, params: probe.params, timeout: 8000 });
+      const data = r.data;
+      const stats = createEmptyStats();
+      parseDirectKeys(data, stats);
+      recursivelyParseStats(data, stats);
+
+      const paramKey = Object.keys(probe.params)[0];
+      console.log(`[Primary Stats] ${probe.path}?${paramKey}=... | HTTP ${r.status} | ${stats.hasData ? 'STATS OK' : 'không có stats'}`);
+
+      // Route 200 là route hợp lệ: nhớ lại để các trận sau không probe 6 lần.
+      primaryWorkingDetailRoute.value = { path: probe.path, paramKey };
+
+      if (stats.hasData) {
+        stats.source = 'primary-rapidapi-detail';
+        return stats;
+      }
+
+      // Route hợp lệ nhưng trận không có coverage stats -> không spam các route khác.
+      return stats;
+    } catch (e) {
+      const status = e.response?.status || 'NO_RESPONSE';
+      const message = e.response?.data?.message || e.response?.data?.error || e.message || 'Unknown error';
+      if (status === 404) {
+        console.log(`[Primary Stats] ${probe.path} | HTTP 404 -> thử route kế tiếp`);
+        continue;
+      }
+      if (status === 429) {
+        handleRapidApiError('Primary Stats', e);
+        return empty;
+      }
+      if (status === 401 || status === 403) {
+        console.log(`[Primary Stats] ${probe.path} | HTTP ${status} | ${message}`);
+        continue;
+      }
+      console.log(`[Primary Stats] ${probe.path} | HTTP ${status} | ${message}`);
+    }
+  }
+
+  console.log(`[Primary Stats] match ${matchId} | chưa tìm được route detail/statistics hợp lệ trên host hiện tại`);
+  return empty;
+}
+
 // ==========================================================
 // 10. SOFASCORE STATISTICS
 // ==========================================================
@@ -2735,173 +2819,107 @@ function parseStatsFromRawMatch(
 // Không gọi nhiều API thừa.
 // ==========================================================
 
-async function fetchMatchDetailStats(
-  match
-) {
+// Cache danh sách live của nguồn phụ. Các nguồn này KHÔNG tạo trận để quét;
+// chỉ dùng để tìm đúng event ID và bổ sung statistics cho trận LiveFootball chính.
+const supplementLiveCache = new Map();
+const SUPPLEMENT_LIVE_TTL = 6 * 60 * 1000;
 
-  const cacheKey =
+async function getSupplementLive(source) {
+  const cached = supplementLiveCache.get(source);
+  if (cached && Date.now() - cached.time < SUPPLEMENT_LIVE_TTL) return cached.rows;
 
-    `${match.source}:${match.id}`;
+  let rawRows = [];
+  if (source === 'sofascore') rawRows = await fetchLiveMatchesFromSofaScore();
+  if (source === 'flashscore') rawRows = await fetchLiveMatchesFromFlashScore();
 
+  const rows = (Array.isArray(rawRows) ? rawRows : [])
+    .map(raw => formatLiveMatch(raw, source))
+    .filter(m => !isPlaceholderMatch(m));
 
-  const cached =
-    statsCache.get(
-      cacheKey
-    );
-
-
-  if (
-    cached &&
-    Date.now() -
-      cached.time <
-      STATS_CACHE_TTL
-  ) {
-
-    return cached.data;
-  }
-
-
-  // ------------------------------------------
-  // BƯỚC 1:
-  // Thử lấy ngay trong raw match
-  // ------------------------------------------
-
-  let stats =
-    parseStatsFromRawMatch(
-      match.raw
-    );
-
-
-  // ------------------------------------------
-  // BƯỚC 2:
-  // Nếu raw thiếu dữ liệu
-  // thì gọi API statistics
-  // ------------------------------------------
-
-  if (
-    !stats.hasData
-  ) {
-
-    if (
-      match.source ===
-      'sofascore'
-    ) {
-
-      stats =
-        await fetchSofaScoreStats(
-          match.id
-        );
-
-    } else if (
-      match.source ===
-      'flashscore'
-    ) {
-
-      stats =
-        await fetchFlashScoreStats(
-          match.id
-        );
-    }
-  }
-
-
-  // ------------------------------------------
-  // BƯỚC 3:
-  // Nếu total shots không có,
-  // nhưng có SOT + off target + blocked
-  // thì tự tính
-  // ------------------------------------------
-
-  if (
-    stats.homeTotalShots <= 0
-  ) {
-
-    stats.homeTotalShots =
-
-      stats.homeShotsOnTarget +
-
-      stats.homeShotsOffTarget +
-
-      stats.homeBlockedShots;
-
-    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
-      stats.availableStats.totalShots = true;
-      stats.hasData = true;
-    }
-  }
-
-
-  if (
-    stats.awayTotalShots <= 0
-  ) {
-
-    stats.awayTotalShots =
-
-      stats.awayShotsOnTarget +
-
-      stats.awayShotsOffTarget +
-
-      stats.awayBlockedShots;
-
-    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
-      stats.availableStats.totalShots = true;
-      stats.hasData = true;
-    }
-  }
-
-
-  // ------------------------------------------
-  // Possession fallback
-  // Nếu chỉ có một bên
-  // ------------------------------------------
-
-  if (
-    stats.homePossession > 0 &&
-    stats.awayPossession <= 0
-  ) {
-
-    stats.awayPossession =
-      Math.max(
-        0,
-        100 -
-        stats.homePossession
-      );
-  }
-
-
-  if (
-    stats.awayPossession > 0 &&
-    stats.homePossession <= 0
-  ) {
-
-    stats.homePossession =
-      Math.max(
-        0,
-        100 -
-        stats.awayPossession
-      );
-  }
-
-
-  // ------------------------------------------
-  // CACHE
-  // ------------------------------------------
-
-  statsCache.set(
-    cacheKey,
-    {
-      time:
-        Date.now(),
-
-      data:
-        stats
-    }
-  );
-
-
-  return stats;
+  supplementLiveCache.set(source, { time: Date.now(), rows });
+  return rows;
 }
 
+function findSupplementMatch(rows, primaryMatch) {
+  return (rows || []).find(m =>
+    teamNamesSimilar(m.homeName, primaryMatch.homeName) &&
+    teamNamesSimilar(m.awayName, primaryMatch.awayName)
+  ) || (rows || []).find(m =>
+    teamNamesSimilar(m.homeName, primaryMatch.awayName) &&
+    teamNamesSimilar(m.awayName, primaryMatch.homeName)
+  ) || null;
+}
+
+async function fetchSupplementStats(match, source) {
+  try {
+    const rows = await getSupplementLive(source);
+    const found = findSupplementMatch(rows, match);
+    if (!found?.id) {
+      console.log(`[Supplement] ${source} | ${match.homeName} vs ${match.awayName} | không tìm thấy trận tương ứng`);
+      return createEmptyStats();
+    }
+
+    console.log(`[Supplement] ${source} | matched ID=${found.id}`);
+    return source === 'sofascore'
+      ? await fetchSofaScoreStats(found.id)
+      : await fetchFlashScoreStats(found.id);
+  } catch (e) {
+    console.log(`[Supplement] ${source} | ERROR: ${e.message}`);
+    return createEmptyStats();
+  }
+}
+
+async function fetchMatchDetailStats(match) {
+  const cacheKey = `${match.source}:${match.id}`;
+  const cached = statsCache.get(cacheKey);
+  if (cached && Date.now() - cached.time < STATS_CACHE_TTL) return cached.data;
+
+  // 1) Dữ liệu có sẵn ngay trong trận LiveFootball/Primary.
+  let stats = parseStatsFromRawMatch(match.raw);
+  if (stats.hasData) stats.source = 'primary-raw';
+
+  // 2) LiveFootball Premium là nguồn statistics chính.
+  if (match.source === 'primary-rapidapi') {
+    const primaryStats = await fetchPrimaryRapidApiStats(match.id);
+    mergeStats(stats, primaryStats);
+  }
+
+  // 3) SofaScore chỉ BỔ SUNG trường còn thiếu, không tạo trận quét.
+  if (!sourceInCooldown('Sofa Live') && !sourceInCooldown('Sofa Stats')) {
+    const sofaStats = await fetchSupplementStats(match, 'sofascore');
+    mergeStats(stats, sofaStats);
+  }
+
+  // 4) FlashScore chỉ BỔ SUNG trường còn thiếu, không tạo trận quét.
+  // Nếu đang 429 thì nguồn sẽ tự cooldown/không ảnh hưởng Primary.
+  if (!sourceInCooldown('FlashScore Live') && !sourceInCooldown('FlashScore Stats')) {
+    const flashStats = await fetchSupplementStats(match, 'flashscore');
+    mergeStats(stats, flashStats);
+  }
+
+  // Ghi nguồn tổng hợp để log dễ đọc.
+  if (stats.hasData) stats.source = 'merged:livefootball+supplements';
+
+  // Total shots fallback.
+  if (stats.homeTotalShots <= 0) {
+    stats.homeTotalShots = stats.homeShotsOnTarget + stats.homeShotsOffTarget + stats.homeBlockedShots;
+    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
+      stats.availableStats.totalShots = true; stats.hasData = true;
+    }
+  }
+  if (stats.awayTotalShots <= 0) {
+    stats.awayTotalShots = stats.awayShotsOnTarget + stats.awayShotsOffTarget + stats.awayBlockedShots;
+    if (stats.availableStats?.shotsOnTarget || stats.availableStats?.shotsOffTarget || stats.availableStats?.blockedShots) {
+      stats.availableStats.totalShots = true; stats.hasData = true;
+    }
+  }
+
+  if (stats.homePossession > 0 && stats.awayPossession <= 0) stats.awayPossession = Math.max(0, 100 - stats.homePossession);
+  if (stats.awayPossession > 0 && stats.homePossession <= 0) stats.homePossession = Math.max(0, 100 - stats.awayPossession);
+
+  statsCache.set(cacheKey, { time: Date.now(), data: stats });
+  return stats;
+}
 
 // ==========================================================
 // 14. TOTAL HELPERS
@@ -6301,62 +6319,24 @@ async function sendTelegramAlert(item, alertDecision) {
 // ==========================================================
 
 async function fetchAllLiveMatches() {
-
-  const sourceJobs = [
-    ['Primary', 'primary-rapidapi', fetchLiveMatchesFromPrimaryRapidApi],
-    ['Sofa', 'sofascore', fetchLiveMatchesFromSofaScore],
-    ['FlashScore', 'flashscore', fetchLiveMatchesFromFlashScore],
-    // Legacy LiveFootball host đang trả 403 'not subscribed' với gói hiện tại.
-    // Không gọi nguồn này để tránh request lỗi; Primary RapidAPI vẫn là nguồn chính.
-  ];
-
-  const settled = await Promise.allSettled(
-    sourceJobs.map(([, , fn]) => fn())
-  );
-
+  // LiveFootball Premium/Primary là NGUỒN TRẬN LIVE DUY NHẤT.
+  // SofaScore + FlashScore không thêm trận vào scanner; chúng chỉ bổ sung stats
+  // sau khi một trận Primary đã qua bộ lọc phút 46-92.
+  const rows = await fetchLiveMatchesFromPrimaryRapidApi();
   const all = [];
-  const counts = {};
+  let invalid = 0;
 
-  settled.forEach((result, index) => {
-    const [label, source] = sourceJobs[index];
+  for (const raw of (Array.isArray(rows) ? rows : [])) {
+    const match = formatLiveMatch(raw, 'primary-rapidapi');
+    if (isPlaceholderMatch(match)) { invalid += 1; continue; }
+    all.push(match);
+  }
 
-    if (result.status !== 'fulfilled') {
-      counts[source] = 0;
-      console.log(`[Source] ${label}: ERROR | 0 trận`);
-      return;
-    }
-
-    const rows = Array.isArray(result.value) ? result.value : [];
-    let valid = 0;
-    let invalid = 0;
-
-    for (const raw of rows) {
-      const match = formatLiveMatch(raw, source);
-      if (isPlaceholderMatch(match)) {
-        invalid += 1;
-        continue;
-      }
-      all.push(match);
-      valid += 1;
-    }
-
-    counts[source] = valid;
-    console.log(
-      `[Source] ${label}: ${rows.length} raw | ${valid} hợp lệ` +
-      (invalid ? ` | ${invalid} placeholder bỏ qua` : '')
-    );
-  });
-
-  console.log(
-    `[Sources] Primary: ${counts['primary-rapidapi'] || 0}` +
-    ` | Sofa: ${counts.sofascore || 0}` +
-    ` | FlashScore: ${counts.flashscore || 0}` +
-    ` | LiveFootball: ${counts['live-football'] || 0}`
-  );
-
+  console.log(`[Source Main] LiveFootball/Primary: ${rows.length || 0} raw | ${all.length} hợp lệ${invalid ? ` | ${invalid} placeholder bỏ qua` : ''}`);
+  console.log('[Source Supplement] SofaScore + FlashScore: chỉ gọi bổ sung statistics cho trận đủ phút');
+  console.log('[Source Supplement] The Odds: chỉ bổ sung odds/dòng tiền cho trận đủ phút');
   return all;
 }
-
 
 // ==========================================================
 // 45. DEDUPLICATE MATCHES
