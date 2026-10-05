@@ -2304,19 +2304,39 @@ function extractSecondHalfStats(data, source) {
   const blocks = findPeriodBlocks(data);
 
   // Ưu tiên 2ND trực tiếp.
+  const firstBlock = blocks.find(x => x.kind === '1ST');
+  const allBlock = blocks.find(x => x.kind === 'ALL');
+
   for (const item of blocks.filter(x => x.kind === '2ND')) {
     const h2 = parseStatsBlock(item.node, `${source}-H2(2ND)`);
-    if (h2.hasData) return h2;
+    if (h2.hasData) {
+      // Giữ H1 làm dữ liệu nền cho AI, nhưng H2 vẫn là stats chính
+      // để momentum/surge chỉ phản ánh diễn biến sau giờ nghỉ.
+      h2._h2Stats = h2;
+      if (firstBlock) {
+        const h1 = parseStatsBlock(firstBlock.node, `${source}-H1(1ST)`);
+        if (h1.hasData) h2._h1Stats = h1;
+      }
+      if (allBlock) {
+        const allStats = parseStatsBlock(allBlock.node, `${source}-ALL`);
+        if (allStats.hasData) h2._allStats = allStats;
+      }
+      return h2;
+    }
   }
 
   // Fallback ALL - 1ST cho các chỉ số cộng dồn.
-  const allBlock = blocks.find(x => x.kind === 'ALL');
-  const firstBlock = blocks.find(x => x.kind === '1ST');
   if (allBlock && firstBlock) {
     const allStats = parseStatsBlock(allBlock.node, source);
     const firstStats = parseStatsBlock(firstBlock.node, source);
     if (allStats.hasData && firstStats.hasData) {
-      return deriveSecondHalfStats(allStats, firstStats, source);
+      const h2 = deriveSecondHalfStats(allStats, firstStats, source);
+      if (h2.hasData) {
+        h2._h1Stats = firstStats;
+        h2._h2Stats = h2;
+        h2._allStats = allStats;
+      }
+      return h2;
     }
   }
 
@@ -4721,6 +4741,68 @@ function calculateTimeScore(
 
 
 // ==========================================================
+// 33B. HYBRID H1 + H2 WEIGHTING
+// H1 = nền trận đấu. H2 = trạng thái hiện tại và được tăng trọng số.
+// 60-69': H1 30% / H2 70%
+// 70-79': H1 20% / H2 80%
+// 80-92': H1 10% / H2 90%
+// ==========================================================
+
+function getHalfWeights(minute) {
+  if (minute >= 80) return { h1: 0.10, h2: 0.90 };
+  if (minute >= 70) return { h1: 0.20, h2: 0.80 };
+  return { h1: 0.30, h2: 0.70 };
+}
+
+function blendHalfScore(h1Score, h2Score, minute, hasH1 = true) {
+  if (!hasH1) return h2Score;
+  const w = getHalfWeights(minute);
+  return h1Score * w.h1 + h2Score * w.h2;
+}
+
+function getHybridComponentScores(stats, minute) {
+  const h2 = stats?._h2Stats || stats;
+  const h1 = stats?._h1Stats || null;
+  const h2Elapsed = Math.max(1, minute - 45);
+  const hasH1 = !!(h1 && h1.hasData);
+
+  const h2Style = calculateMatchStyleScore(h2);
+  const h1Style = hasH1 ? calculateMatchStyleScore(h1) : h2Style;
+
+  return {
+    attackScore: blendHalfScore(
+      hasH1 ? calculateAttackScore(h1, 45) : 0,
+      calculateAttackScore(h2, h2Elapsed), minute, hasH1),
+    dangerousScore: blendHalfScore(
+      hasH1 ? calculateDangerousAttackScore(h1, 45) : 0,
+      calculateDangerousAttackScore(h2, h2Elapsed), minute, hasH1),
+    sotScore: blendHalfScore(
+      hasH1 ? calculateSOTScore(h1, 45) : 0,
+      calculateSOTScore(h2, h2Elapsed), minute, hasH1),
+    blockedScore: blendHalfScore(
+      hasH1 ? calculateBlockedScore(h1) : 0,
+      calculateBlockedScore(h2), minute, hasH1),
+    cornerScore: blendHalfScore(
+      hasH1 ? calculateCornerScore(h1) : 0,
+      calculateCornerScore(h2), minute, hasH1),
+    possessionScore: blendHalfScore(
+      hasH1 ? calculatePossessionPressureScore(h1) : 0,
+      calculatePossessionPressureScore(h2), minute, hasH1),
+    cardScore: blendHalfScore(
+      hasH1 ? calculateCardScore(h1) : 0,
+      calculateCardScore(h2), minute, hasH1),
+    style: {
+      ...h2Style,
+      score: blendHalfScore(h1Style.score, h2Style.score, minute, hasH1)
+    },
+    h1Weight: hasH1 ? getHalfWeights(minute).h1 : 0,
+    h2Weight: hasH1 ? getHalfWeights(minute).h2 : 1,
+    h2Elapsed,
+    hasH1
+  };
+}
+
+// ==========================================================
 // 34. RULE AI ENGINE
 //
 // TRỌNG SỐ:
@@ -4751,55 +4833,19 @@ function evaluateMatchDynamicAI(
   awayScore
 ) {
 
-  const attackScore =
-    calculateAttackScore(
-      stats,
-      minute
-    );
+  // H1 vẫn được tính làm nền, nhưng H2 được tăng trọng số mạnh.
+  // Các rate của H2 dùng số phút thực tế từ 46' -> hiện tại.
+  const hybrid = getHybridComponentScores(stats, minute);
 
+  const attackScore = hybrid.attackScore;
+  const dangerousScore = hybrid.dangerousScore;
+  const sotScore = hybrid.sotScore;
+  const blockedScore = hybrid.blockedScore;
+  const cornerScore = hybrid.cornerScore;
+  const possessionScore = hybrid.possessionScore;
+  const cardScore = hybrid.cardScore;
+  const style = hybrid.style;
 
-  const dangerousScore =
-    calculateDangerousAttackScore(
-      stats,
-      minute
-    );
-
-
-  const sotScore =
-    calculateSOTScore(
-      stats,
-      minute
-    );
-
-
-  const blockedScore =
-    calculateBlockedScore(
-      stats
-    );
-
-
-  const cornerScore =
-    calculateCornerScore(
-      stats
-    );
-
-
-  const possessionScore =
-    calculatePossessionPressureScore(
-      stats
-    );
-
-
-  const cardScore =
-    calculateCardScore(
-      stats
-    );
-
-
-  const style =
-    calculateMatchStyleScore(
-      stats
-    );
 
 
   const scoreState =
@@ -5036,6 +5082,8 @@ function evaluateMatchDynamicAI(
   // ======================================================
 
   const detailLines = [
+
+    `⚖️ Trọng số H1/H2: ${Math.round(hybrid.h1Weight * 100)}% / ${Math.round(hybrid.h2Weight * 100)}%`,
 
     `🔥 Dangerous Attack Score: ${round1(dangerousScore)}%`,
 
@@ -6104,14 +6152,14 @@ async function sendTelegramAlert(
   ) {
 
     title =
-      '🔥🔥🔥 BIG BET RẤT MẠNH 🔥🔥🔥';
+      `🔥🔥🔥 BIG BET RẤT MẠNH – ${percentage.toFixed(1)}% 🔥🔥🔥`;
 
   } else if (
     isBigBet
   ) {
 
     title =
-      '🔥🔥 BIG BET 🔥🔥';
+      `🔥🔥 BIG BET – ${percentage.toFixed(1)}% 🔥🔥`;
   }
 
 
@@ -6143,76 +6191,12 @@ async function sendTelegramAlert(
 
   const message = `
 ${title}
-
-🏆 GIẢI ĐẤU:
-${cleanTelegramText(item.league)}
-
-⚔️ TRẬN ĐẤU:
-${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
-
-⏱ PHÚT:
-${item.minute}'
-
-━━━━━━━━━━━━━━━━━━
-
-📊 THỐNG KÊ LIVE
-
-${statsText}
-
-━━━━━━━━━━━━━━━━━━
-
-${momentumText}
-
-━━━━━━━━━━━━━━━━━━
-
-💰 KÈO NHÀ CÁI
-
-${oddsText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 PHÂN TÍCH RULE
-
-${item.ai.detailText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 AI GOAL SCORE:
-${percentage.toFixed(1)}%
-
-${item.ai.level}
-
-🎯 NHẬN ĐỊNH:
-Khả năng xuất hiện THÊM BÀN THẮNG
-
-━━━━━━━━━━━━━━━━━━
-
-🔮 DỰ ĐOÁN TỶ SỐ FT:
-${scorePrediction.text}
-
-⚽ Dự kiến bàn còn lại:
-+${scorePrediction.expectedExtraGoals}
-
-🎯 Đội có khả năng ghi bàn:
-${scorePrediction.likelyScorer}
-
-📊 Sức ép:
-Chủ nhà ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}% Đội khách
-
-🔮 Độ mạnh dự đoán:
-${scorePrediction.confidence}
-
-━━━━━━━━━━━━━━━━━━
-
-⚽ DIỄN BIẾN BÀN THẮNG:
-
-${goalTimeline}
-
-━━━━━━━━━━━━━━━━━━
-
-🚨 CẢNH BÁO #${alertNumber}
-
-📌 ${alertDecision.reason}
+🏆 ${cleanTelegramText(item.league)}
+⚔️ ${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)} | ⏱️ ${item.minute}'
+📈 RULE: ${percentage.toFixed(1)}%
+🎯 CÒN BÀN THẮNG
+🔮 FT: ${scorePrediction.text} | ⚽ ${scorePrediction.likelyScorer}
+📊 Sức ép: ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}%
 `.trim();
 
 
