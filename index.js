@@ -1,12 +1,8 @@
 const express = require('express');
 const axios = require('axios');
-const path = require('path');
-const sqlite3 = require('sqlite3').verbose();
-const electron = require('electron');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-
 app.use(express.json());
 
 // ==========================================
