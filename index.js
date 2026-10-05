@@ -14,15 +14,14 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
-// RapidAPI chính: dùng đúng gói Free API Live Football Data mà bạn đã đăng ký.
-// Có thể đổi host trên Render bằng RAPIDAPI_HOST mà không cần sửa code.
-const PRIMARY_RAPIDAPI_HOST = (process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com').trim();
-const PRIMARY_LIVE_PATH = (process.env.RAPIDAPI_LIVE_PATH || '/football-live').trim();
-const PRIMARY_LIVE_URL = `https://${PRIMARY_RAPIDAPI_HOST}${PRIMARY_LIVE_PATH.startsWith('/') ? PRIMARY_LIVE_PATH : '/' + PRIMARY_LIVE_PATH}`;
+// API chính theo gói RapidAPI của Render. Không hard-code key.
+const PRIMARY_RAPIDAPI_HOST = process.env.RAPIDAPI_HOST || 'free-api-live-football-data.p.rapidapi.com';
+const PRIMARY_LIVE_URL = `https://${PRIMARY_RAPIDAPI_HOST}/football-current-live`;
 
-// Các nguồn cũ chỉ dùng fallback nếu bật rõ ràng trên Render.
-// Mặc định TẮT để key gói chính không bị gọi nhầm sang API khác và tránh 429.
-const ENABLE_LEGACY_RAPIDAPI_FALLBACKS = String(process.env.ENABLE_LEGACY_RAPIDAPI_FALLBACKS || 'false').toLowerCase() === 'true';
+// Legacy sources chỉ làm fallback. Khi một nguồn trả 429, bot tạm nghỉ nguồn đó
+// để không đốt quota / spam request trong các vòng quét tiếp theo.
+const SOURCE_429_COOLDOWN_MS = 60 * 60 * 1000;
+const sourceCooldownUntil = new Map();
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL =
@@ -794,6 +793,10 @@ function calculateExactMinute(item) {
 
     item.status?.minute,
 
+    item.status?.liveTime?.short,
+
+    item.status?.liveTime?.long,
+
     item.status?.minutes,
 
     item.status?.elapsed,
@@ -969,48 +972,47 @@ function calculateExactMinute(item) {
 // 6. FETCH LIVE MATCHES
 // ==========================================================
 
-function rapidApiErrorInfo(e) {
-  const h = e.response?.headers || {};
-  return {
-    status: e.response?.status || null,
-    message: e.response?.data?.message || e.response?.data?.error || e.message,
-    remaining: h['x-ratelimit-remaining'] ?? h['x-ratelimit-requests-remaining'] ?? null,
-    reset: h['x-ratelimit-reset'] ?? h['x-ratelimit-requests-reset'] ?? null
-  };
+function sourceInCooldown(name) {
+  return (sourceCooldownUntil.get(name) || 0) > Date.now();
 }
 
-function extractPrimaryLiveArray(data) {
-  if (Array.isArray(data)) return data;
-  const candidates = [
-    data?.response, data?.data, data?.matches, data?.events, data?.result,
-    data?.response?.matches, data?.response?.events, data?.data?.matches, data?.data?.events
-  ];
-  for (const value of candidates) {
-    if (Array.isArray(value)) return value;
+function handleRapidApiError(name, e) {
+  const status = e.response?.status;
+  const headers = e.response?.headers || {};
+  const data = e.response?.data;
+
+  console.error(`[${name}]`, {
+    status: status || null,
+    message: data?.message || e.message,
+    remaining: headers['x-ratelimit-requests-remaining'] ?? headers['x-ratelimit-remaining'] ?? null,
+    reset: headers['x-ratelimit-requests-reset'] ?? headers['x-ratelimit-reset'] ?? null
+  });
+
+  if (status === 429) {
+    sourceCooldownUntil.set(name, Date.now() + SOURCE_429_COOLDOWN_MS);
+    console.log(`[${name}] 429 -> tạm nghỉ nguồn này 60 phút, bot tiếp tục nguồn khác.`);
   }
-  return [];
 }
 
 async function fetchLiveMatchesFromPrimaryRapidApi() {
-  if (!PAID_RAPIDAPI_KEY) {
-    console.error('[Primary RapidAPI] Thiếu RAPIDAPI_KEY');
-    return [];
-  }
-
   try {
+    if (!PAID_RAPIDAPI_KEY || !PRIMARY_RAPIDAPI_HOST) return [];
+    if (sourceInCooldown('Primary RapidAPI')) return [];
+
     const r = await axios.get(PRIMARY_LIVE_URL, {
       headers: {
         'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
         'x-rapidapi-host': PRIMARY_RAPIDAPI_HOST
       },
-      timeout: 12000
+      timeout: 10000
     });
 
-    const rows = extractPrimaryLiveArray(r.data);
-    console.log(`[Primary RapidAPI] ${PRIMARY_RAPIDAPI_HOST}${PRIMARY_LIVE_PATH} -> HTTP ${r.status} | live rows: ${rows.length}`);
-    return rows;
+    const rows = r.data?.response?.live || r.data?.live || r.data?.response || [];
+    const list = Array.isArray(rows) ? rows : [];
+    console.log(`[Primary RapidAPI] HTTP ${r.status} | live: ${list.length}`);
+    return list;
   } catch (e) {
-    console.error('[Primary RapidAPI]', rapidApiErrorInfo(e));
+    handleRapidApiError('Primary RapidAPI', e);
     return [];
   }
 }
@@ -1019,7 +1021,7 @@ async function fetchLiveMatchesFromSofaScore() {
 
   try {
 
-    if (!PAID_RAPIDAPI_KEY) {
+    if (!PAID_RAPIDAPI_KEY || sourceInCooldown('Sofa Live')) {
       return [];
     }
 
@@ -1052,7 +1054,7 @@ async function fetchLiveMatchesFromSofaScore() {
 
   } catch (e) {
 
-    console.error('[Sofa Live]', rapidApiErrorInfo(e));
+    handleRapidApiError('Sofa Live', e);
 
     return [];
   }
@@ -1327,13 +1329,6 @@ function mergeStats(target, source) {
     if (value > 0) {
       target[key] = value;
     }
-  }
-
-  if (source.availableStats) {
-    target.availableStats = {
-      ...(target.availableStats || {}),
-      ...source.availableStats
-    };
   }
 
   if (source.hasData) {
@@ -2311,7 +2306,9 @@ async function fetchSofaScoreStats(
 
   if (
     !PAID_RAPIDAPI_KEY ||
-    !matchId
+    !matchId ||
+    sourceInCooldown('Sofa Stats') ||
+    sourceInCooldown('Sofa Live')
   ) {
     return stats;
   }
@@ -2381,7 +2378,11 @@ async function fetchSofaScoreStats(
 
     } catch (e) {
 
-      // Thử endpoint tiếp theo
+      if (e.response?.status === 429) {
+        handleRapidApiError('Sofa Stats', e);
+        break;
+      }
+      // Thử endpoint tiếp theo nếu không phải rate-limit.
     }
   }
 
@@ -5218,6 +5219,13 @@ function shouldSendAlert(
 
 function extractScores(raw) {
 
+  // free-api-live-football-data thường trả status.scoreStr dạng '1 - 0'.
+  const scoreStr = String(raw?.status?.scoreStr ?? raw?.scoreStr ?? '').trim();
+  const scoreMatch = scoreStr.match(/(\d+)\s*[-:]\s*(\d+)/);
+  if (scoreMatch) {
+    return { home: safeNumber(scoreMatch[1]), away: safeNumber(scoreMatch[2]) };
+  }
+
   const home = safeNumber(
     raw?.homeScore?.current ??
     raw?.homeScore?.display ??
@@ -6110,31 +6118,95 @@ async function sendTelegramAlert(item, alertDecision) {
 
 async function fetchAllLiveMatches() {
 
-  // Nguồn chính luôn là host trong RAPIDAPI_HOST.
-  // Không dùng cùng một RapidAPI key để tự động gọi Sofa/Flash API khác,
-  // vì subscription/quota của RapidAPI được tính theo từng API product.
-  const primaryRaw = await fetchLiveMatchesFromPrimaryRapidApi();
-  const all = primaryRaw.map(raw => formatLiveMatch(raw, 'primary-rapidapi'));
+  const [
+    primary,
+    sofa,
+    flash,
+    football
+  ] = await Promise.allSettled([
 
-  if (!ENABLE_LEGACY_RAPIDAPI_FALLBACKS) {
-    return all;
-  }
+    fetchLiveMatchesFromPrimaryRapidApi(),
 
-  const [sofa, flash, football] = await Promise.allSettled([
     fetchLiveMatchesFromSofaScore(),
+
     fetchLiveMatchesFromFlashScore(),
+
     fetchLiveMatchesFromLiveFootball()
+
   ]);
 
-  if (sofa.status === 'fulfilled') {
-    for (const raw of sofa.value) all.push(formatLiveMatch(raw, 'sofascore'));
+
+  const all = [];
+
+  if (
+    primary.status ===
+    'fulfilled'
+  ) {
+
+    for (const raw of primary.value) {
+      all.push(formatLiveMatch(raw, 'primary-rapidapi'));
+    }
   }
-  if (flash.status === 'fulfilled') {
-    for (const raw of flash.value) all.push(formatLiveMatch(raw, 'flashscore'));
+
+  if (
+    sofa.status ===
+    'fulfilled'
+  ) {
+
+    for (
+      const raw of
+      sofa.value
+    ) {
+
+      all.push(
+        formatLiveMatch(
+          raw,
+          'sofascore'
+        )
+      );
+    }
   }
-  if (football.status === 'fulfilled') {
-    for (const raw of football.value) all.push(formatLiveMatch(raw, 'live-football'));
+
+
+  if (
+    flash.status ===
+    'fulfilled'
+  ) {
+
+    for (
+      const raw of
+      flash.value
+    ) {
+
+      all.push(
+        formatLiveMatch(
+          raw,
+          'flashscore'
+        )
+      );
+    }
   }
+
+
+  if (
+    football.status ===
+    'fulfilled'
+  ) {
+
+    for (
+      const raw of
+      football.value
+    ) {
+
+      all.push(
+        formatLiveMatch(
+          raw,
+          'live-football'
+        )
+      );
+    }
+  }
+
 
   return all;
 }
@@ -6156,7 +6228,7 @@ function deduplicateMatches(
 
   const SOURCE_PRIORITY = {
 
-    'primary-rapidapi': 10,
+    'primary-rapidapi': 4,
 
     sofascore: 3,
 
