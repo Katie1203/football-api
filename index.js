@@ -1206,42 +1206,56 @@ async function fetchLiveMatchesFromSofaScore() {
 
 async function fetchLiveMatchesFromFlashScore() {
 
-  try {
+  console.log('[FlashScore Live] REQUEST...');
 
-    if (!PAID_RAPIDAPI_KEY) {
+  if (!PAID_RAPIDAPI_KEY) {
+    console.log('[FlashScore Live] SKIP | thiếu RAPIDAPI_KEY');
+    return [];
+  }
+
+  try {
+    const r = await axios.get(FLASHSCORE_LIVE_URL, {
+      headers: {
+        'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+        'x-rapidapi-host': FLASHSCORE_HOST
+      },
+      timeout: 8000,
+      validateStatus: () => true
+    });
+
+    if (r.status < 200 || r.status >= 300) {
+      const message = r.data?.message || r.data?.error ||
+        (typeof r.data === 'string' ? r.data.slice(0, 300) : 'HTTP error');
+      console.log(`[FlashScore Live] HTTP ${r.status} | ERROR: ${message}`);
       return [];
     }
 
+    const body = r.data;
+    const keys = body && typeof body === 'object' && !Array.isArray(body)
+      ? Object.keys(body).slice(0, 20).join(',')
+      : (Array.isArray(body) ? '[array]' : typeof body);
+    console.log(`[FlashScore Live] HTTP ${r.status} | response keys: ${keys || 'none'}`);
 
-    const r =
-      await axios.get(
-        FLASHSCORE_LIVE_URL,
-        {
-          headers: {
+    // Hỗ trợ các response shape thường gặp mà không tạo dữ liệu giả.
+    const candidates = [
+      body,
+      body?.data,
+      body?.matches,
+      body?.events,
+      body?.response,
+      body?.data?.matches,
+      body?.data?.events,
+      body?.data?.response
+    ];
+    const list = candidates.find(Array.isArray) || [];
 
-            'x-rapidapi-key':
-              PAID_RAPIDAPI_KEY
-                .trim(),
-
-            'x-rapidapi-host':
-              FLASHSCORE_HOST
-
-          },
-
-          timeout: 8000
-        }
-      );
-
-
-    const list = Array.isArray(r.data)
-      ? r.data
-      : (r.data?.data || r.data?.matches || r.data?.events || []);
-    const rows = Array.isArray(list) ? list : [];
-    console.log(`[FlashScore Live] HTTP ${r.status} | live: ${rows.length}`);
-    return rows;
+    console.log(`[FlashScore Live] parsed live: ${list.length}`);
+    return list;
 
   } catch (e) {
-
+    console.log(
+      `[FlashScore Live] REQUEST FAILED | ${e.code || 'ERR'} | ${e.message || 'Unknown error'}`
+    );
     return [];
   }
 }
@@ -2617,12 +2631,14 @@ async function fetchFlashScoreStats(
       }
 
     } catch (e) {
-
+      const status = e.response?.status || 'NO_RESPONSE';
+      const message = e.response?.data?.message || e.response?.data?.error || e.message || 'Unknown error';
+      console.log(`[FlashScore Stats] endpoint ${url} | HTTP ${status} | ${message}`);
       // thử endpoint tiếp
     }
   }
 
-
+  console.log(`[FlashScore Stats] match ${matchId} | không lấy được statistics`);
   return stats;
 }
 
