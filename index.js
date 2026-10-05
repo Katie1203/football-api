@@ -66,7 +66,27 @@ const COUNTRY_MAP = {
     'World': 'Quốc Tế',
     'Europe': 'Châu Âu',
     'Asia': 'Châu Á',
-    'South America': 'Nam Mỹ'
+    'South America': 'Nam Mỹ',
+    'International': 'Quốc Tế',
+    'Finland': 'Phần Lan',
+    'Sweden': 'Thụy Điển',
+    'Belgium': 'Bỉ',
+    'Switzerland': 'Thụy Sĩ',
+    'Greece': 'Hy Lạp',
+    'Romania': 'Romania',
+    'Serbia': 'Serbia',
+    'Slovakia': 'Slovakia',
+    'Slovenia': 'Slovenia',
+    'Hungary': 'Hungary',
+    'Bulgaria': 'Bulgaria',
+    'Ukraine': 'Ukraine',
+    'Scotland': 'Scotland',
+    'Ireland': 'Ireland',
+    'Iceland': 'Iceland',
+    'Finland Amateur': 'Phần Lan Nghiệp Dư',
+    'Norway Amateur': 'Na Uy Nghiệp Dư',
+    'Poland Amateur': 'Ba Lan Nghiệp Dư',
+    'Sweden Amateur': 'Thụy Điển Nghiệp Dư'
 };
 
 const LEAGUE_NAME_MAP = {
@@ -124,31 +144,69 @@ function parseLeagueName(item, source) {
     let tournament = '';
 
     if (source === 'sofascore') {
-        category = item.tournament?.category?.name || item.category?.name || '';
-        tournament = item.tournament?.name || item.competitionName || '';
+        category =
+            item.tournament?.category?.name ||
+            item.category?.name ||
+            item.uniqueTournament?.category?.name ||
+            '';
+        tournament =
+            item.tournament?.name ||
+            item.tournament?.uniqueTournament?.name ||
+            item.uniqueTournament?.name ||
+            item.competitionName ||
+            '';
     } else {
-        category = item._inheritedCategory || item.Cnm || item.categoryName || '';
-        tournament = item._inheritedTournament || item.Snm || item.tournamentName || item.Tname || '';
+        category =
+            item._inheritedCategory ||
+            item.Cname ||
+            item.Cnm ||
+            item.categoryName ||
+            item.country ||
+            '';
+        tournament =
+            item._inheritedTournament ||
+            item.Snm ||
+            item.Tname ||
+            item.tournamentName ||
+            item.LeagueName ||
+            '';
     }
 
-    if (LEAGUE_NAME_MAP[tournament]) {
-        return LEAGUE_NAME_MAP[tournament];
-    }
+    category = String(category || '').trim();
+    tournament = String(tournament || '').trim();
+
+    if (LEAGUE_NAME_MAP[tournament]) return LEAGUE_NAME_MAP[tournament];
 
     const translatedCategory = COUNTRY_MAP[category] || category;
 
+    // Không dùng replace "Division 1 -> Hạng 1" mù quáng nữa:
+    // một số API dùng Division 1 cho giải VĐQG, nên giữ nguyên tên gốc
+    // nếu chưa có mapping chắc chắn.
     let translatedTournament = tournament
         .replace(/\bPremier League\b/gi, 'Giải VĐQG')
-        .replace(/\bDivision 1\b/gi, 'Hạng 1')
-        .replace(/\bDivision 2\b/gi, 'Hạng 2')
         .replace(/\bSuper League\b/gi, 'VĐQG')
-        .replace(/\bCup\b/gi, 'Cúp');
+        .replace(/\bChampionship\b/gi, 'Hạng Nhất')
+        .replace(/\bCup\b/gi, 'Cúp')
+        .replace(/\bWomen\b/gi, 'Nữ')
+        .replace(/\bReserve\b/gi, 'Dự Bị')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    // Các giải amateur / regional: giữ tên giải cụ thể + quốc gia,
+    // tránh biến thành tên chung gây khó đọc log.
+    const categoryLower = category.toLowerCase();
+    const tournamentLower = tournament.toLowerCase();
+    const isAmateur =
+        categoryLower.includes('amateur') ||
+        tournamentLower.includes('amateur');
 
     if (translatedCategory && translatedTournament) {
-        if (translatedTournament.toLowerCase().includes(translatedCategory.toLowerCase())) {
-            return translatedTournament;
-        }
-        return `${translatedTournament} (${translatedCategory})`.trim();
+        const tLower = translatedTournament.toLowerCase();
+        const cLower = translatedCategory.toLowerCase();
+
+        if (tLower.includes(cLower)) return translatedTournament;
+
+        return `${translatedTournament} (${translatedCategory}${isAmateur && !cLower.includes('nghiệp dư') ? ' - Nghiệp Dư' : ''})`;
     }
 
     return translatedTournament || translatedCategory || 'Bóng Đá Quốc Tế';
@@ -471,77 +529,124 @@ async function fetchOddsData() {
 // ==========================================
 // 7. THỐNG KÊ CHI TIẾT TRẬN ĐẤU
 // ==========================================
+async function fetchSofaJson(path, timeout = 6000) {
+    try {
+        const response = await axios.get(`https://${SOFASCORE_HOST}${path}`, {
+            headers: {
+                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': SOFASCORE_HOST
+            },
+            timeout
+        });
+        return response.data;
+    } catch (err) {
+        return null;
+    }
+}
+
+function extractSofaStatistics(data) {
+    let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
+    let shotsOffTarget = 0, blockedShots = 0;
+    let possessionHome = null, possessionAway = null;
+    let foundItems = 0;
+
+    const roots = [];
+    if (Array.isArray(data?.statistics)) roots.push(...data.statistics);
+    if (Array.isArray(data?.stats)) roots.push(...data.stats);
+    if (Array.isArray(data)) roots.push(...data);
+
+    function walk(node) {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) {
+            node.forEach(walk);
+            return;
+        }
+
+        const name = String(node.name || node.slug || node.type || node.title || '').toLowerCase();
+        const hvRaw = node.home ?? node.homeValue ?? node.homeTeam ?? node.valueHome;
+        const avRaw = node.away ?? node.awayValue ?? node.awayTeam ?? node.valueAway;
+        const homeVal = parseInt(String(hvRaw ?? '').replace('%',''), 10);
+        const awayVal = parseInt(String(avRaw ?? '').replace('%',''), 10);
+
+        if (name && (!isNaN(homeVal) || !isNaN(awayVal))) {
+            const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
+            if (name.includes('shots on target') || name.includes('shot on target')) {
+                shotsOnTarget = Math.max(shotsOnTarget, sumVal); foundItems++;
+            } else if (name.includes('shots off target') || name.includes('shot off target')) {
+                shotsOffTarget = Math.max(shotsOffTarget, sumVal); foundItems++;
+            } else if (name.includes('blocked shots') || name.includes('blocked shot')) {
+                blockedShots = Math.max(blockedShots, sumVal); foundItems++;
+            } else if (name.includes('total shots') || name.includes('total shot')) {
+                totalShots = Math.max(totalShots, sumVal); foundItems++;
+            } else if (name.includes('corner')) {
+                corners = Math.max(corners, sumVal); foundItems++;
+            } else if (name.includes('red card')) {
+                redCards = Math.max(redCards, sumVal); foundItems++;
+            } else if (name.includes('ball possession') || name === 'possession' || name.includes('possession')) {
+                if (!isNaN(homeVal) && !isNaN(awayVal)) {
+                    possessionHome = homeVal; possessionAway = awayVal; foundItems++;
+                }
+            }
+        }
+
+        Object.values(node).forEach(v => {
+            if (v && typeof v === 'object') walk(v);
+        });
+    }
+
+    roots.forEach(walk);
+
+    return {
+        foundItems,
+        sofaStats: {
+            shotsOnTarget,
+            totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots),
+            shotsOffTarget,
+            blockedShots,
+            corners,
+            redCards,
+            possession: possessionHome !== null && possessionAway !== null
+                ? `${possessionHome}% - ${possessionAway}%`
+                : null
+        }
+    };
+}
+
 async function fetchMatchDetailStats(matchId, source) {
     if (source === 'sofascore') {
-        try {
-            const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-statistics?eventId=${matchId}`, {
-                headers: {
-                    'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
-                    'x-rapidapi-host': SOFASCORE_HOST
-                },
-                timeout: 6000
-            });
+        const primary = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(matchId)}`);
+        let parsed = extractSofaStatistics(primary);
 
-            let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0, shotsOffTarget = 0, blockedShots = 0;
-            let possessionHome = null, possessionAway = null;
-            
-            const statistics = response.data?.statistics;
-
-            if (Array.isArray(statistics)) {
-                statistics.forEach(period => {
-                    const groups = period.groups || [];
-                    groups.forEach(group => {
-                        const items = group.statisticsItems || [];
-                        items.forEach(st => {
-                            const name = String(st.name || st.slug || '').toLowerCase();
-                            const homeVal = parseInt(st.home, 10);
-                            const awayVal = parseInt(st.away, 10);
-                            const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
-
-                            if (name.includes('shots on target') || name.includes('sút trúng đích')) {
-                                shotsOnTarget = Math.max(shotsOnTarget, sumVal);
-                            } else if (name.includes('shots off target') || name.includes('sút ra ngoài')) {
-                                shotsOffTarget = Math.max(shotsOffTarget, sumVal);
-                            } else if (name.includes('blocked shots') || name.includes('sút bị cản')) {
-                                blockedShots = Math.max(blockedShots, sumVal);
-                            } else if (name.includes('total shots') || name.includes('tổng số cú sút')) {
-                                totalShots = Math.max(totalShots, sumVal);
-                            } else if (name.includes('corner') || name.includes('phạt góc')) {
-                                corners = Math.max(corners, sumVal);
-                            } else if (name.includes('red card') || name.includes('thẻ đỏ')) {
-                                redCards = Math.max(redCards, sumVal);
-                            } else if (name.includes('ball possession') || name.includes('possession') || name.includes('kiểm soát bóng')) {
-                                if (!isNaN(homeVal) && !isNaN(awayVal)) {
-                                    possessionHome = homeVal;
-                                    possessionAway = awayVal;
-                                }
-                            }
-                        });
-                    });
-                });
-            }
-
-            let possessionStr = null;
-            if (possessionHome !== null && possessionAway !== null) {
-                possessionStr = `${possessionHome}% - ${possessionAway}%`;
-            }
-
-            return {
-                sofaStats: { 
-                    shotsOnTarget, 
-                    totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots), 
-                    shotsOffTarget,
-                    blockedShots,
-                    corners, 
-                    redCards,
-                    possession: possessionStr
-                }
-            };
-        } catch (err) {
-            return {
-                sofaStats: { shotsOnTarget: 0, totalShots: 0, shotsOffTarget: 0, blockedShots: 0, corners: 0, redCards: 0, possession: null }
-            };
+        if (parsed.foundItems > 0) {
+            console.log(`    ├─ [STAT OK] matches/get-statistics | fields=${parsed.foundItems}`);
+        } else {
+            console.log(`    ├─ [STAT EMPTY] matches/get-statistics -> thử events/get-statistics`);
+            const legacy = await fetchSofaJson(`/events/get-statistics?eventId=${encodeURIComponent(matchId)}`);
+            parsed = extractSofaStatistics(legacy);
+            console.log(parsed.foundItems > 0
+                ? `    ├─ [STAT OK] events/get-statistics | fields=${parsed.foundItems}`
+                : `    ├─ [STAT EMPTY] cả 2 endpoint statistics`);
         }
+
+        // Graph chỉ bổ sung trạng thái/momentum; không bịa thành shots/corners.
+        const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(matchId)}`);
+        const graphArray =
+            (Array.isArray(graph) && graph) ||
+            graph?.graphPoints ||
+            graph?.points ||
+            graph?.graph ||
+            graph?.data ||
+            [];
+        const graphCount = Array.isArray(graphArray) ? graphArray.length : 0;
+        console.log(graphCount > 0
+            ? `    └─ [GRAPH OK] ${graphCount} điểm graph/momentum`
+            : `    └─ [GRAPH EMPTY] Không có graph/momentum`);
+
+        return {
+            ...parsed,
+            graphData: graphCount > 0 ? graphArray : null,
+            graphAvailable: graphCount > 0
+        };
     } else {
         try {
             const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${matchId}`, {
