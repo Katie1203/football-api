@@ -7181,7 +7181,7 @@ app.listen(
 
 
     console.log(
-      `Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`
+      `Auto scan every ${SCAN_INTERVAL_MS / 5 * 60 * 1000} minutes`
     );
 
 
