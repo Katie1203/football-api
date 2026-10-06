@@ -19,6 +19,11 @@ console.log = (...args) => {
         '[DATA MISSING',
         '[ĐÃ GỬI TELEGRAM]',
         '[AI CHỌN NỔ BÀN]',
+        '[AI CHƯA ĐẠT]',
+        '[AI ĐẠT RULE NHƯNG CHẶN]',
+        '[AI ĐẠT + QUALITY PASS]',
+        '[QUALITY GATE FAIL]',
+        '[QUALITY UNKNOWN]',
         '[MOMENTUM ALERT QUALIFIED]',
         '[API Fetch Error]',
         '[LIVEFOOTBALL LIVE ERROR]',
@@ -2111,7 +2116,7 @@ async function scanLiveMatches() {
                 metrics, oddsAnalysis, numericElapsed, internalMomentum, homeScore, actualAwayScore
             );
 
-            // V17.3.1: mọi trận >=3/5 PHẢI có một dòng kết quả AI trên Render.
+            // V17.3.2: mọi trận >=3/5 PHẢI có một dòng kết quả AI trên Render; compact logger cho phép các dòng AI này.
             // Log này đặt ngay sau evaluate để không bị mất bởi các gate cảnh báo phía sau.
             {
                 const ruleNow = Number(aiAnalysis.efficiency);
