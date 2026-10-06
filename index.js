@@ -31,9 +31,12 @@ const ODDS_API_URL = `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey
 
 const sentAlerts = new Set();
 
-// V12: trạng thái cảnh báo theo trận. Tối đa 2 tin/trận trong một phiên chạy.
+// V16.3: trạng thái cảnh báo theo trận. Tối đa 3 tin/trận trong một phiên chạy.
 const alertStates = new Map();
 const SECOND_ALERT_WINDOW_MINUTES = 10;
+const THIRD_ALERT_WINDOW_MINUTES = 10;
+const BIGGGG_ODDS_MIN = 1.50;
+const BIGGGG_ODDS_MAX = 2.00;
 
 function makeMatchSnapshot(metrics, rule, minute, homeScore, awayScore) {
     const s = metrics?.sofaStats || {};
@@ -81,6 +84,42 @@ function detectTenMinuteSpike(previous, current) {
     if (dCornerRate >= 1.5) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
 
     return { isSpike: current.rule >= 58 && reasons.length > 0, reasons, deltaMinute: dm };
+}
+
+function isBiggggOddsOK(oddsAnalysis) {
+    const price = Number(oddsAnalysis?.odds);
+    return Number.isFinite(price) && price >= BIGGGG_ODDS_MIN && price <= BIGGGG_ODDS_MAX;
+}
+
+function detectExtremeSpike(previous, current) {
+    if (!previous || !current) return { isSpike: false, reasons: [] };
+    const dm = current.minute - previous.minute;
+    if (dm < 0 || dm > THIRD_ALERT_WINDOW_MINUTES) return { isSpike: false, reasons: [] };
+
+    const reasons = [];
+    const dRule = current.rule - previous.rule;
+    const dSot = current.shotsOnTarget - previous.shotsOnTarget;
+    const dShots = current.totalShots - previous.totalShots;
+    const dCorners = current.corners - previous.corners;
+    const dRed = current.redCards - previous.redCards;
+    const dGoals = (current.homeScore + current.awayScore) - (previous.homeScore + previous.awayScore);
+    const dShotsRate = current.shotsRate - previous.shotsRate;
+    const dSotRate = current.sotRate - previous.sotRate;
+    const dCornerRate = current.cornerRate - previous.cornerRate;
+
+    if (dRule >= 10) reasons.push(`Rule +${dRule.toFixed(1)}%`);
+    if (dSot >= 3) reasons.push(`Sút trúng đích +${dSot}`);
+    if (dShots >= 5) reasons.push(`Tổng sút +${dShots}`);
+    if (dCorners >= 3) reasons.push(`Phạt góc +${dCorners}`);
+    if (dRed >= 1) reasons.push(`Thẻ đỏ mới +${dRed}`);
+    if (dGoals >= 1 && (dShots >= 2 || dSot >= 1 || dCorners >= 1 || dShotsRate >= 2 || dSotRate >= 1)) {
+        reasons.push(`Bàn thắng mới +${dGoals} kèm áp lực tiếp tục tăng`);
+    }
+    if (dShotsRate >= 4) reasons.push(`Mật độ tổng sút +${dShotsRate.toFixed(1)} điểm`);
+    if (dSotRate >= 2) reasons.push(`Mật độ SOT +${dSotRate.toFixed(1)} điểm`);
+    if (dCornerRate >= 2) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
+
+    return { isSpike: current.rule >= 60 && reasons.length > 0, reasons, deltaMinute: dm };
 }
 
 function getVietnamTime() {
@@ -509,83 +548,97 @@ function isEligibleLiveMatch(item, source, minMinute = 60, maxMinute = 92) {
 // 4. LẤY DỮ LIỆU KÉP (SOFASCORE & LIVESCORE6 KẾT HỢP ĐẶC BIỆT)
 // ==========================================
 async function fetchLiveMatchesDualSource() {
+    // V16.2: KHÔNG return sớm khi SofaScore có trận.
+    // Gộp discovery SofaScore + Livescore6 để tránh bỏ sót giải/trận mà Sofa không liệt kê.
+    // LiveFootball vẫn giữ vai trò fallback Stats; response.live hiện chưa có mẫu object không-rỗng để map discovery an toàn.
+    const collected = [];
+    const seen = new Set();
+
+    function normName(v='') {
+        return String(v || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+            .replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+    }
+    function getNames(item, source) {
+        if (source === 'sofascore') return [item.homeTeam?.name || '', item.awayTeam?.name || ''];
+        return [
+            (item.T1 && item.T1[0] && (item.T1[0].Nm || item.T1[0].Name)) || item.homeTeam?.name || '',
+            (item.T2 && item.T2[0] && (item.T2[0].Nm || item.T2[0].Name)) || item.awayTeam?.name || ''
+        ];
+    }
+    function addEligible(item, source) {
+        if (!item) return;
+        const [home, away] = getNames(item, source);
+        const league = parseLeagueName(item, source);
+        const minute = calculateExactMinute(item, source);
+        const isU21 = /\bu[\s-]?21\b|\bunder[\s-]?21\b/i.test(`${league} ${home} ${away}`);
+
+        if (isFilteredLeague(league, home, away)) {
+            if (isU21) console.log(`    ⚠️ [FILTER CHECK U21] Bị loại bởi league filter: ${home} vs ${away} | ${league}`);
+            return;
+        }
+        if (!Number.isFinite(Number(minute)) || Number(minute) < 60 || Number(minute) > 92 || Number(minute) === 999) {
+            if (isU21) console.log(`    ⏱️ [REJECT MINUTE U21] ${home} vs ${away} | ${minute}' | ${league}`);
+            return;
+        }
+
+        // Deduplicate xuyên nguồn theo cặp tên đội; ưu tiên bản Sofa vì được add trước.
+        const key = `${normName(home)}__${normName(away)}`;
+        const reverseKey = `${normName(away)}__${normName(home)}`;
+        if (seen.has(key) || seen.has(reverseKey)) return;
+        seen.add(key);
+        collected.push({ ...item, _scanSource: source });
+        if (isU21) console.log(`    ✅ [KEEP U21] ${home} vs ${away} | ${minute}' | ${league} | source=${source}`);
+    }
+
+    // 1) SofaScore discovery
     try {
         const response = await axios.get(SOFASCORE_LIVE_URL, {
-            headers: {
-                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
-                'x-rapidapi-host': SOFASCORE_HOST
-            },
+            headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
             timeout: 10000
         });
         const events = response.data?.events || response.data?.liveEvents || [];
-        // PRE-API GATE: loại giải + rào phút trước mọi API Stats/Graph/Incidents.
-        const eligibleEvents = events.filter(item => passesPreApiGate(item, 'sofascore'));
-        if (eligibleEvents.length > 0) {
-            console.log(`[Source: SofaScore] Tổng live=${events.length} | Qua PRE-API GATE (giải + phút 60-92)=${eligibleEvents.length}`);
-            return { source: 'sofascore', matches: eligibleEvents };
-        }
-        if (events.length > 0) {
-            console.log(`[Source: SofaScore] Tổng live=${events.length} | Không có trận hợp lệ 60-92 -> thử Livescore6.`);
-        }
+        const before = collected.length;
+        for (const item of events) addEligible(item, 'sofascore');
+        console.log(`[Source: SofaScore] Tổng live=${events.length} | Qua PRE-API GATE (giải + phút 60-92)=${collected.length-before}`);
     } catch (err) {
-        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> Đang chuyển sang nguồn dự phòng Livescore6...`);
+        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> vẫn tiếp tục discovery Livescore6...`);
     }
 
+    // 2) Livescore6 discovery luôn chạy để BỔ SUNG trận SofaScore bỏ sót.
     try {
         const currentVN = getVietnamTime();
-        // Gọi song song cả 2 endpoint: list-live (lấy ngay lập tức các trận đang đá) và list-by-date (lấy toàn bộ các giải trong ngày)
         const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
         const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
-
         const [resLive, resDate] = await Promise.all([
-            axios.get(liveUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null })),
-            axios.get(dateUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({ data: null }))
+            axios.get(liveUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({data:null})),
+            axios.get(dateUrl, { headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST }, timeout: 10000 }).catch(() => ({data:null}))
         ]);
-
-        let rawData = [];
-        const seenIds = new Set();
-
-        function processMatchObject(obj, cat = '', tour = '') {
+        const localSeenIds = new Set();
+        let candidates = 0, added = 0;
+        function walk(obj, cat='', tour='') {
             if (!obj || typeof obj !== 'object') return;
-
             const matchId = String(obj.Eid || obj.id || obj.MatchId || '');
             const hasTeams = obj.T1 || obj.homeTeam || obj.T2 || obj.AwayTeam || (obj.Home && obj.Away);
-
-            if (matchId && hasTeams && !seenIds.has(matchId)) {
-                const enriched = {
-                    ...obj,
+            if (matchId && hasTeams && !localSeenIds.has(matchId)) {
+                localSeenIds.add(matchId); candidates++;
+                const enriched = { ...obj,
                     _inheritedCategory: obj.Cname || obj.categoryName || obj.country || obj.Cnm || cat,
                     _inheritedTournament: obj.Snm || obj.Tname || obj.tournamentName || obj.LeagueName || tour
                 };
-
-                // PRE-API GATE: loại giải rác + rào phút 60–92 ngay tại tầng thu thập.
-                // Trận không đạt sẽ không bao giờ đi tới Statistics/Graph/Incidents.
-                if (passesPreApiGate(enriched, 'livescore6')) {
-                    seenIds.add(matchId);
-                    rawData.push(enriched);
-                }
+                const n0=collected.length; addEligible(enriched,'livescore6'); if(collected.length>n0) added++;
             }
-
-            for (const key of Object.keys(obj)) {
-                if (obj[key] !== null && typeof obj[key] === 'object') {
-                    processMatchObject(
-                        obj[key], 
-                        obj.Cname || obj.categoryName || cat, 
-                        obj.Snm || obj.Tname || tour
-                    );
-                }
-            }
+            for (const key of Object.keys(obj)) if (obj[key] !== null && typeof obj[key] === 'object')
+                walk(obj[key], obj.Cname || obj.categoryName || cat, obj.Snm || obj.Tname || tour);
         }
-
-        if (resLive && resLive.data) processMatchObject(resLive.data);
-        if (resDate && resDate.data) processMatchObject(resDate.data);
-
-        console.log(`[Source: Livescore6] Qua PRE-API GATE từ đầu (giải + phút 60-92): ${rawData.length} trận.`);
-        return { source: 'livescore6', matches: rawData };
+        if (resLive.data) walk(resLive.data);
+        if (resDate.data) walk(resDate.data);
+        console.log(`[Source: Livescore6] Candidate=${candidates} | Bổ sung sau PRE-API GATE + dedupe=${added}`);
     } catch (err) {
-        console.error(`❌ [Livescore6 Backup Error]:`, err.message);
-        return { source: 'none', matches: [] };
+        console.error(`❌ [Livescore6 Discovery Error]: ${err.message}`);
     }
+
+    console.log(`[DISCOVERY MERGED] Tổng trận hợp lệ 60-92 sau gộp nguồn=${collected.length}`);
+    return { source: 'mixed', matches: collected };
 }
 
 // ==========================================
@@ -1538,11 +1591,13 @@ function predictFullTimeScore(metrics, ruleEfficiency, homeScore, awayScore, ela
 // ==========================================
 async function sendTelegramAlert(item) {
     const timeDisplay = `Phút ${item.elapsed}'`;
-    const alertHeader = item.alertNumber === 2
-        ? `🚨 ĐỘT BIẾN 10 PHÚT - CẢNH BÁO LẦN 2 🚨`
-        : `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})`;
-    const spikeBlock = item.alertNumber === 2 && item.spikeReasons?.length
-        ? `\n⚡ CHỈ SỐ ĐỘT BIẾN: ${item.spikeReasons.join(' | ')}`
+    const alertHeader = item.alertNumber === 3
+        ? `🚨🔥🔥🔥 BIGGGG LẦN 3 🔥🔥🔥🚨`
+        : item.alertNumber === 2
+            ? `🔥🔥🔥 BIGGGG LẦN 2 🔥🔥🔥`
+            : `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})`;
+    const spikeBlock = item.alertNumber >= 2 && item.spikeReasons?.length
+        ? `\n⚡ CHỈ SỐ ĐỘT BIẾN: ${item.spikeReasons.join(' | ')}\n💰 Điều kiện BIGGGG: Odds Over ${item.goalOdds} (yêu cầu ${BIGGGG_ODDS_MIN.toFixed(2)}–${BIGGGG_ODDS_MAX.toFixed(2)})`
         : '';
 
     const message =
@@ -1600,10 +1655,11 @@ async function scanLiveMatches() {
 
         for (let index = 0; index < matches.length; index++) {
             const item = matches[index];
+            const itemSource = item._scanSource || source;
             
             let matchId, homeName, awayName, homeScore, actualAwayScore;
 
-            if (source === 'sofascore') {
+            if (itemSource === 'sofascore') {
                 matchId = String(item.id);
                 homeName = item.homeTeam?.name || 'Đội nhà';
                 awayName = item.awayTeam?.name || 'Đội khách';
@@ -1622,33 +1678,41 @@ async function scanLiveMatches() {
             if (isNaN(homeScore)) homeScore = 0;
             if (isNaN(actualAwayScore)) actualAwayScore = 0;
 
-            const leagueName = parseLeagueName(item, source);
+            const leagueName = parseLeagueName(item, itemSource);
 
             // Safety guard: bình thường đã được lọc ngay từ tầng fetch.
             if (isFilteredLeague(leagueName, homeName, awayName)) continue;
 
-            const elapsed = calculateExactMinute(item, source);
+            const elapsed = calculateExactMinute(item, itemSource);
             const numericElapsed = typeof elapsed === 'number' ? elapsed : parseInt(elapsed, 10);
 
             // Safety guard: 0/HT/FT/999 và ngoài 60-92 đã bị rào từ đầu.
             if (!Number.isFinite(numericElapsed) || numericElapsed < 60 || numericElapsed > 92 || numericElapsed === 999) continue;
 
-            console.log(`[Đang Phân Tích (${source.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
+            console.log(`[Đang Phân Tích (${itemSource.toUpperCase()})] [ID: ${matchId}] [Phút: ${numericElapsed}'] [${leagueName}] ${homeName} ${homeScore}-${actualAwayScore} ${awayName}`);
 
             const existingAlertState = alertStates.get(String(matchId));
-            if (existingAlertState?.sendCount >= 2) {
-                console.log(`    🔒 [ĐÃ GỬI ĐỦ 2 LẦN] ${homeName} - ${awayName}`);
-                continue;
-            }
-            if (existingAlertState && (numericElapsed - existingAlertState.firstSnapshot.minute) > SECOND_ALERT_WINDOW_MINUTES) {
-                console.log(`    🔒 [HẾT 10 PHÚT THEO DÕI LẦN 2] ${homeName} - ${awayName}`);
+            if (existingAlertState?.sendCount >= 3) {
+                console.log(`    🔒 [ĐÃ GỬI ĐỦ 3 LẦN] ${homeName} - ${awayName} | dừng theo dõi cảnh báo trận này`);
                 continue;
             }
 
-            const metrics = await fetchMatchDetailStats(matchId, source, homeName, awayName);
+            // Sau lần 1: tối đa 10 phút để tìm BIGGGG LẦN 2.
+            if (existingAlertState?.sendCount === 1 && (numericElapsed - existingAlertState.firstSnapshot.minute) > SECOND_ALERT_WINDOW_MINUTES) {
+                console.log(`    🔒 [HẾT 10 PHÚT THEO DÕI BIGGGG LẦN 2] ${homeName} - ${awayName}`);
+                continue;
+            }
+            // Sau lần 2: mở một cửa sổ 10 phút MỚI, so với snapshot lần 2 để tìm BIGGGG LẦN 3.
+            if (existingAlertState?.sendCount === 2 && existingAlertState.secondSnapshot &&
+                (numericElapsed - existingAlertState.secondSnapshot.minute) > THIRD_ALERT_WINDOW_MINUTES) {
+                console.log(`    🔒 [HẾT 10 PHÚT THEO DÕI BIGGGG LẦN 3] ${homeName} - ${awayName}`);
+                continue;
+            }
+
+            const metrics = await fetchMatchDetailStats(matchId, itemSource, homeName, awayName);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
 
-            if (source === 'sofascore' && metrics.statsAvailable === false) {
+            if (itemSource === 'sofascore' && metrics.statsAvailable === false) {
                 console.log(`    ⚠️ [DATA MISSING ≠ ZERO] Không chấm giả Base 28%. Sẽ thử resolver lại ở vòng quét sau.`);
                 continue;
             }
@@ -1656,23 +1720,33 @@ async function scanLiveMatches() {
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
             const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
 
-            let alertNumber = existingAlertState ? 2 : 1;
+            let alertNumber = existingAlertState ? existingAlertState.sendCount + 1 : 1;
             let spikeInfo = null;
             let shouldAlertNow = false;
+            const oddsOK = isBiggggOddsOK(oddsAnalysis);
 
             if (!existingAlertState) {
+                // Lần 1 giữ nguyên: Rule > 60%, Odds chỉ tham khảo và KHÔNG làm gate.
                 shouldAlertNow = aiAnalysis.shouldSend;
-            } else {
+            } else if (existingAlertState.sendCount === 1) {
                 spikeInfo = detectTenMinuteSpike(existingAlertState.firstSnapshot, currentSnapshot);
-                shouldAlertNow = spikeInfo.isSpike;
+                shouldAlertNow = spikeInfo.isSpike && oddsOK;
                 if (!shouldAlertNow) {
-                    console.log(`    👀 [THEO DÕI ĐỘT BIẾN] phút ${numericElapsed}' | Rule ${aiAnalysis.efficiency}% | chưa đủ điều kiện lần 2`);
+                    const oddsText = oddsAnalysis?.odds ?? 'N/A';
+                    console.log(`    👀 [THEO DÕI BIGGGG LẦN 2] phút ${numericElapsed}' | Rule ${aiAnalysis.efficiency}% | spike=${spikeInfo.isSpike ? 'YES' : 'NO'} | Odds=${oddsText} | cần 1.50-2.00`);
+                }
+            } else if (existingAlertState.sendCount === 2) {
+                spikeInfo = detectExtremeSpike(existingAlertState.secondSnapshot, currentSnapshot);
+                shouldAlertNow = spikeInfo.isSpike && oddsOK;
+                if (!shouldAlertNow) {
+                    const oddsText = oddsAnalysis?.odds ?? 'N/A';
+                    console.log(`    👀 [THEO DÕI BIGGGG LẦN 3] phút ${numericElapsed}' | Rule ${aiAnalysis.efficiency}% | extreme=${spikeInfo.isSpike ? 'YES' : 'NO'} | Odds=${oddsText} | cần 1.50-2.00`);
                 }
             }
 
             if (shouldAlertNow) {
-                const goalTimeline = await fetchMatchIncidents(matchId, source, homeScore, actualAwayScore);
-                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%)`);
+                const goalTimeline = await fetchMatchIncidents(matchId, itemSource, homeScore, actualAwayScore);
+                console.log(`    └─> [AI CHỌN NỔ BÀN] (${aiAnalysis.efficiency}%) | Cảnh báo ${alertNumber}`);
 
                 const ftPrediction = predictFullTimeScore(
                     metrics,
@@ -1684,7 +1758,7 @@ async function scanLiveMatches() {
 
                 const pickItem = {
                     id: matchId,
-                    source,
+                    source: itemSource,
                     league: leagueName,
                     homeName,
                     awayName,
@@ -1696,17 +1770,20 @@ async function scanLiveMatches() {
                     ruleEfficiency: aiAnalysis.efficiency,
                     ftPrediction,
                     alertNumber,
-                    spikeReasons: spikeInfo?.reasons || []
+                    spikeReasons: spikeInfo?.reasons || [],
+                    goalOdds: oddsAnalysis?.odds ?? 'N/A'
                 };
                 await sendTelegramAlert(pickItem);
                 if (sentAlerts.has(String(matchId))) {
                     if (!existingAlertState) {
                         alertStates.set(String(matchId), { sendCount: 1, firstSnapshot: currentSnapshot });
-                    } else {
+                    } else if (existingAlertState.sendCount === 1) {
                         alertStates.set(String(matchId), { ...existingAlertState, sendCount: 2, secondSnapshot: currentSnapshot });
+                    } else {
+                        alertStates.set(String(matchId), { ...existingAlertState, sendCount: 3, thirdSnapshot: currentSnapshot });
                     }
                 }
-            } else {
+            } else if (!existingAlertState) {
                 console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
             }
         }
@@ -1724,7 +1801,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V16.1: LIVEFOOTBALL response.live FIX | DATA MISSING FIX | V15 LOGIC PRESERVED`);
+    console.log(`🛟 BUILD V16.3: V16.2 + 3 ALERTS | BIGGGG L2/L3 ODDS 1.50-2.00 | MERGED DISCOVERY + U21 TRACE`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
