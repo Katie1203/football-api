@@ -777,7 +777,50 @@ function extractSofaStatistics(data) {
     };
 }
 
-async function fetchMatchDetailStats(matchId, source) {
+
+function extractEventArrayDeep(data) {
+    const out=[], seen=new Set();
+    function walk(n) {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        const id=n.id ?? n.eventId ?? n.matchId;
+        const h=n.homeTeam?.name ?? n.home?.name ?? n.homeName;
+        const a=n.awayTeam?.name ?? n.away?.name ?? n.awayName;
+        if (id && h && a && !seen.has(String(id))) { seen.add(String(id)); out.push(n); }
+        Object.values(n).forEach(v=>{ if(v && typeof v==='object') walk(v); });
+    }
+    walk(data); return out;
+}
+function teamSimilarity(a,b) {
+    const x=cleanTeamName(a), y=cleanTeamName(b);
+    if(!x||!y) return 0;
+    if(x===y) return 1;
+    if(x.includes(y)||y.includes(x)) return .88;
+    const tok=s=>String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(q=>q.length>=2);
+    const A=new Set(tok(a)), B=new Set(tok(b)); if(!A.size||!B.size)return 0;
+    let hit=0; for(const q of A) if(B.has(q)) hit++;
+    return 2*hit/(A.size+B.size);
+}
+async function resolveSofaEventIdByName(homeName,awayName,originalId) {
+    console.log(`    🔎 [DEEP RESOLVER] ${homeName} vs ${awayName}`);
+    const live=await fetchSofaJson(`/tournaments/get-live-events?sport=football`,8000);
+    let best=null,bestScore=0;
+    for(const ev of extractEventArrayDeep(live)){
+        const h=ev.homeTeam?.name??ev.home?.name??ev.homeName??'';
+        const a=ev.awayTeam?.name??ev.away?.name??ev.awayName??'';
+        const score=Math.max((teamSimilarity(homeName,h)+teamSimilarity(awayName,a))/2,
+                             (teamSimilarity(homeName,a)+teamSimilarity(awayName,h))/2);
+        if(score>bestScore){bestScore=score;best=ev;}
+    }
+    if(best && bestScore>=.68){
+        const id=String(best.id??best.eventId??best.matchId);
+        console.log(`    ✅ [MATCH-BY-NAME] score=${bestScore.toFixed(2)} | ${originalId} -> ${id}`);
+        return id;
+    }
+    console.log(`    ❌ [MATCH-BY-NAME] Không tìm thấy ID đủ tin cậy | best=${bestScore.toFixed(2)}`);
+    return null;
+}
+async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = '') {
     if (source === 'sofascore') {
         const primary = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(matchId)}`);
         let parsed = extractSofaStatistics(primary);
@@ -793,8 +836,28 @@ async function fetchMatchDetailStats(matchId, source) {
                 : `    ├─ [STAT EMPTY] cả 2 endpoint statistics`);
         }
 
-        // Graph chỉ bổ sung trạng thái/momentum; không bịa thành shots/corners.
-        const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(matchId)}`);
+        let effectiveMatchId = String(matchId);
+
+        // V14: nếu ID hiện tại không trả stats, tìm lại event ID theo tên 2 đội.
+        if (parsed.foundItems === 0 && homeName && awayName) {
+            console.log(`    🛟 [FALLBACK] Kích hoạt MATCH-BY-NAME vì statistics rỗng`);
+            const resolvedId = await resolveSofaEventIdByName(homeName, awayName, matchId);
+            if (resolvedId && resolvedId !== String(matchId)) {
+                effectiveMatchId = resolvedId;
+                let retry = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(effectiveMatchId)}`);
+                parsed = extractSofaStatistics(retry);
+                if (parsed.foundItems === 0) {
+                    retry = await fetchSofaJson(`/events/get-statistics?eventId=${encodeURIComponent(effectiveMatchId)}`);
+                    parsed = extractSofaStatistics(retry);
+                }
+                console.log(parsed.foundItems > 0
+                    ? `    ✅ [DEEP STAT OK] ID=${effectiveMatchId} | fields=${parsed.foundItems}`
+                    : `    ⚠️ [DEEP STAT EMPTY] ID=${effectiveMatchId}`);
+            }
+        }
+
+        // Graph dùng ID đã resolve nếu có.
+        const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(effectiveMatchId)}`);
         const graphArray =
             (Array.isArray(graph) && graph) ||
             graph?.graphPoints ||
@@ -809,6 +872,8 @@ async function fetchMatchDetailStats(matchId, source) {
 
         return {
             ...parsed,
+            statsAvailable: parsed.foundItems > 0,
+            resolvedMatchId: effectiveMatchId,
             graphData: graphCount > 0 ? graphArray : null,
             graphAvailable: graphCount > 0
         };
@@ -1248,8 +1313,14 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            const metrics = await fetchMatchDetailStats(matchId, source);
+            const metrics = await fetchMatchDetailStats(matchId, source, homeName, awayName);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
+
+            if (source === 'sofascore' && metrics.statsAvailable === false) {
+                console.log(`    ⚠️ [DATA MISSING ≠ ZERO] Không chấm giả Base 28%. Sẽ thử resolver lại ở vòng quét sau.`);
+                continue;
+            }
+
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
             const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
 
@@ -1321,7 +1392,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🧠 BUILD V13: RATE/PER-MINUTE AI | SECOND ALERT 10-MIN SPIKE | ODDS CONTEXT ONLY`);
+    console.log(`🛟 BUILD V14: DEEP RESOLVER + MATCH-BY-NAME | RATE/PER-MINUTE AI`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
