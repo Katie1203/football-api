@@ -244,7 +244,7 @@ function detectInternalMomentum(previous, current) {
     if (dTouches >= 6) { score += 1; reasons.push(`Touches opp. box +${dTouches}`); }
 
     // Strong = nhiều tín hiệu đồng thời. Không cộng trực tiếp vào Rule.
-    return { isStrong: score >= 4, score, reasons, deltaMinute: dm };
+    return { isStrong: score >= 4, score, reasons, deltaMinute: dm, deltas: { shots: dShots, sot: dSot, corners: dCorners, xg: dXg, bigChances: dBig, shotsInsideBox: dInside, touchesOppBox: dTouches } };
 }
 
 function getVietnamTime() {
@@ -1669,25 +1669,21 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 // 8. THUẬT TOÁN AI
 // ==========================================
-function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
+function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumContext = null, homeScore = 0, awayScore = 0) {
     let matchAnalysis = [];
-    let aiPercentage = 28.0; // Base giữ nguyên
+    let aiPercentage = 28.0; // Giữ Base 28 theo cấu hình hiện tại; AI V2 bổ sung quality/penalty, không đổi Base.
     const stats = metrics.sofaStats || {};
     const minute = Math.max(1, Number(elapsedMinute) || 1);
     let hasTacticalData = false;
 
     if (metrics.partialStats) {
-        matchAnalysis.push(`🛟 PARTIAL DATA: thống kê lấy từ nguồn dự phòng ${metrics.statsSource || 'cross-source'}; chỉ tính các chỉ số thực sự lấy được`);
+        matchAnalysis.push(`🛟 PARTIAL DATA: ${metrics.statsSource || 'cross-source'}; chỉ tính field thực sự có dữ liệu`);
     }
 
-    // V13 NEW AI:
-    // Chỉ số dạng số lần = số lần / phút hiện tại * 100.
-    // Total Shots dùng 100% giá trị.
-    // SOT chỉ cộng 50% giá trị để hạn chế đếm trùng vì SOT đã nằm trong Total Shots.
-    // Corners dùng 100% giá trị.
     const totalShots = Math.max(0, Number(stats.totalShots) || 0);
     const shotsOnTarget = Math.max(0, Number(stats.shotsOnTarget) || 0);
     const corners = Math.max(0, Number(stats.corners) || 0);
+    const redCards = Math.max(0, Number(stats.redCards) || 0);
 
     const shotsRate = (totalShots / minute) * 100;
     const sotRateRaw = (shotsOnTarget / minute) * 100;
@@ -1696,64 +1692,111 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
 
     if (totalShots > 0) {
         aiPercentage += shotsRate;
-        matchAnalysis.push(`🔥 Tổng sút: ${totalShots} | ${totalShots}/${minute}×100 = ${shotsRate.toFixed(2)}% (Cộng ${shotsRate.toFixed(2)}%)`);
+        matchAnalysis.push(`🔥 Tổng sút: +${shotsRate.toFixed(2)}%`);
         hasTacticalData = true;
     }
-
     if (shotsOnTarget > 0) {
         aiPercentage += sotContribution;
-        matchAnalysis.push(`🎯 Sút trúng đích: ${shotsOnTarget} | ${shotsOnTarget}/${minute}×100 = ${sotRateRaw.toFixed(2)}% × 50% = ${sotContribution.toFixed(2)}%`);
+        matchAnalysis.push(`🎯 SOT: +${sotContribution.toFixed(2)}%`);
         hasTacticalData = true;
     }
-
     if (corners > 0) {
         aiPercentage += cornerRate;
-        matchAnalysis.push(`🚩 Phạt góc: ${corners} | ${corners}/${minute}×100 = ${cornerRate.toFixed(2)}% (Cộng ${cornerRate.toFixed(2)}%)`);
+        matchAnalysis.push(`🚩 Góc: +${cornerRate.toFixed(2)}%`);
         hasTacticalData = true;
     }
 
-    // Possession là % sẵn có nên KHÔNG chia cho phút.
-    // Giảm trọng số so với V12 để các chỉ số nhịp trận là phần chính của AI.
-    if (stats.possession) {
-        matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
-        const possParts = stats.possession.split('-');
-        if (possParts.length === 2) {
-            const homePoss = parseInt(possParts[0].trim(), 10) || 50;
-            const awayPoss = parseInt(possParts[1].trim(), 10) || 50;
-            const maxPoss = Math.max(homePoss, awayPoss);
+    // AI V2 - CHANCE QUALITY: phân biệt ép sân nguy hiểm và ép sân vô hại.
+    let chanceQualityAdjustment = 0;
+    const sotShotRatio = totalShots > 0 ? shotsOnTarget / totalShots : null;
+    if (totalShots >= 6 && sotShotRatio !== null) {
+        if (sotShotRatio >= 0.40) chanceQualityAdjustment += 8;
+        else if (sotShotRatio >= 0.30) chanceQualityAdjustment += 5;
+        else if (sotShotRatio < 0.15) chanceQualityAdjustment -= 8;
+        else if (sotShotRatio < 0.22) chanceQualityAdjustment -= 4;
+        if (chanceQualityAdjustment !== 0) {
+            aiPercentage += chanceQualityAdjustment;
+            matchAnalysis.push(`🎯 Chance Quality ${(sotShotRatio * 100).toFixed(0)}%: ${chanceQualityAdjustment > 0 ? '+' : ''}${chanceQualityAdjustment}%`);
+        }
+    }
 
-            if (maxPoss >= 70) {
-                aiPercentage += 8.0;
-                matchAnalysis.push(`    └─> Kiểm soát áp đảo ${maxPoss}% (Cộng 8.0%)`);
-                hasTacticalData = true;
-            } else if (maxPoss >= 60) {
-                aiPercentage += 5.0;
-                matchAnalysis.push(`    └─> Kiểm soát lấn lướt ${maxPoss}% (Cộng 5.0%)`);
+    // Possession chỉ mạnh khi đi cùng chất lượng cơ hội; cầm bóng nhiều nhưng ít SOT không còn được cộng lớn.
+    let possessionAdjustment = 0;
+    let maxPoss = 50;
+    if (stats.possession) {
+        const possParts = String(stats.possession).split('-');
+        if (possParts.length === 2) {
+            const homePoss = parseInt(possParts[0], 10) || 50;
+            const awayPoss = parseInt(possParts[1], 10) || 50;
+            maxPoss = Math.max(homePoss, awayPoss);
+            const qualityAttack = shotsOnTarget >= 3 || (sotShotRatio !== null && sotShotRatio >= 0.25);
+            if (maxPoss >= 70) possessionAdjustment = qualityAttack ? 8 : 1;
+            else if (maxPoss >= 60) possessionAdjustment = qualityAttack ? 5 : 1;
+            if (possessionAdjustment) {
+                aiPercentage += possessionAdjustment;
+                matchAnalysis.push(`📊 Possession ${maxPoss}%: +${possessionAdjustment}%`);
                 hasTacticalData = true;
             }
         }
     }
 
-    // Thẻ đỏ là biến bối cảnh, không áp dụng số lần/phút.
-    if ((Number(stats.redCards) || 0) > 0) {
-        aiPercentage += 10.0;
-        matchAnalysis.push(`🟥 Thẻ đỏ: ${stats.redCards} (Yếu tố thay đổi thế trận - cộng 10.0%)`);
+    // Sterile pressure: nhiều sút/góc/cầm bóng nhưng chất lượng dứt điểm thấp.
+    let sterilePenalty = 0;
+    if (totalShots >= 12 && shotsOnTarget <= 2) sterilePenalty -= 8;
+    else if (totalShots >= 9 && shotsOnTarget <= 1) sterilePenalty -= 6;
+    if (maxPoss >= 65 && totalShots >= 8 && shotsOnTarget <= 1) sterilePenalty -= 4;
+    if (corners >= 7 && shotsOnTarget <= 2) sterilePenalty -= 3;
+    if (sterilePenalty < 0) {
+        aiPercentage += sterilePenalty;
+        matchAnalysis.push(`🧊 Sterile Pressure: ${sterilePenalty}%`);
+    }
+
+    // Recent momentum 5-10 phút: ưu tiên SOT; shots/corners đơn thuần chỉ có trọng số nhỏ.
+    let momentumAdjustment = 0;
+    if (momentumContext && Number(momentumContext.deltaMinute) > 0 && Number(momentumContext.deltaMinute) <= 10) {
+        const d = momentumContext.deltas || {};
+        if ((d.sot || 0) >= 2) momentumAdjustment += 8;
+        else if ((d.sot || 0) >= 1) momentumAdjustment += 4;
+        if ((d.shots || 0) >= 4) momentumAdjustment += (d.sot || 0) > 0 ? 3 : 1;
+        if ((d.corners || 0) >= 2) momentumAdjustment += (d.sot || 0) > 0 ? 2 : 1;
+        // 5-10 phút có áp lực nhưng không tạo thêm SOT => attack decay/stale pressure.
+        if ((d.sot || 0) <= 0 && ((d.shots || 0) >= 4 || (d.corners || 0) >= 3)) momentumAdjustment -= 6;
+        if (momentumAdjustment !== 0) {
+            aiPercentage += momentumAdjustment;
+            matchAnalysis.push(`⚡ Recent Momentum: ${momentumAdjustment > 0 ? '+' : ''}${momentumAdjustment}%`);
+        }
+    }
+
+    // Game state/time state: đội/trận cần bàn ở giai đoạn cuối được cộng nhẹ; 89-92 giảm vì thời gian còn rất ít.
+    let gameStateAdjustment = 0;
+    const totalGoals = (Number(homeScore) || 0) + (Number(awayScore) || 0);
+    if (minute >= 70 && minute <= 85 && Number(homeScore) !== Number(awayScore)) gameStateAdjustment += 3;
+    if (minute >= 75 && minute <= 87 && Number(homeScore) === Number(awayScore)) gameStateAdjustment += 2;
+    if (minute >= 89) gameStateAdjustment -= 5;
+    if (totalGoals >= 5) gameStateAdjustment -= 2; // tránh quá tin vào trận đã có quá nhiều bàn.
+    if (gameStateAdjustment !== 0) {
+        aiPercentage += gameStateAdjustment;
+        matchAnalysis.push(`⏱️ Game State: ${gameStateAdjustment > 0 ? '+' : ''}${gameStateAdjustment}%`);
+    }
+
+    // Red card context: vẫn dùng dữ liệu thật nhưng giảm cộng mù từ +10 xuống tác động có kiểm soát.
+    let redCardAdjustment = 0;
+    if (redCards > 0) {
+        redCardAdjustment = shotsOnTarget >= 2 ? 7 : 3;
+        aiPercentage += redCardAdjustment;
+        matchAnalysis.push(`🟥 Red Card context: +${redCardAdjustment}%`);
         hasTacticalData = true;
     }
 
-    // Kèo nhà cái chỉ là dữ liệu tham khảo, tuyệt đối không cộng Rule.
+    // Odds chỉ context, +0 Rule.
     if (oddsAnalysis) {
-        matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Odds Over ${oddsAnalysis.odds} — chỉ tham khảo nhận định, KHÔNG cộng Rule`);
-        if (oddsAnalysis.oddsNoteText) {
-            matchAnalysis.push(`    └─> ${oddsAnalysis.oddsNoteText}`);
-        }
-        // V17: Odds chỉ là context, không được biến một trận thiếu dữ liệu chiến thuật
-        // thành đủ điều kiện gửi cảnh báo.
+        matchAnalysis.push(`💰 Odds ${oddsAnalysis.odds}: tham khảo, +0 Rule`);
     }
 
-    const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
+    const finalNumber = Math.max(0, Math.min(aiPercentage, 98.0));
+    const finalPercentage = finalNumber.toFixed(1);
     const MIN_SEND_PERCENTAGE = 60.0;
-    const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
+    const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
         efficiency: finalPercentage,
@@ -1764,11 +1807,17 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
             shotsRate: Number(shotsRate.toFixed(2)),
             sotRateRaw: Number(sotRateRaw.toFixed(2)),
             sotContribution: Number(sotContribution.toFixed(2)),
-            cornerRate: Number(cornerRate.toFixed(2))
+            cornerRate: Number(cornerRate.toFixed(2)),
+            sotShotRatio: sotShotRatio === null ? null : Number((sotShotRatio * 100).toFixed(1)),
+            chanceQualityAdjustment,
+            possessionAdjustment,
+            sterilePenalty,
+            momentumAdjustment,
+            gameStateAdjustment,
+            redCardAdjustment
         }
     };
 }
-
 
 // ==========================================
 // 8B. DỰ ĐOÁN TỶ SỐ FT - CHỈ KÍCH HOẠT KHI RULE >= 58%
@@ -2013,19 +2062,23 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
-
-            // Từ 3/5 trở lên nếu Rule <60% phải log để xác nhận trận ĐÃ được AI phân tích.
-            // Rule >=60% giữ nguyên luồng cảnh báo/Telegram phía dưới, không spam thêm dòng.
-            if (!aiAnalysis.shouldSend) {
-                console.log(`    🧠 [AI ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
-            }
-
-            const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
+            // AI V2 cần momentum gần nhất trước khi chấm Rule. Snapshot thô không phụ thuộc Rule.
             const momentumKey = `${itemSource}:${matchId}`;
             const previousMomentumSnapshot = momentumStates.get(momentumKey) || null;
-            const internalMomentum = detectInternalMomentum(previousMomentumSnapshot, currentSnapshot);
-            // Luôn lưu snapshot sau khi đã tính delta. Đây là momentum nội bộ, KHÔNG phát sinh API call mới.
+            const rawCurrentSnapshot = makeMatchSnapshot(metrics, 0, numericElapsed, homeScore, actualAwayScore);
+            const internalMomentum = detectInternalMomentum(previousMomentumSnapshot, rawCurrentSnapshot);
+
+            const aiAnalysis = evaluateMatchDynamicAI(
+                metrics, oddsAnalysis, numericElapsed, internalMomentum, homeScore, actualAwayScore
+            );
+
+            // Từ 3/5 trở lên: luôn chấm AI. Dưới 60% phải hiện rõ là đã phân tích nhưng không gửi.
+            if (!aiAnalysis.shouldSend) {
+                console.log(`    🧠 [AI V2 ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
+            }
+
+            const currentSnapshot = { ...rawCurrentSnapshot, rule: Number(aiAnalysis.efficiency) };
+            // Luôn lưu snapshot sau khi tính delta. Không phát sinh API call mới.
             momentumStates.set(momentumKey, currentSnapshot);
             if (internalMomentum.isStrong) {
                 console.log(`    ⚡ [INTERNAL MOMENTUM] ${internalMomentum.deltaMinute} phút | score=${internalMomentum.score} | ${internalMomentum.reasons.join(' | ')}`);
