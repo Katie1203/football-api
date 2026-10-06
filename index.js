@@ -897,7 +897,18 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
         const response = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
             headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST }, timeout: 7000
         });
-        const candidates=extractLiveFootballCandidates(response.data);
+        // API contract confirmed: current-live list is response.live.
+        // Do not recursively treat unrelated response metadata as match candidates.
+        const liveList = Array.isArray(response.data?.response?.live) ? response.data.response.live : [];
+        if (liveList.length === 0) {
+            console.log(`    ↪️ [LIVEFOOTBALL] response.live=[] -> chuyển Livescore6`);
+            return null;
+        }
+        const candidates=extractLiveFootballCandidates(liveList);
+        if (candidates.length === 0) {
+            console.log(`    ⚠️ [LIVEFOOTBALL] live=${liveList.length} nhưng chưa bóc được eventid/home/away -> chuyển Livescore6`);
+            return null;
+        }
         let best=null,bestScore=0;
         for(const c of candidates){
             const direct=(teamSimilarity(homeName,c.home)+teamSimilarity(awayName,c.away))/2;
@@ -1132,9 +1143,15 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         let crossSourcePartial = null;
         let sourceTrail = ['sofascore'];
         let sofaPresent = detectSofaStatPresence(primary);
-        // Nếu primary rỗng, presence có thể đến từ legacy/retry; các giá trị >0/possession được xem là đã có.
-        const inferred = inferStatPresenceFromObject(parsed.sofaStats);
-        for (const k of Object.keys(sofaPresent)) sofaPresent[k] = sofaPresent[k] || inferred[k];
+        // QUAN TRỌNG: extractSofaStatistics dùng 0 làm giá trị mặc định.
+        // Khi foundItems=0, tuyệt đối không suy diễn các số 0 mặc định là dữ liệu thật.
+        // Nhờ vậy DATA MISSING không bị biến thành Base 28%.
+        if (parsed.foundItems > 0) {
+            const inferred = inferStatPresenceFromObject(parsed.sofaStats);
+            for (const k of Object.keys(sofaPresent)) sofaPresent[k] = sofaPresent[k] || inferred[k];
+        } else {
+            sofaPresent = { totalShots:false, shotsOnTarget:false, corners:false, possession:false, redCards:false };
+        }
 
         const needMore = () => Object.values(sofaPresent).some(v => !v);
         if (homeName && awayName && needMore()) {
@@ -1707,7 +1724,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V15: CROSS-SOURCE PARTIAL STATS | DEEP RESOLVER | RATE/PER-MINUTE AI`);
+    console.log(`🛟 BUILD V16.1: LIVEFOOTBALL response.live FIX | DATA MISSING FIX | V15 LOGIC PRESERVED`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
