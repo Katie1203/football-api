@@ -76,7 +76,9 @@ function normalizeTeamName(name = '') {
         .trim();
 }
 function statsCacheKey(matchId, homeName, awayName) {
-    return `${String(matchId||'')}|${normalizeTeamName(homeName||'')}|${normalizeTeamName(awayName||'')}`;
+    // V17.0.3: canonical cache không phụ thuộc source matchId.
+    // Cùng một trận đổi ID/nguồn vẫn phục hồi được partial stats đã lấy trước đó.
+    return `${normalizeTeamName(homeName||'')}|${normalizeTeamName(awayName||'')}`;
 }
 function getPersistentStats(key) {
     const x = persistentStatsCache.get(key);
@@ -1143,11 +1145,23 @@ function mergeMissingStats(baseStats, basePresent, incomingStats, incomingPresen
     const out = { ...(baseStats || {}) };
     const present = { ...(basePresent || {}) };
     const filled = [];
+    const cumulative = new Set(['totalShots','shotsOnTarget','corners','redCards']);
     for (const key of ['totalShots','shotsOnTarget','corners','possession','redCards']) {
-        if (!present[key] && incomingPresent?.[key]) {
+        if (!incomingPresent?.[key]) continue;
+        if (!present[key]) {
             out[key] = incomingStats[key];
             present[key] = true;
             filled.push(key);
+            continue;
+        }
+        // V17.0.3: field đã có không bị tụt ở vòng/source sau.
+        // Các chỉ số tích lũy chỉ tăng; possession lấy snapshot mới nhất hợp lệ.
+        if (cumulative.has(key)) {
+            const oldV = Number(out[key]);
+            const newV = Number(incomingStats[key]);
+            if (Number.isFinite(newV) && (!Number.isFinite(oldV) || newV > oldV)) out[key] = incomingStats[key];
+        } else if (key === 'possession' && incomingStats[key] !== undefined && incomingStats[key] !== null && incomingStats[key] !== '') {
+            out[key] = incomingStats[key];
         }
     }
     return { stats: out, present, filled };
@@ -1985,31 +1999,26 @@ async function scanLiveMatches() {
             const metrics = await fetchMatchDetailStats(matchId, itemSource, homeName, awayName);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
 
-            // V17: PARTIAL STATS 2/5-5/5 vẫn được đưa qua AI nếu có ít nhất
-            // một field tấn công thật: Total Shots / SOT / Corners.
-            // Chỉ 0/5 hoặc 1/5 mới bị loại vì dữ liệu quá nghèo.
+            // V17.0.3: CHỐT GATE DATA. Có từ 3/5 field thật trở lên => LUÔN phân tích AI.
+            // 0/5 = DATA MISSING; 1-2/5 = chưa đủ độ phủ để chấm.
             const statPresent = metrics.present || inferStatPresenceFromObject(metrics.sofaStats);
             const statCount = ['totalShots','shotsOnTarget','corners','possession','redCards']
                 .filter(k => statPresent?.[k]).length;
-            const hasAttackField = ['totalShots','shotsOnTarget','corners']
-                .some(k => statPresent?.[k]);
 
             if (statCount === 0 || metrics.statsAvailable === false) {
-                console.log(`    ❌ [DATA MISSING 0/5] ${homeName} vs ${awayName} | Không có Stats | retry resolver sau 75s`);
+                console.log(`    ❌ [DATA MISSING 0/5] ${homeName} vs ${awayName} | Sofa+LiveFootball+Livescore6 không có Stats | retry resolver sau 75s`);
                 continue;
             }
-            if (statCount < 2 || !hasAttackField) {
-                // Missing-only log phía fetch đã cho biết field nào thiếu; không spam thêm log.
+            if (statCount < 3) {
                 continue;
             }
 
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
 
-            // V17.0.2 PATCH: xác nhận mọi trận PARTIAL 2/5-4/5 đã thực sự đi qua AI.
-            // Không thay Rule/ngưỡng/Telegram; chỉ tránh cảm giác trận partial bị bỏ qua.
-            if (statCount >= 2 && statCount <= 4) {
-                const decision = aiAnalysis.shouldSend ? 'ĐỦ NGƯỠNG CẢNH BÁO' : 'Không gửi';
-                console.log(`    🧠 [PARTIAL AI] ${homeName} vs ${awayName} | Stats ${statCount}/5 | Rule ${aiAnalysis.efficiency}% → ${decision}`);
+            // Từ 3/5 trở lên nếu Rule <60% phải log để xác nhận trận ĐÃ được AI phân tích.
+            // Rule >=60% giữ nguyên luồng cảnh báo/Telegram phía dưới, không spam thêm dòng.
+            if (!aiAnalysis.shouldSend) {
+                console.log(`    🧠 [AI ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
             }
 
             const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
