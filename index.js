@@ -1671,7 +1671,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumContext = null, homeScore = 0, awayScore = 0) {
     let matchAnalysis = [];
-    let aiPercentage = 28.0; // Giữ Base 28 theo cấu hình hiện tại; AI V2 bổ sung quality/penalty, không đổi Base.
+    let aiPercentage = 25.0; // V17.2: Base hạ từ 28% xuống 25%.
     const stats = metrics.sofaStats || {};
     const minute = Math.max(1, Number(elapsedMinute) || 1);
     let hasTacticalData = false;
@@ -1796,14 +1796,41 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
     const finalNumber = Math.max(0, Math.min(aiPercentage, 98.0));
     const finalPercentage = finalNumber.toFixed(1);
     const MIN_SEND_PERCENTAGE = 60.0;
-    const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData;
+
+    // V17.2 - QUALITY GATE: Rule >60 chưa đủ. Cần bằng chứng cơ hội thật.
+    // Ưu tiên SOT quality + SOT mới 5-10 phút; chặn sterile pressure.
+    const md = momentumContext?.deltas || {};
+    const recentSot = Math.max(0, Number(md.sot) || 0);
+    const recentShots = Math.max(0, Number(md.shots) || 0);
+    const recentCorners = Math.max(0, Number(md.corners) || 0);
+
+    const ratioQuality = sotShotRatio !== null && shotsOnTarget >= 3 && sotShotRatio >= 0.25;
+    const strongRecentSot = recentSot >= 2;
+    const confirmedRecentAttack = recentSot >= 1 && (recentShots >= 3 || recentCorners >= 2);
+    // Khi Total Shots bị missing nhưng SOT có thật, vẫn cho partial-data đi qua nếu SOT đủ mạnh.
+    const partialSotQuality = totalShots <= 0 && shotsOnTarget >= 4;
+    const sustainedSotThreat = shotsOnTarget >= 5 && (sotShotRatio === null || sotShotRatio >= 0.20);
+
+    const sterileHardFail = sterilePenalty <= -8 && recentSot === 0;
+    const lowShotQualityFail = sotShotRatio !== null && totalShots >= 10 && sotShotRatio < 0.15 && recentSot === 0;
+    const qualityGatePass = !sterileHardFail && !lowShotQualityFail && (
+        ratioQuality || strongRecentSot || confirmedRecentAttack || partialSotQuality || sustainedSotThreat
+    );
+
+    const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData && qualityGatePass;
+
+    if (finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData && !qualityGatePass) {
+        matchAnalysis.push(`🚫 Quality Gate FAIL: Rule ${finalPercentage}% nhưng SOT quality/momentum chưa xác nhận`);
+    } else if (shouldSend) {
+        matchAnalysis.push(`✅ Quality Gate PASS`);
+    }
 
     return {
         efficiency: finalPercentage,
         detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
         shouldSend,
         components: {
-            base: 28.0,
+            base: 25.0,
             shotsRate: Number(shotsRate.toFixed(2)),
             sotRateRaw: Number(sotRateRaw.toFixed(2)),
             sotContribution: Number(sotContribution.toFixed(2)),
@@ -1814,7 +1841,12 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
             sterilePenalty,
             momentumAdjustment,
             gameStateAdjustment,
-            redCardAdjustment
+            redCardAdjustment,
+            qualityGatePass,
+            qualityGate: {
+                ratioQuality, strongRecentSot, confirmedRecentAttack, partialSotQuality, sustainedSotThreat,
+                sterileHardFail, lowShotQualityFail, recentSot, recentShots, recentCorners
+            }
         }
     };
 }
@@ -2074,7 +2106,12 @@ async function scanLiveMatches() {
 
             // Từ 3/5 trở lên: luôn chấm AI. Dưới 60% phải hiện rõ là đã phân tích nhưng không gửi.
             if (!aiAnalysis.shouldSend) {
-                console.log(`    🧠 [AI V2 ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
+                const ruleNow = Number(aiAnalysis.efficiency);
+                if (ruleNow <= 60) {
+                    console.log(`    🧠 [AI V2 ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
+                } else {
+                    console.log(`    🛑 [QUALITY GATE FAIL] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | SOT quality/momentum chưa xác nhận | KHÔNG GỬI`);
+                }
             }
 
             const currentSnapshot = { ...rawCurrentSnapshot, rule: Number(aiAnalysis.efficiency) };
@@ -2090,15 +2127,9 @@ async function scanLiveMatches() {
             const oddsOK = isBiggggOddsOK(oddsAnalysis);
 
             if (!existingAlertState) {
-                // Lần 1: Rule >60 như cũ. Bổ sung đường MOMENTUM cho Rule 52-60 khi 5-10 phút gần nhất tăng mạnh.
-                // Momentum KHÔNG cộng điểm Rule và KHÔNG gọi endpoint mới.
-                const ruleNum = Number(aiAnalysis.efficiency);
-                const momentumQualified = ruleNum >= MOMENTUM_RULE_MIN && ruleNum <= 60 && internalMomentum.isStrong;
-                shouldAlertNow = aiAnalysis.shouldSend || momentumQualified;
-                if (momentumQualified && !aiAnalysis.shouldSend) {
-                    spikeInfo = { reasons: [`Momentum ${internalMomentum.deltaMinute} phút`, ...internalMomentum.reasons] };
-                    console.log(`    ⚡ [MOMENTUM ALERT QUALIFIED] Rule=${ruleNum.toFixed(1)}% (<60) nhưng momentum mạnh`);
-                }
+                // V17.2: Cảnh báo 1 chỉ gửi khi Rule >60 VÀ Quality Gate PASS.
+                // Momentum dùng để xác nhận chất lượng, không còn mở đường gửi Telegram dưới 60%.
+                shouldAlertNow = aiAnalysis.shouldSend;
             } else if (existingAlertState.sendCount === 1) {
                 spikeInfo = detectTenMinuteSpike(existingAlertState.firstSnapshot, currentSnapshot);
                 shouldAlertNow = spikeInfo.isSpike && oddsOK;
@@ -2143,7 +2174,7 @@ async function scanLiveMatches() {
                     alertNumber,
                     spikeReasons: spikeInfo?.reasons || [],
                     goalOdds: oddsAnalysis?.odds ?? 'N/A',
-                    momentumAlert: !existingAlertState && !aiAnalysis.shouldSend && internalMomentum.isStrong && Number(aiAnalysis.efficiency) >= MOMENTUM_RULE_MIN
+                    momentumAlert: false
                 };
                 await sendTelegramAlert(pickItem);
                 if (sentAlerts.has(String(matchId))) {
@@ -2156,7 +2187,7 @@ async function scanLiveMatches() {
                     }
                 }
             } else if (!existingAlertState) {
-                console.log(`    └─> [Bỏ qua]: Rule ${aiAnalysis.efficiency}% | Momentum=${internalMomentum.isStrong ? 'STRONG' : 'NO'} | yêu cầu Rule >60 hoặc Rule 52-60 + momentum mạnh`);
+                console.log(`    └─> [Bỏ qua]: Rule ${aiAnalysis.efficiency}% | QualityGate=${aiAnalysis.components?.qualityGatePass ? 'PASS' : 'FAIL'} | yêu cầu Rule >60 + Quality Gate PASS`);
             }
         }
     } catch (err) {
