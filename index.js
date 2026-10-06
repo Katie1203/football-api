@@ -820,6 +820,149 @@ async function resolveSofaEventIdByName(homeName,awayName,originalId) {
     console.log(`    ❌ [MATCH-BY-NAME] Không tìm thấy ID đủ tin cậy | best=${bestScore.toFixed(2)}`);
     return null;
 }
+
+function extractLivescoreMatchCandidates(data) {
+    const out = [], seen = new Set();
+    function walk(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach(walk); return; }
+
+        const id = String(obj.Eid || obj.id || obj.MatchId || '');
+        const home = (obj.T1 && obj.T1[0] && (obj.T1[0].Nm || obj.T1[0].Name))
+            || obj.homeTeam?.name || obj.Home?.Nm || obj.Home?.Name || obj.homeName || '';
+        const away = (obj.T2 && obj.T2[0] && (obj.T2[0].Nm || obj.T2[0].Name))
+            || obj.awayTeam?.name || obj.Away?.Nm || obj.Away?.Name || obj.awayName || '';
+
+        if (id && home && away && !seen.has(id)) {
+            seen.add(id);
+            out.push({ id, home, away, raw: obj });
+        }
+        Object.values(obj).forEach(v => { if (v && typeof v === 'object') walk(v); });
+    }
+    walk(data);
+    return out;
+}
+
+async function resolveLivescoreMatchByName(homeName, awayName) {
+    console.log(`    🔄 [CROSS-SOURCE] Tìm trận trên Livescore6: ${homeName} vs ${awayName}`);
+    const currentVN = getVietnamTime();
+    const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
+    const dateUrl = `https://${LIVESCORE_HOST}/matches/v2/list-by-date?Category=soccer&Date=${currentVN.dateStr}&Timezone=-7`;
+
+    const headers = {
+        'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+        'x-rapidapi-host': LIVESCORE_HOST
+    };
+
+    const [liveRes, dateRes] = await Promise.all([
+        axios.get(liveUrl, { headers, timeout: 7000 }).catch(() => ({ data: null })),
+        axios.get(dateUrl, { headers, timeout: 7000 }).catch(() => ({ data: null }))
+    ]);
+
+    const candidates = [
+        ...extractLivescoreMatchCandidates(liveRes.data),
+        ...extractLivescoreMatchCandidates(dateRes.data)
+    ];
+
+    let best = null, bestScore = 0;
+    for (const c of candidates) {
+        const direct = (teamSimilarity(homeName, c.home) + teamSimilarity(awayName, c.away)) / 2;
+        const reversed = (teamSimilarity(homeName, c.away) + teamSimilarity(awayName, c.home)) / 2;
+        const score = Math.max(direct, reversed);
+        if (score > bestScore) { bestScore = score; best = c; }
+    }
+
+    if (best && bestScore >= 0.68) {
+        console.log(`    ✅ [CROSS-SOURCE MATCH] score=${bestScore.toFixed(2)} | Livescore Eid=${best.id}`);
+        return best;
+    }
+
+    console.log(`    ❌ [CROSS-SOURCE MATCH] Không tìm thấy trận đủ tin cậy | best=${bestScore.toFixed(2)}`);
+    return null;
+}
+
+function extractLivescoreStatistics(data) {
+    let shotsOnTarget = 0, totalShots = 0, corners = 0, redCards = 0;
+    let possessionHome = null, possessionAway = null;
+    let foundItems = 0;
+
+    function walk(node) {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) { node.forEach(walk); return; }
+
+        const name = String(node.name || node.type || node.title || node.Nm || node.StatName || '').toLowerCase();
+        const hvRaw = node.home ?? node.homeValue ?? node.H ?? node.Value1 ?? node.V1;
+        const avRaw = node.away ?? node.awayValue ?? node.A ?? node.Value2 ?? node.V2;
+        const hv = parseInt(String(hvRaw ?? '').replace('%',''), 10);
+        const av = parseInt(String(avRaw ?? '').replace('%',''), 10);
+
+        if (name && (!isNaN(hv) || !isNaN(av))) {
+            const sum = (isNaN(hv) ? 0 : hv) + (isNaN(av) ? 0 : av);
+            if (name.includes('shot on target') || name.includes('shots on target')) {
+                shotsOnTarget = Math.max(shotsOnTarget, sum); foundItems++;
+            } else if (name.includes('total shot') || name.includes('shots total')) {
+                totalShots = Math.max(totalShots, sum); foundItems++;
+            } else if (name.includes('corner')) {
+                corners = Math.max(corners, sum); foundItems++;
+            } else if (name.includes('red card')) {
+                redCards = Math.max(redCards, sum); foundItems++;
+            } else if (name.includes('possession')) {
+                if (!isNaN(hv) && !isNaN(av)) {
+                    possessionHome = hv; possessionAway = av; foundItems++;
+                }
+            }
+        }
+        Object.values(node).forEach(v => { if (v && typeof v === 'object') walk(v); });
+    }
+    walk(data);
+
+    return {
+        foundItems,
+        sofaStats: {
+            shotsOnTarget,
+            totalShots: totalShots || shotsOnTarget,
+            corners,
+            redCards,
+            possession: possessionHome !== null && possessionAway !== null
+                ? `${possessionHome}% - ${possessionAway}%` : null
+        }
+    };
+}
+
+async function fetchCrossSourcePartialStats(homeName, awayName) {
+    try {
+        const match = await resolveLivescoreMatchByName(homeName, awayName);
+        if (!match) return null;
+
+        const url = `https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${encodeURIComponent(match.id)}`;
+        const response = await axios.get(url, {
+            headers: {
+                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+                'x-rapidapi-host': LIVESCORE_HOST
+            },
+            timeout: 7000
+        }).catch(() => ({ data: null }));
+
+        const parsed = extractLivescoreStatistics(response.data);
+        if (parsed.foundItems > 0) {
+            console.log(`    🛟 [PARTIAL STATS OK] Livescore6 Eid=${match.id} | fields=${parsed.foundItems}`);
+            return {
+                ...parsed,
+                statsAvailable: true,
+                partialStats: true,
+                statsSource: 'livescore6',
+                crossSourceMatchId: match.id
+            };
+        }
+
+        console.log(`    ⚠️ [PARTIAL STATS EMPTY] Livescore6 có trận nhưng endpoint statistics cũng rỗng`);
+        return null;
+    } catch (err) {
+        console.log(`    ⚠️ [CROSS-SOURCE ERROR] ${err.message}`);
+        return null;
+    }
+}
+
 async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = '') {
     if (source === 'sofascore') {
         const primary = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(matchId)}`);
@@ -856,7 +999,19 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             }
         }
 
-        // Graph dùng ID đã resolve nếu có.
+        // V15: Sofa vẫn rỗng dù đúng ID -> tìm cùng trận trên Livescore6 và lấy partial stats.
+        let crossSourcePartial = null;
+        if (parsed.foundItems === 0 && homeName && awayName) {
+            crossSourcePartial = await fetchCrossSourcePartialStats(homeName, awayName);
+            if (crossSourcePartial?.foundItems > 0) {
+                parsed = {
+                    foundItems: crossSourcePartial.foundItems,
+                    sofaStats: crossSourcePartial.sofaStats
+                };
+            }
+        }
+
+        // Graph dùng ID Sofa đã resolve nếu có.
         const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(effectiveMatchId)}`);
         const graphArray =
             (Array.isArray(graph) && graph) ||
@@ -873,7 +1028,10 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         return {
             ...parsed,
             statsAvailable: parsed.foundItems > 0,
+            partialStats: Boolean(crossSourcePartial?.foundItems > 0),
+            statsSource: crossSourcePartial?.foundItems > 0 ? 'livescore6-partial' : 'sofascore',
             resolvedMatchId: effectiveMatchId,
+            crossSourceMatchId: crossSourcePartial?.crossSourceMatchId || null,
             graphData: graphCount > 0 ? graphArray : null,
             graphAvailable: graphCount > 0
         };
@@ -1006,6 +1164,10 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
     const stats = metrics.sofaStats || {};
     const minute = Math.max(1, Number(elapsedMinute) || 1);
     let hasTacticalData = false;
+
+    if (metrics.partialStats) {
+        matchAnalysis.push(`🛟 PARTIAL DATA: thống kê lấy từ nguồn dự phòng ${metrics.statsSource || 'cross-source'}; chỉ tính các chỉ số thực sự lấy được`);
+    }
 
     // V13 NEW AI:
     // Chỉ số dạng số lần = số lần / phút hiện tại * 100.
@@ -1392,7 +1554,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V14: DEEP RESOLVER + MATCH-BY-NAME | RATE/PER-MINUTE AI`);
+    console.log(`🛟 BUILD V15: CROSS-SOURCE PARTIAL STATS | DEEP RESOLVER | RATE/PER-MINUTE AI`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
