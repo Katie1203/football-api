@@ -33,6 +33,10 @@ const sentAlerts = new Set();
 
 // V16.3: trạng thái cảnh báo theo trận. Tối đa 3 tin/trận trong một phiên chạy.
 const alertStates = new Map();
+// V16.4: snapshot mọi vòng quét để tự tính momentum 5-10 phút, không gọi thêm API.
+const momentumStates = new Map();
+const INTERNAL_MOMENTUM_WINDOW_MINUTES = 10;
+const MOMENTUM_RULE_MIN = 52.0;
 const SECOND_ALERT_WINDOW_MINUTES = 10;
 const THIRD_ALERT_WINDOW_MINUTES = 10;
 const BIGGGG_ODDS_MIN = 1.50;
@@ -51,7 +55,11 @@ function makeMatchSnapshot(metrics, rule, minute, homeScore, awayScore) {
         redCards: Number(s.redCards || 0),
         shotsRate: (Number(s.totalShots || 0) / Math.max(1, Number(minute || 1))) * 100,
         sotRate: (Number(s.shotsOnTarget || 0) / Math.max(1, Number(minute || 1))) * 100,
-        cornerRate: (Number(s.corners || 0) / Math.max(1, Number(minute || 1))) * 100
+        cornerRate: (Number(s.corners || 0) / Math.max(1, Number(minute || 1))) * 100,
+        xg: Number(metrics?.advancedStats?.xg || 0),
+        bigChances: Number(metrics?.advancedStats?.bigChances || 0),
+        shotsInsideBox: Number(metrics?.advancedStats?.shotsInsideBox || 0),
+        touchesOppBox: Number(metrics?.advancedStats?.touchesOppBox || 0)
     };
 }
 
@@ -120,6 +128,36 @@ function detectExtremeSpike(previous, current) {
     if (dCornerRate >= 2) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
 
     return { isSpike: current.rule >= 60 && reasons.length > 0, reasons, deltaMinute: dm };
+}
+
+function detectInternalMomentum(previous, current) {
+    if (!previous || !current) return { isStrong: false, reasons: [], deltaMinute: null };
+    const dm = current.minute - previous.minute;
+    if (dm <= 0 || dm > INTERNAL_MOMENTUM_WINDOW_MINUTES) return { isStrong: false, reasons: [], deltaMinute: dm };
+
+    const dShots = current.totalShots - previous.totalShots;
+    const dSot = current.shotsOnTarget - previous.shotsOnTarget;
+    const dCorners = current.corners - previous.corners;
+    const dXg = current.xg - previous.xg;
+    const dBig = current.bigChances - previous.bigChances;
+    const dInside = current.shotsInsideBox - previous.shotsInsideBox;
+    const dTouches = current.touchesOppBox - previous.touchesOppBox;
+
+    const reasons = [];
+    let score = 0;
+    if (dShots >= 4) { score += 2; reasons.push(`Shots +${dShots}`); }
+    else if (dShots >= 3) { score += 1; reasons.push(`Shots +${dShots}`); }
+    if (dSot >= 2) { score += 3; reasons.push(`SOT +${dSot}`); }
+    else if (dSot >= 1) { score += 1; reasons.push(`SOT +${dSot}`); }
+    if (dCorners >= 2) { score += 1; reasons.push(`Corners +${dCorners}`); }
+    if (dXg >= 0.45) { score += 3; reasons.push(`xG +${dXg.toFixed(2)}`); }
+    else if (dXg >= 0.25) { score += 2; reasons.push(`xG +${dXg.toFixed(2)}`); }
+    if (dBig >= 1) { score += 3; reasons.push(`Big Chances +${dBig}`); }
+    if (dInside >= 3) { score += 2; reasons.push(`Shots inside box +${dInside}`); }
+    if (dTouches >= 6) { score += 1; reasons.push(`Touches opp. box +${dTouches}`); }
+
+    // Strong = nhiều tín hiệu đồng thời. Không cộng trực tiếp vào Rule.
+    return { isStrong: score >= 4, score, reasons, deltaMinute: dm };
 }
 
 function getVietnamTime() {
@@ -771,6 +809,7 @@ function extractSofaStatistics(data) {
     let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
     let shotsOffTarget = 0, blockedShots = 0;
     let possessionHome = null, possessionAway = null;
+    let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
     let foundItems = 0;
 
     const roots = [];
@@ -805,6 +844,15 @@ function extractSofaStatistics(data) {
                 corners = Math.max(corners, sumVal); foundItems++;
             } else if (name.includes('red card')) {
                 redCards = Math.max(redCards, sumVal); foundItems++;
+            } else if (name.includes('expected goals') || name === 'xg') {
+                const h = Number(String(hvRaw ?? '').replace(',','.')); const a = Number(String(avRaw ?? '').replace(',','.'));
+                if (Number.isFinite(h) || Number.isFinite(a)) xg = Math.max(xg, (Number.isFinite(h)?h:0)+(Number.isFinite(a)?a:0));
+            } else if (name.includes('big chance') && !name.includes('missed')) {
+                bigChances = Math.max(bigChances, sumVal);
+            } else if (name.includes('shots inside box') || name.includes('shot inside box')) {
+                shotsInsideBox = Math.max(shotsInsideBox, sumVal);
+            } else if (name.includes('touches in opposition box') || name.includes('touches opposition box')) {
+                touchesOppBox = Math.max(touchesOppBox, sumVal);
             } else if (name.includes('ball possession') || name === 'possession' || name.includes('possession')) {
                 if (!isNaN(homeVal) && !isNaN(awayVal)) {
                     possessionHome = homeVal; possessionAway = awayVal; foundItems++;
@@ -831,7 +879,8 @@ function extractSofaStatistics(data) {
             possession: possessionHome !== null && possessionAway !== null
                 ? `${possessionHome}% - ${possessionAway}%`
                 : null
-        }
+        },
+        advancedStats: { xg, bigChances, shotsInsideBox, touchesOppBox }
     };
 }
 
@@ -980,6 +1029,7 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
 function extractLiveFootballStatistics(data) {
     const stats={ totalShots:null, shotsOnTarget:null, corners:null, redCards:null, possession:null };
     const present={ totalShots:false, shotsOnTarget:false, corners:false, redCards:false, possession:false };
+    const advancedStats={ xg:0, bigChances:0, shotsInsideBox:0, touchesOppBox:0 };
     function walk(n){
         if(!n || typeof n!=='object') return;
         if(Array.isArray(n)){ n.forEach(walk); return; }
@@ -993,12 +1043,16 @@ function extractLiveFootballStatistics(data) {
                 else if(key==='corners'){ stats.corners=a+b; present.corners=true; }
                 else if(key==='red_cards'){ stats.redCards=a+b; present.redCards=true; }
                 else if(key==='BallPossesion'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
+                else if(key==='expected_goals'){ advancedStats.xg=Math.max(advancedStats.xg,a+b); }
+                else if(key==='big_chance'){ advancedStats.bigChances=Math.max(advancedStats.bigChances,a+b); }
+                else if(key==='shots_inside_box'){ advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,a+b); }
+                else if(key==='touches_opp_box'){ advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,a+b); }
             }
         }
         Object.values(n).forEach(v=>{if(v&&typeof v==='object')walk(v)});
     }
     walk(data);
-    return { foundItems:Object.values(present).filter(Boolean).length, sofaStats:stats, present };
+    return { foundItems:Object.values(present).filter(Boolean).length, sofaStats:stats, present, advancedStats };
 }
 async function fetchLiveFootballPartialStats(homeName,awayName){
     const match=await resolveLiveFootballMatchByName(homeName,awayName);
@@ -1076,6 +1130,7 @@ async function resolveLivescoreMatchByName(homeName, awayName) {
 function extractLivescoreStatistics(data) {
     let shotsOnTarget = 0, totalShots = 0, corners = 0, redCards = 0;
     let possessionHome = null, possessionAway = null;
+    let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
     let foundItems = 0;
 
     function walk(node) {
@@ -1216,6 +1271,10 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
                     sourceTrail.push('livefootball');
                     console.log(`    🔗 [MERGE] LiveFootball bù: ${merged.filled.join(', ')}`);
                     crossSourcePartial = lf;
+                }
+                parsed.advancedStats = parsed.advancedStats || {xg:0,bigChances:0,shotsInsideBox:0,touchesOppBox:0};
+                for (const k of ['xg','bigChances','shotsInsideBox','touchesOppBox']) {
+                    if (!(Number(parsed.advancedStats[k]) > 0) && Number(lf.advancedStats?.[k]) > 0) parsed.advancedStats[k] = Number(lf.advancedStats[k]);
                 }
             }
         }
@@ -1595,7 +1654,9 @@ async function sendTelegramAlert(item) {
         ? `🚨🔥🔥🔥 BIGGGG LẦN 3 🔥🔥🔥🚨`
         : item.alertNumber === 2
             ? `🔥🔥🔥 BIGGGG LẦN 2 🔥🔥🔥`
-            : `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})`;
+            : item.momentumAlert
+                ? `⚡🔥 MOMENTUM ALERT (${item.source.toUpperCase()})`
+                : `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})`;
     const spikeBlock = item.alertNumber >= 2 && item.spikeReasons?.length
         ? `\n⚡ CHỈ SỐ ĐỘT BIẾN: ${item.spikeReasons.join(' | ')}\n💰 Điều kiện BIGGGG: Odds Over ${item.goalOdds} (yêu cầu ${BIGGGG_ODDS_MIN.toFixed(2)}–${BIGGGG_ODDS_MAX.toFixed(2)})`
         : '';
@@ -1719,6 +1780,14 @@ async function scanLiveMatches() {
 
             const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
             const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
+            const momentumKey = `${itemSource}:${matchId}`;
+            const previousMomentumSnapshot = momentumStates.get(momentumKey) || null;
+            const internalMomentum = detectInternalMomentum(previousMomentumSnapshot, currentSnapshot);
+            // Luôn lưu snapshot sau khi đã tính delta. Đây là momentum nội bộ, KHÔNG phát sinh API call mới.
+            momentumStates.set(momentumKey, currentSnapshot);
+            if (internalMomentum.isStrong) {
+                console.log(`    ⚡ [INTERNAL MOMENTUM] ${internalMomentum.deltaMinute} phút | score=${internalMomentum.score} | ${internalMomentum.reasons.join(' | ')}`);
+            }
 
             let alertNumber = existingAlertState ? existingAlertState.sendCount + 1 : 1;
             let spikeInfo = null;
@@ -1726,8 +1795,15 @@ async function scanLiveMatches() {
             const oddsOK = isBiggggOddsOK(oddsAnalysis);
 
             if (!existingAlertState) {
-                // Lần 1 giữ nguyên: Rule > 60%, Odds chỉ tham khảo và KHÔNG làm gate.
-                shouldAlertNow = aiAnalysis.shouldSend;
+                // Lần 1: Rule >60 như cũ. Bổ sung đường MOMENTUM cho Rule 52-60 khi 5-10 phút gần nhất tăng mạnh.
+                // Momentum KHÔNG cộng điểm Rule và KHÔNG gọi endpoint mới.
+                const ruleNum = Number(aiAnalysis.efficiency);
+                const momentumQualified = ruleNum >= MOMENTUM_RULE_MIN && ruleNum <= 60 && internalMomentum.isStrong;
+                shouldAlertNow = aiAnalysis.shouldSend || momentumQualified;
+                if (momentumQualified && !aiAnalysis.shouldSend) {
+                    spikeInfo = { reasons: [`Momentum ${internalMomentum.deltaMinute} phút`, ...internalMomentum.reasons] };
+                    console.log(`    ⚡ [MOMENTUM ALERT QUALIFIED] Rule=${ruleNum.toFixed(1)}% (<60) nhưng momentum mạnh`);
+                }
             } else if (existingAlertState.sendCount === 1) {
                 spikeInfo = detectTenMinuteSpike(existingAlertState.firstSnapshot, currentSnapshot);
                 shouldAlertNow = spikeInfo.isSpike && oddsOK;
@@ -1771,7 +1847,8 @@ async function scanLiveMatches() {
                     ftPrediction,
                     alertNumber,
                     spikeReasons: spikeInfo?.reasons || [],
-                    goalOdds: oddsAnalysis?.odds ?? 'N/A'
+                    goalOdds: oddsAnalysis?.odds ?? 'N/A',
+                    momentumAlert: !existingAlertState && !aiAnalysis.shouldSend && internalMomentum.isStrong && Number(aiAnalysis.efficiency) >= MOMENTUM_RULE_MIN
                 };
                 await sendTelegramAlert(pickItem);
                 if (sentAlerts.has(String(matchId))) {
@@ -1784,7 +1861,7 @@ async function scanLiveMatches() {
                     }
                 }
             } else if (!existingAlertState) {
-                console.log(`    └─> [Bỏ qua]: Điểm AI chưa đủ (${aiAnalysis.efficiency}%) - Yêu cầu Rule > 60%`);
+                console.log(`    └─> [Bỏ qua]: Rule ${aiAnalysis.efficiency}% | Momentum=${internalMomentum.isStrong ? 'STRONG' : 'NO'} | yêu cầu Rule >60 hoặc Rule 52-60 + momentum mạnh`);
             }
         }
     } catch (err) {
@@ -1801,7 +1878,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V16.3: V16.2 + 3 ALERTS | BIGGGG L2/L3 ODDS 1.50-2.00 | MERGED DISCOVERY + U21 TRACE`);
+    console.log(`🛟 BUILD V16.4: V16.3 + INTERNAL MOMENTUM 5-10M | xG/BIG CHANCES/BOX PRESSURE | BIGGGG L2/L3`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
