@@ -1804,17 +1804,24 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
     const recentShots = Math.max(0, Number(md.shots) || 0);
     const recentCorners = Math.max(0, Number(md.corners) || 0);
 
-    const ratioQuality = sotShotRatio !== null && shotsOnTarget >= 3 && sotShotRatio >= 0.25;
-    const strongRecentSot = recentSot >= 2;
-    const confirmedRecentAttack = recentSot >= 1 && (recentShots >= 3 || recentCorners >= 2);
-    // Khi Total Shots bị missing nhưng SOT có thật, vẫn cho partial-data đi qua nếu SOT đủ mạnh.
-    const partialSotQuality = totalShots <= 0 && shotsOnTarget >= 4;
-    const sustainedSotThreat = shotsOnTarget >= 5 && (sotShotRatio === null || sotShotRatio >= 0.20);
+    // V17.3 STRICT QUALITY CONFIRMATION:
+    // Không dùng stats tổng trận để tự mở gate. Phải có snapshot 5-10 phút và SOT MỚI.
+    // Nhờ vậy bot vừa deploy / vừa thấy trận sẽ không bắn hàng loạt chỉ vì stats tích lũy đẹp.
+    const momentumAge = Number(momentumContext?.deltaMinute) || 0;
+    const historyReady = momentumAge >= 3 && momentumAge <= 10;
+    const ratioQuality = sotShotRatio !== null && totalShots >= 6 && shotsOnTarget >= 3 && sotShotRatio >= 0.25;
+    const strongRecentSot = historyReady && recentSot >= 2;
+    const confirmedRecentAttack = historyReady && recentSot >= 1 && ratioQuality && (recentShots >= 2 || recentCorners >= 1);
+    // Partial data không có Total Shots: chỉ xác nhận khi thật sự xuất hiện >=2 SOT mới trong cửa sổ theo dõi.
+    const partialSotQuality = totalShots <= 0 && historyReady && recentSot >= 2;
+    const sustainedSotThreat = false; // V17.3: stats tích lũy không còn được bypass recent-momentum gate.
 
-    const sterileHardFail = sterilePenalty <= -8 && recentSot === 0;
-    const lowShotQualityFail = sotShotRatio !== null && totalShots >= 10 && sotShotRatio < 0.15 && recentSot === 0;
-    const qualityGatePass = !sterileHardFail && !lowShotQualityFail && (
-        ratioQuality || strongRecentSot || confirmedRecentAttack || partialSotQuality || sustainedSotThreat
+    const sterileHardFail = historyReady && recentSot === 0 && (
+        sterilePenalty <= -6 || recentShots >= 4 || recentCorners >= 3
+    );
+    const lowShotQualityFail = sotShotRatio !== null && totalShots >= 10 && sotShotRatio < 0.15;
+    const qualityGatePass = historyReady && !sterileHardFail && !lowShotQualityFail && (
+        strongRecentSot || confirmedRecentAttack || partialSotQuality
     );
 
     const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData && qualityGatePass;
@@ -1845,7 +1852,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
             qualityGatePass,
             qualityGate: {
                 ratioQuality, strongRecentSot, confirmedRecentAttack, partialSotQuality, sustainedSotThreat,
-                sterileHardFail, lowShotQualityFail, recentSot, recentShots, recentCorners
+                historyReady, momentumAge, sterileHardFail, lowShotQualityFail, recentSot, recentShots, recentCorners
             }
         }
     };
@@ -2110,7 +2117,11 @@ async function scanLiveMatches() {
                 if (ruleNow <= 60) {
                     console.log(`    🧠 [AI V2 ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
                 } else {
-                    console.log(`    🛑 [QUALITY GATE FAIL] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | SOT quality/momentum chưa xác nhận | KHÔNG GỬI`);
+                    const qg = aiAnalysis.components?.qualityGate || {};
+                    const reason = !qg.historyReady
+                        ? `chờ snapshot 5-10 phút`
+                        : `SOT mới/quality chưa xác nhận`;
+                    console.log(`    🛑 [QUALITY GATE FAIL] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | ${reason} | KHÔNG GỬI`);
                 }
             }
 
@@ -2132,14 +2143,16 @@ async function scanLiveMatches() {
                 shouldAlertNow = aiAnalysis.shouldSend;
             } else if (existingAlertState.sendCount === 1) {
                 spikeInfo = detectTenMinuteSpike(existingAlertState.firstSnapshot, currentSnapshot);
-                shouldAlertNow = spikeInfo.isSpike && oddsOK;
+                // V17.3: BIGGGG cũng phải qua Quality Gate hiện tại; không được bypass bằng spike/odds.
+                shouldAlertNow = aiAnalysis.shouldSend && spikeInfo.isSpike && oddsOK;
                 if (!shouldAlertNow) {
                     const oddsText = oddsAnalysis?.odds ?? 'N/A';
                     console.log(`    👀 [THEO DÕI BIGGGG LẦN 2] phút ${numericElapsed}' | Rule ${aiAnalysis.efficiency}% | spike=${spikeInfo.isSpike ? 'YES' : 'NO'} | Odds=${oddsText} | cần 1.50-2.00`);
                 }
             } else if (existingAlertState.sendCount === 2) {
                 spikeInfo = detectExtremeSpike(existingAlertState.secondSnapshot, currentSnapshot);
-                shouldAlertNow = spikeInfo.isSpike && oddsOK;
+                // V17.3: BIGGGG cũng phải qua Quality Gate hiện tại; không được bypass bằng spike/odds.
+                shouldAlertNow = aiAnalysis.shouldSend && spikeInfo.isSpike && oddsOK;
                 if (!shouldAlertNow) {
                     const oddsText = oddsAnalysis?.odds ?? 'N/A';
                     console.log(`    👀 [THEO DÕI BIGGGG LẦN 3] phút ${numericElapsed}' | Rule ${aiAnalysis.efficiency}% | extreme=${spikeInfo.isSpike ? 'YES' : 'NO'} | Odds=${oddsText} | cần 1.50-2.00`);
