@@ -25,7 +25,8 @@ console.log = (...args) => {
         '[LIVEFOOTBALL STATS ERROR]',
         '[CROSS-SOURCE ERROR]',
         'Server running',
-        'BUILD V16.6',
+        'BUILD V16.7',
+        'BUILD V16.7',
         'Không thu thập được trận đấu nào'
     ];
     if (keep.some(k => msg.includes(k))) _consoleLog(...args);
@@ -52,6 +53,9 @@ const LIVEFOOTBALL_LIVE_PATH = '/football-current-live';
 // V16.5 - cache danh sách live để resolver không gọi lại API cho từng trận
 const resolverLiveCache = { livefootball: { ts:0, data:null }, livescore6: { ts:0, live:null, date:null } };
 const RESOLVER_CACHE_MS = 45 * 1000;
+// V16.7: trận 0/5 tạm nghỉ resolver để giảm quota; sau 75s sẽ thử lại toàn bộ nguồn.
+const dataMissingRetryCache = new Map();
+const DATA_MISSING_RETRY_MS = 75 * 1000;
 
 const LIVEFOOTBALL_STATS_PATH = '/football-get-match-event-all-stats';
 
@@ -1182,10 +1186,11 @@ async function resolveLivescoreMatchByName(homeName, awayName) {
 }
 
 function extractLivescoreStatistics(data) {
-    let shotsOnTarget = 0, totalShots = 0, corners = 0, redCards = 0;
-    let possessionHome = null, possessionAway = null;
-    let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
-    let foundItems = 0;
+    // V16.7: dùng null + present mask rõ ràng. Không còn biến giá trị mặc định 0
+    // thành "đã có dữ liệu". Số 0 chỉ hợp lệ khi API thực sự trả field đó.
+    const stats = { shotsOnTarget:null, totalShots:null, corners:null, redCards:null, possession:null };
+    const present = { shotsOnTarget:false, totalShots:false, corners:false, redCards:false, possession:false };
+    const advancedStats = { xg:0, bigChances:0, shotsInsideBox:0, touchesOppBox:0 };
 
     function walk(node) {
         if (!node || typeof node !== 'object') return;
@@ -1194,23 +1199,22 @@ function extractLivescoreStatistics(data) {
         const name = String(node.name || node.type || node.title || node.Nm || node.StatName || '').toLowerCase();
         const hvRaw = node.home ?? node.homeValue ?? node.H ?? node.Value1 ?? node.V1;
         const avRaw = node.away ?? node.awayValue ?? node.A ?? node.Value2 ?? node.V2;
-        const hv = parseInt(String(hvRaw ?? '').replace('%',''), 10);
-        const av = parseInt(String(avRaw ?? '').replace('%',''), 10);
+        const hv = Number(String(hvRaw ?? '').replace('%','').trim());
+        const av = Number(String(avRaw ?? '').replace('%','').trim());
+        const hasPair = hvRaw !== undefined && hvRaw !== null && avRaw !== undefined && avRaw !== null && Number.isFinite(hv) && Number.isFinite(av);
 
-        if (name && (!isNaN(hv) || !isNaN(av))) {
-            const sum = (isNaN(hv) ? 0 : hv) + (isNaN(av) ? 0 : av);
+        if (name && hasPair) {
+            const sum = hv + av;
             if (name.includes('shot on target') || name.includes('shots on target')) {
-                shotsOnTarget = Math.max(shotsOnTarget, sum); foundItems++;
+                stats.shotsOnTarget = Math.max(stats.shotsOnTarget ?? 0, sum); present.shotsOnTarget = true;
             } else if (name.includes('total shot') || name.includes('shots total')) {
-                totalShots = Math.max(totalShots, sum); foundItems++;
+                stats.totalShots = Math.max(stats.totalShots ?? 0, sum); present.totalShots = true;
             } else if (name.includes('corner')) {
-                corners = Math.max(corners, sum); foundItems++;
+                stats.corners = Math.max(stats.corners ?? 0, sum); present.corners = true;
             } else if (name.includes('red card')) {
-                redCards = Math.max(redCards, sum); foundItems++;
+                stats.redCards = Math.max(stats.redCards ?? 0, sum); present.redCards = true;
             } else if (name.includes('possession')) {
-                if (!isNaN(hv) && !isNaN(av)) {
-                    possessionHome = hv; possessionAway = av; foundItems++;
-                }
+                stats.possession = `${hv}% - ${av}%`; present.possession = true;
             }
         }
         Object.values(node).forEach(v => { if (v && typeof v === 'object') walk(v); });
@@ -1218,15 +1222,10 @@ function extractLivescoreStatistics(data) {
     walk(data);
 
     return {
-        foundItems,
-        sofaStats: {
-            shotsOnTarget,
-            totalShots: totalShots || shotsOnTarget,
-            corners,
-            redCards,
-            possession: possessionHome !== null && possessionAway !== null
-                ? `${possessionHome}% - ${possessionAway}%` : null
-        }
+        foundItems: Object.values(present).filter(Boolean).length,
+        sofaStats: stats,
+        present,
+        advancedStats
     };
 }
 
@@ -1266,6 +1265,17 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
 
 async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = '') {
     if (source === 'sofascore') {
+        const missingCacheKey = `${String(homeName).toLowerCase()}|${String(awayName).toLowerCase()}`;
+        const missingUntil = dataMissingRetryCache.get(missingCacheKey) || 0;
+        if (Date.now() < missingUntil) {
+            return {
+                foundItems: 0,
+                sofaStats: { totalShots:null, shotsOnTarget:null, corners:null, possession:null, redCards:null },
+                present: { totalShots:false, shotsOnTarget:false, corners:false, possession:false, redCards:false },
+                statsAvailable: false, partialStats: false, statsSource: 'retry-cache',
+                resolvedMatchId: String(matchId), crossSourceMatchId: null, graphData: null, graphAvailable: false
+            };
+        }
         const primary = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(matchId)}`);
         let parsed = extractSofaStatistics(primary);
 
@@ -1329,7 +1339,7 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         if (homeName && awayName && needMore()) {
             const ls = await fetchCrossSourcePartialStats(homeName, awayName);
             if (ls?.foundItems > 0) {
-                const lsPresent = inferStatPresenceFromObject(ls.sofaStats);
+                const lsPresent = ls.present || inferStatPresenceFromObject(ls.sofaStats);
                 const merged = mergeMissingStats(parsed.sofaStats, sofaPresent, ls.sofaStats, lsPresent);
                 parsed.sofaStats = merged.stats; sofaPresent = merged.present;
                 if (merged.filled.length) {
@@ -1351,11 +1361,22 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             redCards: 'Red Cards'
         };
         const missingFields = Object.keys(missingLabels).filter(k => !sofaPresent[k]);
-        if (missingFields.length > 0) {
+        if (missingFields.length > 0 && parsed.foundItems > 0) {
             console.log(`    ⚠️ [THIẾU CHỈ SỐ] ${homeName} vs ${awayName} | thiếu ${missingFields.length}/5: ${missingFields.map(k => missingLabels[k]).join(', ')} | có ${parsed.foundItems}/5 | nguồn=${sourceTrail.join('>')}`);
         }
 
+        // V16.7: chỉ cache khi cả 3 nguồn vẫn 0/5; có bất kỳ field thật nào thì xóa cache ngay.
+        if (parsed.foundItems === 0) dataMissingRetryCache.set(missingCacheKey, Date.now() + DATA_MISSING_RETRY_MS);
+        else dataMissingRetryCache.delete(missingCacheKey);
+
         // Graph dùng ID Sofa đã resolve nếu có.
+        // Nếu 0/5 thì bỏ Graph luôn để tiết kiệm API vì không có dữ liệu để chấm Rule.
+        if (parsed.foundItems === 0) {
+            return {
+                ...parsed, statsAvailable:false, partialStats:false, statsSource:sourceTrail.join(' -> '),
+                resolvedMatchId:effectiveMatchId, crossSourceMatchId:null, graphData:null, graphAvailable:false
+            };
+        }
         const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(effectiveMatchId)}`);
         const graphArray =
             (Array.isArray(graph) && graph) ||
@@ -1836,7 +1857,7 @@ async function scanLiveMatches() {
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
 
             if (itemSource === 'sofascore' && metrics.statsAvailable === false) {
-                console.log(`    ⚠️ [DATA MISSING ≠ ZERO] Không chấm giả Base 28%. Sẽ thử resolver lại ở vòng quét sau.`);
+                console.log(`    ❌ [DATA MISSING 0/5] ${homeName} vs ${awayName} | Không có Stats | retry resolver sau 75s`);
                 continue;
             }
 
@@ -1940,7 +1961,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V16.6: MISSING-ONLY LOG | V16.5 DEEP RESOLVER + INTERNAL MOMENTUM | BIGGGG L2/L3`);
+    console.log(`🛟 BUILD V16.7: MISSING-ONLY LOG | V16.5 DEEP RESOLVER + INTERNAL MOMENTUM | BIGGGG L2/L3`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
