@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 
 
-// V17: PARTIAL STATS AI + COMPACT MISSING-ONLY LOG
+// V17.0.1 + FULL LIVE DISCOVERY PATCH: PARTIAL STATS AI + COMPACT MISSING-ONLY LOG
 // Mặc định chỉ hiện: chỉ số còn thiếu, DATA MISSING, cảnh báo đã gửi và lỗi quan trọng.
 const COMPACT_MISSING_ONLY_LOG = String(process.env.DEBUG_LOG || '').toLowerCase() !== 'true';
 const _consoleLog = console.log.bind(console);
@@ -374,6 +374,9 @@ function parseLeagueName(item, source) {
             item.uniqueTournament?.name ||
             item.competitionName ||
             '';
+    } else if (source === 'livefootball') {
+        category = item._lfCategory || item.country?.name || item.country || item.category?.name || item.category || '';
+        tournament = item._lfLeague || item.league?.name || item.leagueName || item.tournament?.name || item.tournamentName || item.competition?.name || item.competitionName || '';
     } else {
         category =
             item._inheritedCategory ||
@@ -494,6 +497,9 @@ function passesPreApiGate(item, source) {
     if (source === 'sofascore') {
         homeName = item.homeTeam?.name || '';
         awayName = item.awayTeam?.name || '';
+    } else if (source === 'livefootball') {
+        homeName = item._lfHome || item.homeTeam?.name || item.home?.name || item.homeName || item.team1?.name || item.team1 || item.home_team || '';
+        awayName = item._lfAway || item.awayTeam?.name || item.away?.name || item.awayName || item.team2?.name || item.team2 || item.away_team || '';
     } else {
         homeName =
             (item.T1 && item.T1[0] && (item.T1[0].Nm || item.T1[0].Name)) ||
@@ -640,6 +646,24 @@ function calculateExactMinute(item, source) {
         return 0;
     }
 
+    if (source === 'livefootball') {
+        const lfStatus = statusResult([
+            item.status?.type, item.status?.description, item.status,
+            item.matchStatus, item.statusText, item.state, item.period
+        ]);
+        if (lfStatus !== null) return lfStatus;
+        const lfMinuteCandidates = [
+            item._lfMinute, item.minute, item.matchMinute, item.liveMinute,
+            item.time?.minute, item.time?.current, item.elapsed, item.elapsedTime,
+            item.timer, item.clock, item.status?.description, item.statusText
+        ];
+        for (const v of lfMinuteCandidates) {
+            const m = parseMinuteValue(v);
+            if (m !== null) return m;
+        }
+        return 0;
+    }
+
     const status = statusResult([
         item.Eps, item.status, item.matchStatus, item.statusText,
         item.statusDescription, item.Reason, item.Trh, item.MatchStatus
@@ -672,8 +696,8 @@ function isEligibleLiveMatch(item, source, minMinute = 60, maxMinute = 92) {
 // ==========================================
 async function fetchLiveMatchesDualSource() {
     // V16.2: KHÔNG return sớm khi SofaScore có trận.
-    // Gộp discovery SofaScore + Livescore6 để tránh bỏ sót giải/trận mà Sofa không liệt kê.
-    // LiveFootball vẫn giữ vai trò fallback Stats; response.live hiện chưa có mẫu object không-rỗng để map discovery an toàn.
+    // V17.1 patch trên V17.0.1: FULL LIVE DISCOVERY 60-92.
+    // Luôn gộp SofaScore + LiveFootball + Livescore6, không return sớm theo bất kỳ nguồn nào.
     const collected = [];
     const seen = new Set();
 
@@ -683,6 +707,10 @@ async function fetchLiveMatchesDualSource() {
     }
     function getNames(item, source) {
         if (source === 'sofascore') return [item.homeTeam?.name || '', item.awayTeam?.name || ''];
+        if (source === 'livefootball') return [
+            item._lfHome || item.homeTeam?.name || item.home?.name || item.homeName || item.team1?.name || item.team1 || item.home_team || '',
+            item._lfAway || item.awayTeam?.name || item.away?.name || item.awayName || item.team2?.name || item.team2 || item.away_team || ''
+        ];
         return [
             (item.T1 && item.T1[0] && (item.T1[0].Nm || item.T1[0].Name)) || item.homeTeam?.name || '',
             (item.T2 && item.T2[0] && (item.T2[0].Nm || item.T2[0].Name)) || item.awayTeam?.name || ''
@@ -705,8 +733,8 @@ async function fetchLiveMatchesDualSource() {
         }
 
         // Deduplicate xuyên nguồn theo cặp tên đội; ưu tiên bản Sofa vì được add trước.
-        const key = `${normName(home)}__${normName(away)}`;
-        const reverseKey = `${normName(away)}__${normName(home)}`;
+        const key = `${normalizeTeamName(home)}__${normalizeTeamName(away)}`;
+        const reverseKey = `${normalizeTeamName(away)}__${normalizeTeamName(home)}`;
         if (seen.has(key) || seen.has(reverseKey)) return;
         seen.add(key);
         collected.push({ ...item, _scanSource: source });
@@ -727,7 +755,45 @@ async function fetchLiveMatchesDualSource() {
         console.warn(`⚠️ [SofaScore Error]: ${err.message} -> vẫn tiếp tục discovery Livescore6...`);
     }
 
-    // 2) Livescore6 discovery luôn chạy để BỔ SUNG trận SofaScore bỏ sót.
+    // 2) LiveFootball discovery: luôn chạy để BỔ SUNG trận SofaScore bỏ sót.
+    // Parser đệ quy chịu được nhiều shape; nếu response.live=[] thì bỏ qua an toàn.
+    try {
+        let liveList = [];
+        const now = Date.now();
+        if (resolverLiveCache.livefootball.data && now - resolverLiveCache.livefootball.ts < RESOLVER_CACHE_MS) {
+            liveList = resolverLiveCache.livefootball.data;
+        } else {
+            const lfRes = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
+                headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST },
+                timeout: 10000
+            });
+            liveList = Array.isArray(lfRes.data?.response?.live) ? lfRes.data.response.live : [];
+            resolverLiveCache.livefootball = { ts: now, data: liveList };
+        }
+        const lfCandidates = extractLiveFootballCandidates(liveList);
+        let lfAdded = 0;
+        for (const c of lfCandidates) {
+            const raw = c.raw || {};
+            const enriched = {
+                ...raw,
+                id: c.id,
+                eventid: c.id,
+                _lfHome: c.home,
+                _lfAway: c.away,
+                _lfMinute: raw.minute ?? raw.matchMinute ?? raw.liveMinute ?? raw.time?.minute ?? raw.time?.current ?? raw.elapsed ?? raw.elapsedTime ?? raw.timer ?? raw.clock,
+                _lfLeague: raw.league?.name ?? raw.leagueName ?? raw.tournament?.name ?? raw.tournamentName ?? raw.competition?.name ?? raw.competitionName ?? '',
+                _lfCategory: raw.country?.name ?? raw.country ?? raw.category?.name ?? raw.category ?? ''
+            };
+            const n0 = collected.length;
+            addEligible(enriched, 'livefootball');
+            if (collected.length > n0) lfAdded++;
+        }
+        console.log(`[Source: LiveFootball] Candidate=${lfCandidates.length} | Bổ sung sau PRE-API GATE + dedupe=${lfAdded}`);
+    } catch (err) {
+        console.error(`❌ [LiveFootball Discovery Error]: ${err.message}`);
+    }
+
+    // 3) Livescore6 discovery luôn chạy để BỔ SUNG trận SofaScore/LiveFootball bỏ sót.
     try {
         const currentVN = getVietnamTime();
         const liveUrl = `https://${LIVESCORE_HOST}/matches/v2/list-live?Category=soccer`;
@@ -1850,7 +1916,7 @@ async function scanLiveMatches() {
 
         const { source, matches } = liveResult;
         if (matches.length === 0) {
-            console.log(`[Thông báo]: Không thu thập được trận đấu nào từ cả SofaScore và Livescore6.`);
+            console.log(`[Thông báo]: Không thu thập được trận đấu nào từ SofaScore, LiveFootball và Livescore6.`);
             return;
         }
 
@@ -1866,6 +1932,12 @@ async function scanLiveMatches() {
                 awayName = item.awayTeam?.name || 'Đội khách';
                 homeScore = item.homeScore?.current ?? 0;
                 actualAwayScore = item.awayScore?.current ?? 0;
+            } else if (itemSource === 'livefootball') {
+                matchId = String(item.eventid || item.eventId || item.matchId || item.id || `lf_${index}`);
+                homeName = item._lfHome || item.homeTeam?.name || item.home?.name || item.homeName || item.team1?.name || item.team1 || item.home_team || 'Đội nhà';
+                awayName = item._lfAway || item.awayTeam?.name || item.away?.name || item.awayName || item.team2?.name || item.team2 || item.away_team || 'Đội khách';
+                homeScore = parseInt(item.homeScore?.current ?? item.homeScore ?? item.home_score ?? item.score?.home ?? item.scoreHome ?? 0, 10);
+                actualAwayScore = parseInt(item.awayScore?.current ?? item.awayScore ?? item.away_score ?? item.score?.away ?? item.scoreAway ?? 0, 10);
             } else {
                 matchId = String(item.Eid || item.id || item.matchId || `ls6_${index}`);
                 
@@ -2031,7 +2103,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V17: PERSISTENT PARTIAL STATS CACHE | EVENT-ID CACHE | MAX DATA COVERAGE`);
+    console.log(`🛟 BUILD V17.0.1: FULL LIVE DISCOVERY 60-92 | PERSISTENT PARTIAL STATS CACHE | EVENT-ID CACHE | MAX DATA COVERAGE`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
