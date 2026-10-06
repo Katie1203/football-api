@@ -19,6 +19,11 @@ const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL = `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
 // Nguồn 2: Livescore6 (Kết hợp kép đa endpoint để vét cạn toàn bộ giải đấu)
+// V16: LiveFootball fallback nằm giữa SofaScore và Livescore6
+const LIVEFOOTBALL_HOST = 'free-api-live-football-data.p.rapidapi.com';
+const LIVEFOOTBALL_LIVE_PATH = '/football-current-live';
+const LIVEFOOTBALL_STATS_PATH = '/football-get-match-event-all-stats';
+
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
 const ODDS_API_KEY = process.env.ODDS_API_KEY || '0338c7727f7e9be5c773763cf65d25fb';
@@ -778,6 +783,16 @@ function extractSofaStatistics(data) {
 }
 
 
+function detectSofaStatPresence(data) {
+    const p={totalShots:false,shotsOnTarget:false,corners:false,possession:false,redCards:false};
+    function walk(n){ if(!n||typeof n!=='object')return; if(Array.isArray(n)){n.forEach(walk);return;}
+      const name=String(n.name||n.slug||n.type||n.title||'').toLowerCase();
+      const hasPair=(n.home!==undefined||n.homeValue!==undefined||n.homeTeam!==undefined||n.valueHome!==undefined) && (n.away!==undefined||n.awayValue!==undefined||n.awayTeam!==undefined||n.valueAway!==undefined);
+      if(hasPair){ if(name.includes('total shot'))p.totalShots=true; else if(name.includes('shot on target'))p.shotsOnTarget=true; else if(name.includes('corner'))p.corners=true; else if(name.includes('possession'))p.possession=true; else if(name.includes('red card'))p.redCards=true; }
+      Object.values(n).forEach(v=>{if(v&&typeof v==='object')walk(v)});
+    } walk(data); return p;
+}
+
 function extractEventArrayDeep(data) {
     const out=[], seen=new Set();
     function walk(n) {
@@ -819,6 +834,119 @@ async function resolveSofaEventIdByName(homeName,awayName,originalId) {
     }
     console.log(`    ❌ [MATCH-BY-NAME] Không tìm thấy ID đủ tin cậy | best=${bestScore.toFixed(2)}`);
     return null;
+}
+
+
+// ==========================================
+// V16 - LIVEFOOTBALL FIELD-BY-FIELD FALLBACK
+// SofaScore -> LiveFootball -> Livescore6
+// Không dùng football-get-match-detail vì current-live đã resolver eventid,
+// còn all-stats trả trực tiếp các chỉ số cần thiết.
+// ==========================================
+function statPresenceFromParsed(parsed) {
+    const p = parsed?.present || {};
+    return {
+        totalShots: !!p.totalShots,
+        shotsOnTarget: !!p.shotsOnTarget,
+        corners: !!p.corners,
+        possession: !!p.possession,
+        redCards: !!p.redCards
+    };
+}
+function inferStatPresenceFromObject(stats) {
+    if (!stats) return { totalShots:false, shotsOnTarget:false, corners:false, possession:false, redCards:false };
+    return {
+        totalShots: stats.totalShots !== undefined && stats.totalShots !== null,
+        shotsOnTarget: stats.shotsOnTarget !== undefined && stats.shotsOnTarget !== null,
+        corners: stats.corners !== undefined && stats.corners !== null,
+        possession: stats.possession !== undefined && stats.possession !== null,
+        redCards: stats.redCards !== undefined && stats.redCards !== null
+    };
+}
+function mergeMissingStats(baseStats, basePresent, incomingStats, incomingPresent) {
+    const out = { ...(baseStats || {}) };
+    const present = { ...(basePresent || {}) };
+    const filled = [];
+    for (const key of ['totalShots','shotsOnTarget','corners','possession','redCards']) {
+        if (!present[key] && incomingPresent?.[key]) {
+            out[key] = incomingStats[key];
+            present[key] = true;
+            filled.push(key);
+        }
+    }
+    return { stats: out, present, filled };
+}
+function extractLiveFootballCandidates(data) {
+    const out=[], seen=new Set();
+    function walk(n) {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        const id = n.eventid ?? n.eventId ?? n.matchId ?? n.id;
+        const home = n.homeTeam?.name ?? n.home?.name ?? n.homeName ?? n.team1?.name ?? n.team1 ?? n.home_team ?? '';
+        const away = n.awayTeam?.name ?? n.away?.name ?? n.awayName ?? n.team2?.name ?? n.team2 ?? n.away_team ?? '';
+        if (id && home && away && !seen.has(String(id))) {
+            seen.add(String(id)); out.push({ id:String(id), home:String(home), away:String(away), raw:n });
+        }
+        Object.values(n).forEach(v=>{ if(v && typeof v==='object') walk(v); });
+    }
+    walk(data); return out;
+}
+async function resolveLiveFootballMatchByName(homeName, awayName) {
+    console.log(`    🔄 [LIVEFOOTBALL] Tìm trận: ${homeName} vs ${awayName}`);
+    try {
+        const response = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
+            headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST }, timeout: 7000
+        });
+        const candidates=extractLiveFootballCandidates(response.data);
+        let best=null,bestScore=0;
+        for(const c of candidates){
+            const direct=(teamSimilarity(homeName,c.home)+teamSimilarity(awayName,c.away))/2;
+            const reversed=(teamSimilarity(homeName,c.away)+teamSimilarity(awayName,c.home))/2;
+            const score=Math.max(direct,reversed);
+            if(score>bestScore){bestScore=score;best=c;}
+        }
+        if(best && bestScore>=0.68){
+            console.log(`    ✅ [LIVEFOOTBALL MATCH] score=${bestScore.toFixed(2)} | eventid=${best.id}`);
+            return best;
+        }
+        console.log(`    ❌ [LIVEFOOTBALL MATCH] Không tìm thấy trận đủ tin cậy | best=${bestScore.toFixed(2)}`);
+        return null;
+    } catch(err) { console.log(`    ⚠️ [LIVEFOOTBALL LIVE ERROR] ${err.message}`); return null; }
+}
+function extractLiveFootballStatistics(data) {
+    const stats={ totalShots:null, shotsOnTarget:null, corners:null, redCards:null, possession:null };
+    const present={ totalShots:false, shotsOnTarget:false, corners:false, redCards:false, possession:false };
+    function walk(n){
+        if(!n || typeof n!=='object') return;
+        if(Array.isArray(n)){ n.forEach(walk); return; }
+        const key=String(n.key||'');
+        const arr=Array.isArray(n.stats)?n.stats:null;
+        if(arr && arr.length>=2 && arr[0]!==null && arr[1]!==null){
+            const a=Number(arr[0]), b=Number(arr[1]);
+            if(Number.isFinite(a)&&Number.isFinite(b)){
+                if(key==='total_shots'){ stats.totalShots=a+b; present.totalShots=true; }
+                else if(key==='ShotsOnTarget'){ stats.shotsOnTarget=a+b; present.shotsOnTarget=true; }
+                else if(key==='corners'){ stats.corners=a+b; present.corners=true; }
+                else if(key==='red_cards'){ stats.redCards=a+b; present.redCards=true; }
+                else if(key==='BallPossesion'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
+            }
+        }
+        Object.values(n).forEach(v=>{if(v&&typeof v==='object')walk(v)});
+    }
+    walk(data);
+    return { foundItems:Object.values(present).filter(Boolean).length, sofaStats:stats, present };
+}
+async function fetchLiveFootballPartialStats(homeName,awayName){
+    const match=await resolveLiveFootballMatchByName(homeName,awayName);
+    if(!match)return null;
+    try{
+        const response=await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_STATS_PATH}?eventid=${encodeURIComponent(match.id)}`,{
+            headers:{'x-rapidapi-key':PAID_RAPIDAPI_KEY.trim(),'x-rapidapi-host':LIVEFOOTBALL_HOST},timeout:7000
+        });
+        const parsed=extractLiveFootballStatistics(response.data);
+        console.log(parsed.foundItems>0 ? `    🛟 [LIVEFOOTBALL STATS OK] eventid=${match.id} | fields=${parsed.foundItems}` : `    ⚠️ [LIVEFOOTBALL STATS EMPTY] eventid=${match.id}`);
+        return parsed.foundItems>0 ? {...parsed,statsSource:'livefootball',crossSourceMatchId:match.id} : null;
+    }catch(err){console.log(`    ⚠️ [LIVEFOOTBALL STATS ERROR] ${err.message}`);return null;}
 }
 
 function extractLivescoreMatchCandidates(data) {
@@ -999,17 +1127,42 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             }
         }
 
-        // V15: Sofa vẫn rỗng dù đúng ID -> tìm cùng trận trên Livescore6 và lấy partial stats.
+        // V16: FIELD-BY-FIELD fallback. Giữ mọi field Sofa đã có; chỉ bù field thiếu.
+        // Thứ tự: SofaScore -> LiveFootball -> Livescore6. Missing != 0.
         let crossSourcePartial = null;
-        if (parsed.foundItems === 0 && homeName && awayName) {
-            crossSourcePartial = await fetchCrossSourcePartialStats(homeName, awayName);
-            if (crossSourcePartial?.foundItems > 0) {
-                parsed = {
-                    foundItems: crossSourcePartial.foundItems,
-                    sofaStats: crossSourcePartial.sofaStats
-                };
+        let sourceTrail = ['sofascore'];
+        let sofaPresent = detectSofaStatPresence(primary);
+        // Nếu primary rỗng, presence có thể đến từ legacy/retry; các giá trị >0/possession được xem là đã có.
+        const inferred = inferStatPresenceFromObject(parsed.sofaStats);
+        for (const k of Object.keys(sofaPresent)) sofaPresent[k] = sofaPresent[k] || inferred[k];
+
+        const needMore = () => Object.values(sofaPresent).some(v => !v);
+        if (homeName && awayName && needMore()) {
+            const lf = await fetchLiveFootballPartialStats(homeName, awayName);
+            if (lf?.foundItems > 0) {
+                const merged = mergeMissingStats(parsed.sofaStats, sofaPresent, lf.sofaStats, lf.present);
+                parsed.sofaStats = merged.stats; sofaPresent = merged.present;
+                if (merged.filled.length) {
+                    sourceTrail.push('livefootball');
+                    console.log(`    🔗 [MERGE] LiveFootball bù: ${merged.filled.join(', ')}`);
+                    crossSourcePartial = lf;
+                }
             }
         }
+        if (homeName && awayName && needMore()) {
+            const ls = await fetchCrossSourcePartialStats(homeName, awayName);
+            if (ls?.foundItems > 0) {
+                const lsPresent = inferStatPresenceFromObject(ls.sofaStats);
+                const merged = mergeMissingStats(parsed.sofaStats, sofaPresent, ls.sofaStats, lsPresent);
+                parsed.sofaStats = merged.stats; sofaPresent = merged.present;
+                if (merged.filled.length) {
+                    sourceTrail.push('livescore6');
+                    console.log(`    🔗 [MERGE] Livescore6 bù: ${merged.filled.join(', ')}`);
+                    crossSourcePartial = {...ls, crossSourceMatchId: ls.crossSourceMatchId};
+                }
+            }
+        }
+        parsed.foundItems = Object.values(sofaPresent).filter(Boolean).length;
 
         // Graph dùng ID Sofa đã resolve nếu có.
         const graph = await fetchSofaJson(`/matches/get-graph?matchId=${encodeURIComponent(effectiveMatchId)}`);
@@ -1028,8 +1181,8 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         return {
             ...parsed,
             statsAvailable: parsed.foundItems > 0,
-            partialStats: Boolean(crossSourcePartial?.foundItems > 0),
-            statsSource: crossSourcePartial?.foundItems > 0 ? 'livescore6-partial' : 'sofascore',
+            partialStats: sourceTrail.length > 1,
+            statsSource: sourceTrail.join(' -> '),
             resolvedMatchId: effectiveMatchId,
             crossSourceMatchId: crossSourcePartial?.crossSourceMatchId || null,
             graphData: graphCount > 0 ? graphArray : null,
