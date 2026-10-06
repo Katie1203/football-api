@@ -2111,17 +2111,20 @@ async function scanLiveMatches() {
                 metrics, oddsAnalysis, numericElapsed, internalMomentum, homeScore, actualAwayScore
             );
 
-            // Từ 3/5 trở lên: luôn chấm AI. Dưới 60% phải hiện rõ là đã phân tích nhưng không gửi.
-            if (!aiAnalysis.shouldSend) {
+            // V17.3.1: mọi trận >=3/5 PHẢI có một dòng kết quả AI trên Render.
+            // Log này đặt ngay sau evaluate để không bị mất bởi các gate cảnh báo phía sau.
+            {
                 const ruleNow = Number(aiAnalysis.efficiency);
-                if (ruleNow <= 60) {
-                    console.log(`    🧠 [AI V2 ĐÃ PHÂN TÍCH] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
-                } else {
-                    const qg = aiAnalysis.components?.qualityGate || {};
+                const qg = aiAnalysis.components?.qualityGate || {};
+                if (ruleNow < 60) {
+                    console.log(`    🧠 [AI CHƯA ĐẠT] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
+                } else if (!aiAnalysis.shouldSend) {
                     const reason = !qg.historyReady
-                        ? `chờ snapshot 5-10 phút`
-                        : `SOT mới/quality chưa xác nhận`;
-                    console.log(`    🛑 [QUALITY GATE FAIL] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | ${reason} | KHÔNG GỬI`);
+                        ? `QUALITY UNKNOWN - chờ snapshot 5-10 phút`
+                        : `QUALITY FAIL - SOT quality/momentum chưa xác nhận`;
+                    console.log(`    🛑 [AI ĐẠT RULE NHƯNG CHẶN] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | ${reason} | KHÔNG GỬI`);
+                } else {
+                    console.log(`    ✅ [AI ĐẠT + QUALITY PASS] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | đủ điều kiện xét cảnh báo`);
                 }
             }
 
@@ -2217,7 +2220,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V17.0.1: FULL LIVE DISCOVERY 60-92 | PERSISTENT PARTIAL STATS CACHE | EVENT-ID CACHE | MAX DATA COVERAGE`);
+    console.log(`🛟 BUILD V17.3.1: STRICT SOT/MOMENTUM GATE | AI RESULT LOG >=3/5 | BASE25`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
