@@ -40,7 +40,10 @@ function makeMatchSnapshot(metrics, rule, minute, homeScore, awayScore) {
         shotsOnTarget: Number(s.shotsOnTarget || 0),
         totalShots: Number(s.totalShots || 0),
         corners: Number(s.corners || 0),
-        redCards: Number(s.redCards || 0)
+        redCards: Number(s.redCards || 0),
+        shotsRate: (Number(s.totalShots || 0) / Math.max(1, Number(minute || 1))) * 100,
+        sotRate: (Number(s.shotsOnTarget || 0) / Math.max(1, Number(minute || 1))) * 100,
+        cornerRate: (Number(s.corners || 0) / Math.max(1, Number(minute || 1))) * 100
     };
 }
 
@@ -63,6 +66,14 @@ function detectTenMinuteSpike(previous, current) {
     if (dCorners >= 2) reasons.push(`Phạt góc +${dCorners}`);
     if (dRed >= 1) reasons.push(`Thẻ đỏ mới +${dRed}`);
     if (dGoals >= 1) reasons.push(`Bàn thắng mới +${dGoals}`);
+
+    // Đột biến cường độ: rate toàn trận tăng đáng kể dù số phút cũng tăng.
+    const dShotsRate = current.shotsRate - previous.shotsRate;
+    const dSotRate = current.sotRate - previous.sotRate;
+    const dCornerRate = current.cornerRate - previous.cornerRate;
+    if (dShotsRate >= 3) reasons.push(`Mật độ tổng sút +${dShotsRate.toFixed(1)} điểm`);
+    if (dSotRate >= 1.5) reasons.push(`Mật độ SOT +${dSotRate.toFixed(1)} điểm`);
+    if (dCornerRate >= 1.5) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
 
     return { isSpike: current.rule >= 58 && reasons.length > 0, reasons, deltaMinute: dm };
 }
@@ -924,13 +935,47 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 // 8. THUẬT TOÁN AI
 // ==========================================
-function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
+function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
     let matchAnalysis = [];
-    let aiPercentage = 28.0;
-
+    let aiPercentage = 28.0; // Base giữ nguyên
     const stats = metrics.sofaStats || {};
+    const minute = Math.max(1, Number(elapsedMinute) || 1);
     let hasTacticalData = false;
 
+    // V13 NEW AI:
+    // Chỉ số dạng số lần = số lần / phút hiện tại * 100.
+    // Total Shots dùng 100% giá trị.
+    // SOT chỉ cộng 50% giá trị để hạn chế đếm trùng vì SOT đã nằm trong Total Shots.
+    // Corners dùng 100% giá trị.
+    const totalShots = Math.max(0, Number(stats.totalShots) || 0);
+    const shotsOnTarget = Math.max(0, Number(stats.shotsOnTarget) || 0);
+    const corners = Math.max(0, Number(stats.corners) || 0);
+
+    const shotsRate = (totalShots / minute) * 100;
+    const sotRateRaw = (shotsOnTarget / minute) * 100;
+    const sotContribution = sotRateRaw * 0.50;
+    const cornerRate = (corners / minute) * 100;
+
+    if (totalShots > 0) {
+        aiPercentage += shotsRate;
+        matchAnalysis.push(`🔥 Tổng sút: ${totalShots} | ${totalShots}/${minute}×100 = ${shotsRate.toFixed(2)}% (Cộng ${shotsRate.toFixed(2)}%)`);
+        hasTacticalData = true;
+    }
+
+    if (shotsOnTarget > 0) {
+        aiPercentage += sotContribution;
+        matchAnalysis.push(`🎯 Sút trúng đích: ${shotsOnTarget} | ${shotsOnTarget}/${minute}×100 = ${sotRateRaw.toFixed(2)}% × 50% = ${sotContribution.toFixed(2)}%`);
+        hasTacticalData = true;
+    }
+
+    if (corners > 0) {
+        aiPercentage += cornerRate;
+        matchAnalysis.push(`🚩 Phạt góc: ${corners} | ${corners}/${minute}×100 = ${cornerRate.toFixed(2)}% (Cộng ${cornerRate.toFixed(2)}%)`);
+        hasTacticalData = true;
+    }
+
+    // Possession là % sẵn có nên KHÔNG chia cho phút.
+    // Giảm trọng số so với V12 để các chỉ số nhịp trận là phần chính của AI.
     if (stats.possession) {
         matchAnalysis.push(`📊 Tỷ lệ kiểm soát bóng: ${stats.possession}`);
         const possParts = stats.possession.split('-');
@@ -940,63 +985,27 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
             const maxPoss = Math.max(homePoss, awayPoss);
 
             if (maxPoss >= 70) {
-                aiPercentage += 15.0;
-                matchAnalysis.push(`    └─> Thế trận áp đảo cực mạnh (${maxPoss}% - cộng thêm 15.0%)`);
+                aiPercentage += 8.0;
+                matchAnalysis.push(`    └─> Kiểm soát áp đảo ${maxPoss}% (Cộng 8.0%)`);
                 hasTacticalData = true;
             } else if (maxPoss >= 60) {
-                aiPercentage += 10.0;
-                matchAnalysis.push(`    └─> Thế trận lấn lướt (${maxPoss}% - cộng thêm 10.0%)`);
+                aiPercentage += 5.0;
+                matchAnalysis.push(`    └─> Kiểm soát lấn lướt ${maxPoss}% (Cộng 5.0%)`);
                 hasTacticalData = true;
             }
         }
     }
 
-    if (stats.redCards > 0) {
-        aiPercentage += 15.0;
-        matchAnalysis.push(`🟥 Thẻ đỏ (${stats.redCards} thẻ - cộng thêm 15.0%)`);
-        hasTacticalData = true;
-    }
-
-    if (stats.shotsOnTarget >= 6) {
-        aiPercentage += 18.0;
-        matchAnalysis.push(`⚡ Sút trúng đích dồn dập: ${stats.shotsOnTarget} lần (Cộng thêm 18.0%)`);
-        hasTacticalData = true;
-    } else if (stats.shotsOnTarget >= 4) {
-        aiPercentage += 12.0;
-        matchAnalysis.push(`⚡ Sút trúng đích dồn dập: ${stats.shotsOnTarget} lần (Cộng thêm 12.0%)`);
-        hasTacticalData = true;
-    } else if (stats.shotsOnTarget >= 2) {
-        aiPercentage += 6.0;
-        matchAnalysis.push(`🎯 Sút trúng đích: ${stats.shotsOnTarget} lần (Cộng thêm 6.0%)`);
-        hasTacticalData = true;
-    }
-
-    if (stats.totalShots >= 15) {
-        aiPercentage += 15.0;
-        matchAnalysis.push(`🔥 Thế trận cực kỳ cởi mở, tổng sút: ${stats.totalShots} (Cộng thêm 15.0%)`);
-        hasTacticalData = true;
-    } else if (stats.totalShots >= 10) {
+    // Thẻ đỏ là biến bối cảnh, không áp dụng số lần/phút.
+    if ((Number(stats.redCards) || 0) > 0) {
         aiPercentage += 10.0;
-        matchAnalysis.push(`⚽ Hai đội tích cực bắn phá, tổng sút: ${stats.totalShots} (Cộng thêm 10.0%)`);
-        hasTacticalData = true;
-    } else if (stats.totalShots >= 6) {
-        aiPercentage += 5.0;
-        matchAnalysis.push(`⚽ Tổng sút: ${stats.totalShots} (Cộng thêm 5.0%)`);
+        matchAnalysis.push(`🟥 Thẻ đỏ: ${stats.redCards} (Yếu tố thay đổi thế trận - cộng 10.0%)`);
         hasTacticalData = true;
     }
 
-    if (stats.corners >= 8) {
-        aiPercentage += 12.0;
-        matchAnalysis.push(`🚩 Sức ép phạt góc lớn: ${stats.corners} quả (Cộng thêm 12.0%)`);
-        hasTacticalData = true;
-    } else if (stats.corners >= 4) {
-        aiPercentage += 6.0;
-        matchAnalysis.push(`🚩 Phạt góc ổn định: ${stats.corners} quả (Cộng thêm 6.0%)`);
-        hasTacticalData = true;
-    }
-
+    // Kèo nhà cái chỉ là dữ liệu tham khảo, tuyệt đối không cộng Rule.
     if (oddsAnalysis) {
-        matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Odds Over ${oddsAnalysis.odds} — chỉ dùng tham khảo nhận định, KHÔNG cộng Rule`);
+        matchAnalysis.push(`💰 Kèo nhà cái (${oddsAnalysis.bookmaker}): Odds Over ${oddsAnalysis.odds} — chỉ tham khảo nhận định, KHÔNG cộng Rule`);
         if (oddsAnalysis.oddsNoteText) {
             matchAnalysis.push(`    └─> ${oddsAnalysis.oddsNoteText}`);
         }
@@ -1004,13 +1013,20 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis) {
     }
 
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
-    const MIN_SEND_PERCENTAGE = 60.0; 
+    const MIN_SEND_PERCENTAGE = 60.0;
     const shouldSend = parseFloat(finalPercentage) > MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
         efficiency: finalPercentage,
         detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
-        shouldSend
+        shouldSend,
+        components: {
+            base: 28.0,
+            shotsRate: Number(shotsRate.toFixed(2)),
+            sotRateRaw: Number(sotRateRaw.toFixed(2)),
+            sotContribution: Number(sotContribution.toFixed(2)),
+            cornerRate: Number(cornerRate.toFixed(2))
+        }
     };
 }
 
@@ -1234,7 +1250,7 @@ async function scanLiveMatches() {
 
             const metrics = await fetchMatchDetailStats(matchId, source);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
-            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis);
+            const aiAnalysis = evaluateMatchDynamicAI(metrics, oddsAnalysis, numericElapsed);
             const currentSnapshot = makeMatchSnapshot(metrics, aiAnalysis.efficiency, numericElapsed, homeScore, actualAwayScore);
 
             let alertNumber = existingAlertState ? 2 : 1;
@@ -1305,7 +1321,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🚨 BUILD V12: SECOND ALERT 10-MIN SPIKE | ODDS CONTEXT ONLY | EXACT LIVE CLOCK`);
+    console.log(`🧠 BUILD V13: RATE/PER-MINUTE AI | SECOND ALERT 10-MIN SPIKE | ODDS CONTEXT ONLY`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
