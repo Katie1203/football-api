@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 
 
-// V16.6: COMPACT MISSING-ONLY LOG
+// V17: PARTIAL STATS AI + COMPACT MISSING-ONLY LOG
 // Mặc định chỉ hiện: chỉ số còn thiếu, DATA MISSING, cảnh báo đã gửi và lỗi quan trọng.
 const COMPACT_MISSING_ONLY_LOG = String(process.env.DEBUG_LOG || '').toLowerCase() !== 'true';
 const _consoleLog = console.log.bind(console);
@@ -25,8 +25,7 @@ console.log = (...args) => {
         '[LIVEFOOTBALL STATS ERROR]',
         '[CROSS-SOURCE ERROR]',
         'Server running',
-        'BUILD V16.7',
-        'BUILD V16.7',
+        'BUILD V17',
         'Không thu thập được trận đấu nào'
     ];
     if (keep.some(k => msg.includes(k))) _consoleLog(...args);
@@ -53,9 +52,44 @@ const LIVEFOOTBALL_LIVE_PATH = '/football-current-live';
 // V16.5 - cache danh sách live để resolver không gọi lại API cho từng trận
 const resolverLiveCache = { livefootball: { ts:0, data:null }, livescore6: { ts:0, live:null, date:null } };
 const RESOLVER_CACHE_MS = 45 * 1000;
-// V16.7: trận 0/5 tạm nghỉ resolver để giảm quota; sau 75s sẽ thử lại toàn bộ nguồn.
+// V16.8: cache dữ liệu thật theo trận. Field đã lấy được không bị mất khi API vòng sau trả rỗng.
 const dataMissingRetryCache = new Map();
 const DATA_MISSING_RETRY_MS = 75 * 1000;
+const persistentStatsCache = new Map();
+const PERSISTENT_STATS_TTL_MS = 35 * 60 * 1000;
+const liveFootballEventIdCache = new Map();
+const EVENT_ID_CACHE_TTL_MS = 30 * 60 * 1000;
+function statsCacheKey(matchId, homeName, awayName) {
+    return `${String(matchId||'')}|${normalizeTeamName(homeName||'')}|${normalizeTeamName(awayName||'')}`;
+}
+function getPersistentStats(key) {
+    const x = persistentStatsCache.get(key);
+    if (!x) return null;
+    if (Date.now() - x.ts > PERSISTENT_STATS_TTL_MS) { persistentStatsCache.delete(key); return null; }
+    return x;
+}
+function savePersistentStats(key, stats, present, advancedStats, sourceTrail=[]) {
+    if (!key || !present || !Object.values(present).some(Boolean)) return;
+    const old = getPersistentStats(key);
+    const merged = mergeMissingStats(old?.stats || {}, old?.present || {}, stats || {}, present || {});
+    const adv = { ...(old?.advancedStats || {}) };
+    for (const k of ['xg','bigChances','shotsInsideBox','touchesOppBox']) {
+        const v = Number(advancedStats?.[k]);
+        if (Number.isFinite(v) && v > Number(adv[k] || 0)) adv[k] = v;
+    }
+    persistentStatsCache.set(key, { ts:Date.now(), stats:merged.stats, present:merged.present, advancedStats:adv, sourceTrail:[...new Set([...(old?.sourceTrail||[]), ...sourceTrail])] });
+}
+function getCachedLiveFootballEvent(homeName, awayName) {
+    const key = `${normalizeTeamName(homeName)}|${normalizeTeamName(awayName)}`;
+    const x = liveFootballEventIdCache.get(key);
+    if (!x || Date.now()-x.ts > EVENT_ID_CACHE_TTL_MS) { if(x) liveFootballEventIdCache.delete(key); return null; }
+    return x.match;
+}
+function cacheLiveFootballEvent(homeName, awayName, match) {
+    if (!match?.id) return;
+    liveFootballEventIdCache.set(`${normalizeTeamName(homeName)}|${normalizeTeamName(awayName)}`, {ts:Date.now(), match});
+}
+
 
 const LIVEFOOTBALL_STATS_PATH = '/football-get-match-event-all-stats';
 
@@ -1053,6 +1087,8 @@ function extractLiveFootballCandidates(data) {
 }
 async function resolveLiveFootballMatchByName(homeName, awayName) {
     console.log(`    🔄 [LIVEFOOTBALL] Tìm trận: ${homeName} vs ${awayName}`);
+    const cachedEvent = getCachedLiveFootballEvent(homeName, awayName);
+    if (cachedEvent) return cachedEvent;
     try {
         let liveList;
         const now=Date.now();
@@ -1079,6 +1115,7 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
         if(best) console.log(`    🧭 [LIVEFOOTBALL BEST] ${best.home} vs ${best.away} | score=${bestScore.toFixed(2)}${bestReversed?' | reversed':''}`);
         if(best && bestScore>=0.62){
             console.log(`    ✅ [LIVEFOOTBALL MATCH] score=${bestScore.toFixed(2)} | eventid=${best.id}`);
+            cacheLiveFootballEvent(homeName, awayName, best);
             return best;
         }
         console.log(`    ❌ [LIVEFOOTBALL MATCH] Không tìm thấy trận đủ tin cậy | best=${bestScore.toFixed(2)}`);
@@ -1267,7 +1304,8 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
     if (source === 'sofascore') {
         const missingCacheKey = `${String(homeName).toLowerCase()}|${String(awayName).toLowerCase()}`;
         const missingUntil = dataMissingRetryCache.get(missingCacheKey) || 0;
-        if (Date.now() < missingUntil) {
+        const earlyPersistent = getPersistentStats(statsCacheKey(matchId, homeName, awayName));
+        if (Date.now() < missingUntil && !earlyPersistent) {
             return {
                 foundItems: 0,
                 sofaStats: { totalShots:null, shotsOnTarget:null, corners:null, possession:null, redCards:null },
@@ -1319,6 +1357,16 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         let sofaPresent = parsed.foundItems > 0 ? statPresenceFromParsed(parsed) :
             { totalShots:false, shotsOnTarget:false, corners:false, possession:false, redCards:false };
 
+        // V16.8: phục hồi các field thật đã lấy được ở vòng trước trước khi gọi fallback API.
+        const pCacheKey = statsCacheKey(matchId, homeName, awayName);
+        const cachedStats = getPersistentStats(pCacheKey);
+        if (cachedStats) {
+            const restored = mergeMissingStats(parsed.sofaStats, sofaPresent, cachedStats.stats, cachedStats.present);
+            parsed.sofaStats = restored.stats; sofaPresent = restored.present;
+            if (restored.filled.length) sourceTrail.push('persistent-cache');
+            parsed.advancedStats = { ...(cachedStats.advancedStats || {}), ...(parsed.advancedStats || {}) };
+        }
+
         const needMore = () => Object.values(sofaPresent).some(v => !v);
         if (homeName && awayName && needMore()) {
             const lf = await fetchLiveFootballPartialStats(homeName, awayName);
@@ -1350,6 +1398,8 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             }
         }
         parsed.foundItems = Object.values(sofaPresent).filter(Boolean).length;
+        // V16.8: cache chỉ dữ liệu thật/present; vòng sau chỉ có thể giữ hoặc tăng độ đầy đủ, không tụt 4/5 -> 0/5.
+        if (parsed.foundItems > 0) savePersistentStats(pCacheKey, parsed.sofaStats, sofaPresent, parsed.advancedStats, sourceTrail);
         const completeness = ['totalShots','shotsOnTarget','corners','possession','redCards']
             .map(k => `${k}=${sofaPresent[k] ? '✓' : '✗'}`).join(' | ');
         // V16.6: khi đủ 5/5 thì im lặng; chỉ log đúng field còn thiếu.
@@ -1601,7 +1651,8 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute) {
         if (oddsAnalysis.oddsNoteText) {
             matchAnalysis.push(`    └─> ${oddsAnalysis.oddsNoteText}`);
         }
-        hasTacticalData = true;
+        // V17: Odds chỉ là context, không được biến một trận thiếu dữ liệu chiến thuật
+        // thành đủ điều kiện gửi cảnh báo.
     }
 
     const finalPercentage = Math.min(aiPercentage, 98.0).toFixed(1);
@@ -1737,32 +1788,22 @@ async function sendTelegramAlert(item) {
         ? `🚨🔥🔥🔥 BIGGGG LẦN 3 🔥🔥🔥🚨`
         : item.alertNumber === 2
             ? `🔥🔥🔥 BIGGGG LẦN 2 🔥🔥🔥`
-            : item.momentumAlert
-                ? `⚡🔥 MOMENTUM ALERT (${item.source.toUpperCase()})`
-                : `🔔 RUNG CHUỔNG VÀNGGGG (${item.source.toUpperCase()})`;
-    const spikeBlock = item.alertNumber >= 2 && item.spikeReasons?.length
-        ? `\n⚡ CHỈ SỐ ĐỘT BIẾN: ${item.spikeReasons.join(' | ')}\n💰 Điều kiện BIGGGG: Odds Over ${item.goalOdds} (yêu cầu ${BIGGGG_ODDS_MIN.toFixed(2)}–${BIGGGG_ODDS_MAX.toFixed(2)})`
-        : '';
+            : `🔥 TÀI LỘC ĐẾNNNN 🔥`;
 
+    // V16.9: Telegram chỉ hiển thị bản tinh gọn.
+    // Stats/Rule/Momentum/Odds vẫn được xử lý nội bộ nhưng không đưa chi tiết vào tin nhắn.
     const message =
-`${alertHeader}${spikeBlock}
+`${alertHeader}
 🏆 Giải đấu: ${item.league}
 ⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–${item.awayScore} ${item.awayName}
-⏱ Thời gian: ${timeDisplay}
-
-⚽ DIỄN BIẾN TỶ SỐ THEO PHÚT:
-${item.goalTimeline}
-
-📊 TỔNG HỢP THẾ TRẬN & DÒNG TIỀN:
-${item.detailText}
-
+⏱️ Thời gian: ${timeDisplay}
+⚽️ DIỄN BIẾN TỶ SỐ THEO PHÚT: ${item.goalTimeline}
 🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
 📈 Hiệu suất Rule: ${item.ruleEfficiency}%${item.ftPrediction ? `
-
 🔮 DỰ ĐOÁN TỶ SỐ FT: ${item.ftPrediction.ftScore}
-⚽ Dự kiến bàn còn lại: +${item.ftPrediction.expectedGoals}
+⚽️ Dự kiến bàn còn lại: +${item.ftPrediction.expectedGoals}
 🎯 Đội có khả năng ghi bàn: ${item.ftPrediction.likelyScorer}
-📊 Sức ép: Chủ nhà ${item.ftPrediction.homePressure}% - ${item.ftPrediction.awayPressure}% Đội khách
+📊 Sức ép: ${item.ftPrediction.homePressure}% - ${item.ftPrediction.awayPressure}%
 🔮 Độ mạnh dự đoán: ${item.ftPrediction.strength}` : ''}`;
 
     try {
@@ -1856,8 +1897,21 @@ async function scanLiveMatches() {
             const metrics = await fetchMatchDetailStats(matchId, itemSource, homeName, awayName);
             const oddsAnalysis = analyzeOddsGoalProbability(allOdds, homeName, awayName, homeScore + actualAwayScore);
 
-            if (itemSource === 'sofascore' && metrics.statsAvailable === false) {
+            // V17: PARTIAL STATS 2/5-5/5 vẫn được đưa qua AI nếu có ít nhất
+            // một field tấn công thật: Total Shots / SOT / Corners.
+            // Chỉ 0/5 hoặc 1/5 mới bị loại vì dữ liệu quá nghèo.
+            const statPresent = metrics.present || inferStatPresenceFromObject(metrics.sofaStats);
+            const statCount = ['totalShots','shotsOnTarget','corners','possession','redCards']
+                .filter(k => statPresent?.[k]).length;
+            const hasAttackField = ['totalShots','shotsOnTarget','corners']
+                .some(k => statPresent?.[k]);
+
+            if (statCount === 0 || metrics.statsAvailable === false) {
                 console.log(`    ❌ [DATA MISSING 0/5] ${homeName} vs ${awayName} | Không có Stats | retry resolver sau 75s`);
+                continue;
+            }
+            if (statCount < 2 || !hasAttackField) {
+                // Missing-only log phía fetch đã cho biết field nào thiếu; không spam thêm log.
                 continue;
             }
 
@@ -1961,7 +2015,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V16.7: MISSING-ONLY LOG | V16.5 DEEP RESOLVER + INTERNAL MOMENTUM | BIGGGG L2/L3`);
+    console.log(`🛟 BUILD V17: PERSISTENT PARTIAL STATS CACHE | EVENT-ID CACHE | MAX DATA COVERAGE`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
