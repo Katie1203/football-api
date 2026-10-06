@@ -59,6 +59,22 @@ const persistentStatsCache = new Map();
 const PERSISTENT_STATS_TTL_MS = 35 * 60 * 1000;
 const liveFootballEventIdCache = new Map();
 const EVENT_ID_CACHE_TTL_MS = 30 * 60 * 1000;
+
+// V17.0.1 HOTFIX: helper dùng bởi persistent stats cache / LiveFootball event-id cache.
+// Chỉ chuẩn hóa key; không thay đổi Rule, filter, resolver hay logic cảnh báo.
+function normalizeTeamName(name = '') {
+    return String(name || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/&/g, ' and ')
+        .replace(/\breserves?\b/g, ' reserve ')
+        .replace(/\bunder[ -]?(20|21|23)\b/g, ' u$1 ')
+        .replace(/\bu[ -]?(20|21|23)\b/g, ' u$1 ')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
 function statsCacheKey(matchId, homeName, awayName) {
     return `${String(matchId||'')}|${normalizeTeamName(homeName||'')}|${normalizeTeamName(awayName||'')}`;
 }
