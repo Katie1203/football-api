@@ -1,4 +1,3 @@
-
 const express = require('express');
 const axios = require('axios');
 
@@ -6959,64 +6958,26 @@ app.get(
 app.listen(
   PORT,
   () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Telegram Alert >= ${MIN_SEND_PERCENTAGE}%`);
+    console.log(`BIG BET >= ${BIG_BET_PERCENTAGE}%`);
+    console.log('Scan minute: 46 -> 92 (Gửi tin nhắn từ phút 65)');
+    console.log(`Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`);
 
-    console.log(
-      `Server running on port ${PORT}`
-    );
-
-
-    console.log(
-      `Telegram Alert >= ${MIN_SEND_PERCENTAGE}%`
-    );
-
-
-    console.log(
-      `BIG BET >= ${BIG_BET_PERCENTAGE}%`
-    );
-
-
-    console.log(
-      'Scan minute: 46 -> 92'
-    );
-
-
-    console.log(
-      `Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`
-    );
-
-
-    // Chạy lần đầu sau 10 giây
     setTimeout(
       () => {
-
         scanLiveMatches()
-          .catch(
-            e =>
-              console.error(
-                '[Initial Scan]',
-                e.message
-              )
-          );
-
+          .catch(e => console.error('[Initial Scan]', e.message));
       },
       10000
     );
 
-
-   // Sau đó 7 phút / lần
-setInterval(
-  () => {
-    scanLiveMatches()
-      .catch(
-        e =>
-          console.error(
-            '[Auto Scan]',
-            e.message
-          )
-      );
-  },
-  SCAN_INTERVAL_MS
-);
-
+    setInterval(
+      () => {
+        scanLiveMatches()
+          .catch(e => console.error('[Auto Scan]', e.message));
+      },
+      SCAN_INTERVAL_MS
+    );
   }
 );
