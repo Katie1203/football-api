@@ -1709,6 +1709,9 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
     // Total Shots vẫn đo cường độ tấn công theo phút thực tế.
     // SOT không còn cộng cố định 50%; chất lượng SOT phụ thuộc SOT/Total Shots.
     const shotsRate = (totalShots / minute) * 100;
+    // V17.4.2: Total Shots chỉ lấy 60% trọng số để tránh Shots thô đẩy Rule quá cao.
+    // Effective SOT bên dưới giữ nguyên và đi kèm Total Shots để phản ánh chất lượng ép sân.
+    const weightedShotsRate = shotsRate * 0.60;
     const sotRateRaw = (shotsOnTarget / minute) * 100;
     const sotShotRatio = totalShots > 0 ? shotsOnTarget / totalShots : null;
 
@@ -1725,8 +1728,8 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
     const cornerRate = (corners / minute) * 100;
 
     if (totalShots > 0) {
-        aiPercentage += shotsRate;
-        matchAnalysis.push(`🔥 Tổng sút: +${shotsRate.toFixed(2)}%`);
+        aiPercentage += weightedShotsRate;
+        matchAnalysis.push(`🔥 Tổng sút: ${shotsRate.toFixed(2)} × 60% = +${weightedShotsRate.toFixed(2)}%`);
         hasTacticalData = true;
     }
     if (shotsOnTarget > 0) {
@@ -1822,6 +1825,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         components: {
             base: 15.0,
             shotsRate: Number(shotsRate.toFixed(2)),
+            weightedShotsRate: Number(weightedShotsRate.toFixed(2)),
             sotRateRaw: Number(sotRateRaw.toFixed(2)),
             effectiveSot: Number(effectiveSot.toFixed(2)),
             effectiveSotMultiplier,
@@ -2190,7 +2194,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V17.4.1: BASE15 | EFFECTIVE SOT | BIGGGG EFFECTIVE-SOT SPIKE | NO QUALITY GATE`);
+    console.log(`🛟 BUILD V17.4.2: BASE15 | SHOTS x60% + EFFECTIVE SOT | BIGGGG EFFECTIVE-SOT SPIKE | NO QUALITY GATE`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
