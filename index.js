@@ -112,6 +112,7 @@ function cacheLiveFootballEvent(homeName, awayName, match) {
 
 
 const LIVEFOOTBALL_STATS_PATH = '/football-get-match-event-all-stats';
+const LIVEFOOTBALL_DETAIL_PATH = '/football-get-match-detail'; // V17.5: fallback resolver/stats only when all-stats is empty
 
 const LIVESCORE_HOST = 'livescore6.p.rapidapi.com';
 
@@ -789,7 +790,7 @@ async function fetchLiveMatchesDualSource() {
                 headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST },
                 timeout: 10000
             });
-            liveList = Array.isArray(lfRes.data?.response?.live) ? lfRes.data.response.live : [];
+            liveList = lfRes.data || null; // V17.5: giữ RAW response; deep parser tự tìm mọi candidate, không khóa vào response.live
             resolverLiveCache.livefootball = { ts: now, data: liveList };
         }
         const lfCandidates = extractLiveFootballCandidates(liveList);
@@ -988,6 +989,7 @@ async function fetchSofaJson(path, timeout = 6000) {
 function extractSofaStatistics(data) {
     let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
     let shotsOffTarget = 0, blockedShots = 0;
+    let hasSOTComponent=false, hasOffComponent=false, hasBlockedComponent=false;
     let possessionHome = null, possessionAway = null;
     let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
     let foundItems = 0;
@@ -1014,11 +1016,11 @@ function extractSofaStatistics(data) {
         if (name && (!isNaN(homeVal) || !isNaN(awayVal))) {
             const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
             if (name.includes('shots on target') || name.includes('shot on target')) {
-                shotsOnTarget = Math.max(shotsOnTarget, sumVal); present.shotsOnTarget=true; foundItems++;
+                shotsOnTarget = Math.max(shotsOnTarget, sumVal); present.shotsOnTarget=true; hasSOTComponent=true; foundItems++;
             } else if (name.includes('shots off target') || name.includes('shot off target')) {
-                shotsOffTarget = Math.max(shotsOffTarget, sumVal); foundItems++;
+                shotsOffTarget = Math.max(shotsOffTarget, sumVal); hasOffComponent=true; foundItems++;
             } else if (name.includes('blocked shots') || name.includes('blocked shot')) {
-                blockedShots = Math.max(blockedShots, sumVal); foundItems++;
+                blockedShots = Math.max(blockedShots, sumVal); hasBlockedComponent=true; foundItems++;
             } else if (name.includes('total shots') || name.includes('total shot')) {
                 totalShots = Math.max(totalShots, sumVal); present.totalShots=true; foundItems++;
             } else if (name.includes('corner')) {
@@ -1047,12 +1049,18 @@ function extractSofaStatistics(data) {
     }
 
     roots.forEach(walk);
+    // V17.5: chỉ suy ra Total Shots khi đủ cả 3 thành phần, tránh lấy SOT làm Total Shots.
+    if (!present.totalShots && hasSOTComponent && hasOffComponent && hasBlockedComponent) {
+        totalShots = shotsOnTarget + shotsOffTarget + blockedShots;
+        present.totalShots = true;
+    }
+    foundItems = Object.values(present).filter(Boolean).length;
 
     return {
         foundItems,
         sofaStats: {
             shotsOnTarget,
-            totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots),
+            totalShots: present.totalShots ? totalShots : null,
             shotsOffTarget,
             blockedShots,
             corners,
@@ -1217,18 +1225,18 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
         const now=Date.now();
         if (resolverLiveCache.livefootball.data && now-resolverLiveCache.livefootball.ts < RESOLVER_CACHE_MS) {
             liveList=resolverLiveCache.livefootball.data;
-            console.log(`    ♻️ [LIVEFOOTBALL CACHE] live=${liveList.length}`);
+            console.log(`    ♻️ [LIVEFOOTBALL CACHE] dùng RAW live response`);
         } else {
             const response = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
                 headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST }, timeout: 7000
             });
-            liveList = Array.isArray(response.data?.response?.live) ? response.data.response.live : [];
+            liveList = response.data || null; // V17.5 deep resolver: không giả định response.live
             resolverLiveCache.livefootball={ts:now,data:liveList};
-            console.log(`    📥 [LIVEFOOTBALL LIST] live=${liveList.length}`);
+            console.log(`    📥 [LIVEFOOTBALL LIST] RAW response loaded`);
         }
-        if (liveList.length === 0) { console.log(`    ↪️ [LIVEFOOTBALL] response.live=[] -> chuyển Livescore6`); return null; }
         const candidates=extractLiveFootballCandidates(liveList);
-        console.log(`    🔎 [LIVEFOOTBALL CANDIDATES] parsed=${candidates.length}/${liveList.length}`);
+        console.log(`    🔎 [LIVEFOOTBALL CANDIDATES] parsed=${candidates.length}`);
+        if (candidates.length === 0) { console.log(`    ↪️ [LIVEFOOTBALL] không bóc được candidate từ RAW response -> chuyển Livescore6`); return null; }
         if (!candidates.length) return null;
         let best=null,bestScore=0,bestReversed=false;
         for(const c of candidates){
@@ -1307,15 +1315,23 @@ function extractLiveFootballStatistics(data) {
 }
 async function fetchLiveFootballPartialStats(homeName,awayName){
     const match=await resolveLiveFootballMatchByName(homeName,awayName);
-    if(!match)return null;
+    if(!match){ console.log(`    📡 [RAW AUDIT] LiveFootball | MATCH=NO`); return null; }
+    const headers={'x-rapidapi-key':PAID_RAPIDAPI_KEY.trim(),'x-rapidapi-host':LIVEFOOTBALL_HOST};
     try{
-        const response=await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_STATS_PATH}?eventid=${encodeURIComponent(match.id)}`,{
-            headers:{'x-rapidapi-key':PAID_RAPIDAPI_KEY.trim(),'x-rapidapi-host':LIVEFOOTBALL_HOST},timeout:7000
-        });
-        const parsed=extractLiveFootballStatistics(response.data);
-        console.log(parsed.foundItems>0 ? `    🛟 [LIVEFOOTBALL STATS OK] eventid=${match.id} | fields=${parsed.foundItems}` : `    ⚠️ [LIVEFOOTBALL STATS EMPTY] eventid=${match.id}`);
+        const response=await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_STATS_PATH}?eventid=${encodeURIComponent(match.id)}`,{headers,timeout:7000});
+        let parsed=extractLiveFootballStatistics(response.data);
+        console.log(`    📡 [RAW AUDIT] LiveFootball | MATCH=YES | ID=${match.id} | all-stats HTTP=${response.status} | RAW=${response.data?'YES':'NO'} | PARSED=${parsed.foundItems}/5`);
+        // V17.5: endpoint detail chỉ gọi khi all-stats không bóc được field nào.
+        if(parsed.foundItems===0){
+            try{
+                const detail=await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_DETAIL_PATH}?eventid=${encodeURIComponent(match.id)}`,{headers,timeout:7000});
+                const dp=extractLiveFootballStatistics(detail.data);
+                console.log(`    📡 [RAW AUDIT] LiveFootball DETAIL | HTTP=${detail.status} | RAW=${detail.data?'YES':'NO'} | PARSED=${dp.foundItems}/5`);
+                if(dp.foundItems>parsed.foundItems) parsed=dp;
+            }catch(e){ console.log(`    ⚠️ [LIVEFOOTBALL DETAIL ERROR] ID=${match.id} | ${e.response?.status||'ERR'} ${e.message}`); }
+        }
         return parsed.foundItems>0 ? {...parsed,statsSource:'livefootball',crossSourceMatchId:match.id} : null;
-    }catch(err){console.log(`    ⚠️ [LIVEFOOTBALL STATS ERROR] ${err.message}`);return null;}
+    }catch(err){console.log(`    ⚠️ [LIVEFOOTBALL STATS ERROR] ID=${match.id} | ${err.response?.status||'ERR'} ${err.message}`);return null;}
 }
 
 function extractLivescoreMatchCandidates(data) {
@@ -1419,6 +1435,23 @@ async function fetchLivescoreScoreboard(eid) {
     }
 }
 
+
+async function fetchSofaRedCardFallback(eventId) {
+    if (!eventId) return null;
+    try {
+        const data=await fetchSofaJson(`/events/get-incidents?eventId=${encodeURIComponent(eventId)}`,6500);
+        const incidents=Array.isArray(data?.incidents)?data.incidents:null;
+        if(!incidents) return null;
+        let red=0;
+        for(const x of incidents){
+            const t=String(x.incidentType||x.type||x.incidentClass||x.cardType||'').toLowerCase();
+            if(t.includes('red') || (t.includes('card') && String(x.incidentClass||x.cardType||'').toLowerCase().includes('red'))) red++;
+        }
+        // incidents tải thành công => 0 red cũng là dữ liệu hợp lệ.
+        return {foundItems:1,sofaStats:{redCards:red},present:{totalShots:false,shotsOnTarget:false,corners:false,possession:false,redCards:true}};
+    } catch(_) { return null; }
+}
+
 function auditFieldList(parsed) {
     const p = parsed?.present || {};
     const names = {totalShots:'Shots',shotsOnTarget:'SOT',corners:'Corners',possession:'Poss',redCards:'Red'};
@@ -1430,20 +1463,31 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
         const match = await resolveLivescoreMatchByName(homeName, awayName);
         if (!match) return null;
 
-        // V17.4.9: xác minh Eid bằng Scoreboard trước khi đọc Statistics.
-        // Scoreboard chỉ hỗ trợ resolver/phút/tỷ số; KHÔNG dùng thay Statistics.
-        await fetchLivescoreScoreboard(match.id);
-
+        // V17.5: Scoreboard xác minh Eid; Statistics vẫn là nguồn chính.
+        const scoreboard = await fetchLivescoreScoreboard(match.id);
+        const headers = { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST };
         const url = `https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${encodeURIComponent(match.id)}`;
-        const response = await axios.get(url, {
-            headers: {
-                'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
-                'x-rapidapi-host': LIVESCORE_HOST
-            },
-            timeout: 7000
-        }).catch(() => ({ data: null }));
+        let httpStatus='ERR', rawStats=null;
+        try { const response=await axios.get(url,{headers,timeout:7000}); httpStatus=response.status; rawStats=response.data; } catch(e) { httpStatus=e.response?.status||'ERR'; }
+        let parsed = extractLivescoreStatistics(rawStats);
+        console.log(`    📡 [RAW AUDIT] Livescore6 | MATCH=YES | Eid=${match.id} | scoreboard=${scoreboard?'YES':'NO'} | stats HTTP=${httpStatus} | RAW=${rawStats?'YES':'NO'} | PARSED=${parsed.foundItems}/5`);
 
-        const parsed = extractLivescoreStatistics(response.data);
+        // Một số provider nhúng stat/card vào scoreboard; chỉ merge field thực sự parse được.
+        if(scoreboard && parsed.foundItems<5){
+            const sb=extractLivescoreStatistics(scoreboard);
+            const mm=mergeMissingStats(parsed.sofaStats,parsed.present,sb.sofaStats,sb.present);
+            parsed.sofaStats=mm.stats; parsed.present=mm.present; parsed.foundItems=Object.values(parsed.present).filter(Boolean).length;
+        }
+        // Commentary chỉ gọi khi Statistics còn thiếu; dùng làm fallback cho field có cấu trúc thật (không suy diễn shot).
+        if(parsed.foundItems<5){
+            try{
+                const cr=await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-commentary?Eid=${encodeURIComponent(match.id)}`,{headers,timeout:6500});
+                const cp=extractLivescoreStatistics(cr.data);
+                const mm=mergeMissingStats(parsed.sofaStats,parsed.present,cp.sofaStats,cp.present);
+                parsed.sofaStats=mm.stats; parsed.present=mm.present; parsed.foundItems=Object.values(parsed.present).filter(Boolean).length;
+                console.log(`    📡 [RAW AUDIT] Livescore6 COMMENTARY | HTTP=${cr.status} | parsed=${cp.foundItems}/5 | merged=${parsed.foundItems}/5`);
+            }catch(e){ console.log(`    ⚠️ [LIVESCORE6 COMMENTARY ERROR] Eid=${match.id} | ${e.response?.status||'ERR'} ${e.message}`); }
+        }
         if (parsed.foundItems > 0) {
             console.log(`    🛟 [PARTIAL STATS OK] Livescore6 Eid=${match.id} | fields=${parsed.foundItems} | ${auditFieldList(parsed)}`);
             return {
@@ -1464,7 +1508,7 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
 }
 
 async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = '') {
-    // V17.4.9: 3 nguồn bổ sung lẫn nhau + SOURCE AUDIT + Livescore6 Scoreboard resolver.
+    // V17.5.0: 3 nguồn bổ sung lẫn nhau + SOURCE AUDIT + Livescore6 Scoreboard resolver.
     // Mọi nguồn quy về pipeline field-by-field: SofaScore -> LiveFootball -> Livescore6.
     // Nếu Sofa không resolve được ID, LiveFootball + Livescore6 vẫn tiếp tục bù field thiếu.
     if (source !== 'sofascore') {
@@ -1543,6 +1587,14 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         }
 
         const needMore = () => Object.values(sofaPresent).some(v => !v);
+        // V17.5: incidents là fallback đáng tin cậy cho Red Cards; nếu endpoint trả danh sách và không có red => 0 hợp lệ.
+        if (!sofaPresent.redCards && effectiveMatchId) {
+            const incRed=await fetchSofaRedCardFallback(effectiveMatchId);
+            if(incRed?.present?.redCards){
+                const m=mergeMissingStats(parsed.sofaStats,sofaPresent,incRed.sofaStats,incRed.present);
+                parsed.sofaStats=m.stats; sofaPresent=m.present; if(m.filled.length) sourceTrail.push('sofa-incidents');
+            }
+        }
         if (homeName && awayName && needMore()) {
             const lf = await fetchLiveFootballPartialStats(homeName, awayName);
             console.log(`    📡 [SOURCE AUDIT] LiveFootball | MATCH=${lf?.crossSourceMatchId ? 'YES' : 'NO'} | fields=${lf?.foundItems || 0}/5 | ${auditFieldList(lf)}`);
