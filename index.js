@@ -771,35 +771,41 @@ async function fetchLiveMatchesDualSource() {
     }
 
     // 1) SofaScore discovery
-    try {
-        const response = await axios.get(SOFASCORE_LIVE_URL, {
-            headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
+try {
+    const response = await axios.get(SOFASCORE_LIVE_URL, {
+        headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
+        timeout: 10000
+    });
+    const events = response.data?.events || response.data?.liveEvents || [];
+    const before = collected.length;
+    for (const item of events) addEligible(item, 'sofascore');
+    console.log(` Tổng live=${events.length} | Qua PRE-API GATE (giải + phút 46-92)=${collected.length - before}`);
+} catch (err) {
+    console.warn(`⚠️ [SofaScore Error]: ${err.message} -> vẫn tiếp tục discovery Livescore6...`);
+}
+ // 2) LiveFootball discovery: luôn chạy để BỔ SUNG trận SofaScore bỏ sót.
+// Parser đè quy chịu được nhiều shape; nếu response.live=[] thì bỏ qua an toàn.
+try {
+    let liveList = [];
+    const now = Date.now();
+    if (resolverLiveCache.livefootball.data && now - resolverLiveCache.livefootball.ts < RESOLVER_CACHE_MS) {
+        liveList = resolverLiveCache.livefootball.data;
+    } else {
+        const response = await axios.get(LIVEFOOTBALL_URL, {
+            headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST },
             timeout: 10000
         });
-        const events = response.data?.events || response.data?.liveEvents || [];
-        const before = collected.length;
-        for (const item of events) addEligible(item, 'sofascore');
-        console.log(`[Source: SofaScore] Tổng live=${events.length} | Qua PRE-API GATE (giải + phút 46-92)=${collected.length-before}`);
-    } catch (err) {
-        console.warn(`⚠️ [SofaScore Error]: ${err.message} -> vẫn tiếp tục discovery Livescore6...`);
+        liveList = extractLiveFootballCandidates(response.data);
+        resolverLiveCache.livefootball = { data: liveList, ts: now };
     }
-
-    // 2) LiveFootball discovery: luôn chạy để BỔ SUNG trận SofaScore bỏ sót.
-    // Parser đệ quy chịu được nhiều shape; nếu response.live=[] thì bỏ qua an toàn.
-    try {
-        let liveList = [];
-        const now = Date.now();
-        if (resolverLiveCache.livefootball.data && now - resolverLiveCache.livefootball.ts < RESOLVER_CACHE_MS) {
-            liveList = resolverLiveCache.livefootball.data;
-        } else {
-            const lfRes = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
-                headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST },
-                timeout: 10000
-            });
-            liveList = Array.isArray(lfRes.data?.response?.live) ? lfRes.data.response.live : [];
-            resolverLiveCache.livefootball = { ts: now, data: liveList };
-        }
-        function extractLiveFootballCandidates(data) {
+    
+    for (const item of liveList) {
+        addEligible(item, 'livefootball');
+    }
+} catch (err) {
+    console.warn(`⚠️ [LiveFootball Error]: ${err.message}`);
+}
+    
     const out = [], seen = new Set();
     function walk(n) {
         if (!n || typeof n !== 'object') return;
