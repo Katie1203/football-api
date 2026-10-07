@@ -3645,7 +3645,7 @@ function formatMomentumText(
 
 
 // ==========================================================
-// 21. ODDS CACHE
+// 21. ODDS CACHE & ADVANCED TEAM MATCHING
 // ==========================================================
 
 let oddsCache = {
@@ -3653,94 +3653,45 @@ let oddsCache = {
   data: []
 };
 
-const ODDS_CACHE_TTL =
-  2 * 60 * 1000;
+const ODDS_CACHE_TTL = 2 * 60 * 1000;
 
 
-// ==========================================================
-// NORMALIZE TEAM NAME
-// ==========================================================
-
-function cleanTeamName(name) {
-
+// Làm sạch tên đội sâu hơn để loại bỏ khoảng trắng, ký tự đặc biệt và các hậu tố phổ biến
+function cleanTeamNameDeep(name) {
   return String(name || '')
-
     .normalize('NFD')
-
-    .replace(
-      /[\u0300-\u036f]/g,
-      ''
-    )
-
+    .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
-
-    .replace(
-      /\b(fc|cf|club|sc|sv|usd|ac|afc|vfb|fsv|cd|nk|fk)\b/g,
-      ''
-    )
-
-    .replace(
-      /[^a-z0-9]/g,
-      ''
-    )
-
+    .replace(/\b(fc|cf|club|sc|sv|usd|ac|afc|vfb|fsv|cd|nk|fk|united|city|town|de|la|the)\b/g, '')
+    .replace(/[^a-z0-9]/g, '')
     .trim();
 }
 
 
-// ==========================================================
-// CREATE MATCH KEY
-// ==========================================================
+// So khớp tên linh hoạt hơn giữa Odds API và các nguồn Live
+function teamNamesSimilarAdvanced(a, b) {
+  const x = cleanTeamNameDeep(a);
+  const y = cleanTeamNameDeep(b);
 
-function createMatchKey(
-  homeName,
-  awayName
-) {
-
-  return (
-    `${cleanTeamName(homeName)}_` +
-    `${cleanTeamName(awayName)}`
-  );
-}
-
-
-// ==========================================================
-// SIMPLE TEAM MATCH
-// ==========================================================
-
-function teamNamesSimilar(
-  a,
-  b
-) {
-
-  const x =
-    cleanTeamName(a);
-
-  const y =
-    cleanTeamName(b);
-
-
-  if (
-    !x ||
-    !y
-  ) {
+  if (!x || !y) {
     return false;
   }
-
 
   if (x === y) {
     return true;
   }
 
-
-  if (
-    x.includes(y) ||
-    y.includes(x)
-  ) {
-
+  // Kiểm tra chứa nhau hoặc khớp phần lớn chuỗi ký tự
+  if (x.includes(y) || y.includes(x)) {
     return true;
   }
 
+  // Kiểm tra lấy 4 ký tự đầu nếu tên đội quá dài (tránh lệch đuôi viết tắt)
+  if (x.length >= 4 && y.length >= 4) {
+    if (x.substring(0, 4) === y.substring(0, 4)) {
+      return true;
+    }
+  }
 
   return false;
 }
@@ -3811,7 +3762,7 @@ async function fetchAllLiveOdds() {
 
 
 // ==========================================================
-// 23. FIND ODDS FOR MATCH
+// 23. FIND ODDS FOR MATCH (UPDATED)
 // ==========================================================
 
 function findMatchOdds(
@@ -3843,12 +3794,12 @@ function findMatchOdds(
 
         const normal =
 
-          teamNamesSimilar(
+          teamNamesSimilarAdvanced(
             x.home_team,
             homeName
           ) &&
 
-          teamNamesSimilar(
+          teamNamesSimilarAdvanced(
             x.away_team,
             awayName
           );
@@ -3856,12 +3807,12 @@ function findMatchOdds(
 
         const reverse =
 
-          teamNamesSimilar(
+          teamNamesSimilarAdvanced(
             x.home_team,
             awayName
           ) &&
 
-          teamNamesSimilar(
+          teamNamesSimilarAdvanced(
             x.away_team,
             homeName
           );
@@ -3974,8 +3925,6 @@ function findMatchOdds(
   }
 
 
-  // Tìm line Over gần số bàn hiện tại nhất
-  // nhưng vẫn cần thêm bàn để thắng/ăn một phần.
   let candidates =
     overSelections
       .filter(
@@ -4037,6 +3986,87 @@ function findMatchOdds(
   const goalsNeeded =
     targetPoint -
     currentGoals;
+
+
+  let score = 50;
+
+
+  if (avgPrice <= 1.30) {
+    score = 95;
+  } else if (avgPrice <= 1.40) {
+    score = 90;
+  } else if (avgPrice <= 1.50) {
+    score = 84;
+  } else if (avgPrice <= 1.60) {
+    score = 78;
+  } else if (avgPrice <= 1.70) {
+    score = 72;
+  } else if (avgPrice <= 1.85) {
+    score = 64;
+  } else if (avgPrice <= 2.00) {
+    score = 56;
+  } else if (avgPrice <= 2.20) {
+    score = 48;
+  } else {
+    score = 40;
+  }
+
+
+  if (
+    goalsNeeded > 0 &&
+    goalsNeeded <= 0.75
+  ) {
+    score += 5;
+  }
+
+
+  score =
+    clamp(
+      score,
+      0,
+      100
+    );
+
+
+  const oddsBonus =
+    clamp(
+      (score - 50) * 0.24,
+      -5,
+      12
+    );
+
+
+  return {
+
+    found: true,
+
+    point:
+      targetPoint,
+
+    price:
+      round1(
+        avgPrice * 100
+      ) / 100,
+
+    currentGoals,
+
+    goalsNeeded:
+      round1(
+        goalsNeeded
+      ),
+
+    score:
+      round1(score),
+
+    oddsBonus:
+      round1(
+        oddsBonus
+      ),
+
+    text:
+      `💰 Over ${targetPoint} @ ${avgPrice.toFixed(2)} | Odds Score: ${round1(score)}%`
+  };
+}
 
 
   // ======================================================
@@ -5884,158 +5914,108 @@ function predictFinalScore(
 
 
 // ==========================================================
-// 41. GOAL TIMELINE
+// 41. GOAL TIMELINE (UPGRADED)
 // ==========================================================
 
-function extractGoalTimeline(
-  raw
-) {
-
+function extractGoalTimeline(raw) {
   const goals = [];
 
   const possibleArrays = [
-
     raw?.incidents,
-
     raw?.events,
-
     raw?.goals,
-
     raw?.timeline,
-
     raw?.matchEvents,
-
-    raw?.match_events
-
+    raw?.match_events,
+    raw?.detail?.incidents,
+    raw?.match?.incidents
   ];
 
-
-  for (
-    const array of possibleArrays
-  ) {
-
-    if (
-      !Array.isArray(array)
-    ) {
+  for (const array of possibleArrays) {
+    if (!Array.isArray(array)) {
       continue;
     }
 
-
-    for (
-      const event of array
-    ) {
-
-      const type =
-        String(
-          event?.incidentType ??
-          event?.type ??
-          event?.eventType ??
-          event?.event_type ??
-          event?.name ??
-          ''
-        ).toLowerCase();
-
+    for (const event of array) {
+      const type = String(
+        event?.incidentType ??
+        event?.type ??
+        event?.eventType ??
+        event?.event_type ??
+        event?.name ??
+        ''
+      ).toLowerCase();
 
       const isGoal =
-
         type === 'goal' ||
-
         type.includes('goal') ||
-
-        event?.isGoal === true;
-
+        type.includes('score') ||
+        event?.isGoal === true ||
+        event?.goal === true;
 
       if (!isGoal) {
         continue;
       }
 
-
       const rawMinute =
         event?.time ??
         event?.minute ??
         event?.elapsed ??
-        event?.matchTime;
+        event?.matchTime ??
+        event?.min;
 
+      let minuteText = String(rawMinute ?? '?')
+        .trim()
+        .replace(/['’]/g, '');
 
-      let minuteText =
-        String(
-          rawMinute ??
-          '?'
-        )
-          .trim()
-          .replace(/['’]/g, '');
-
-
-      const plusMatch =
-        minuteText.match(
-          /(\d{1,3})\s*\+\s*(\d{1,2})/
-        );
-
+      const plusMatch = minuteText.match(/(\d{1,3})\s*\+\s*(\d{1,2})/);
 
       if (plusMatch) {
-
-        minuteText =
-          `${plusMatch[1]}+${plusMatch[2]}`;
-
+        minuteText = `${plusMatch[1]}+${plusMatch[2]}`;
       } else {
-
-        const parsedMinute =
-          parseMinuteValue(
-            rawMinute
-          );
-
-        minuteText =
-          parsedMinute === 'HT'
-            ? 'HT'
-            : (
-                parsedMinute ||
-                '?'
-              );
+        const parsedMinute = parseMinuteValue(rawMinute);
+        minuteText = parsedMinute === 'HT' ? 'HT' : (parsedMinute || '?');
       }
 
-
       const homeScore =
-
         event?.homeScore ??
-
-        event?.score?.home;
-
+        event?.score?.home ??
+        event?.home_score;
 
       const awayScore =
-
         event?.awayScore ??
-
-        event?.score?.away;
-
+        event?.score?.away ??
+        event?.away_score;
 
       if (
         homeScore === undefined ||
-        awayScore === undefined
+        awayScore === undefined ||
+        homeScore === null ||
+        awayScore === null
       ) {
         continue;
       }
 
+      const numericMinute =
+        typeof rawMinute === 'number'
+          ? rawMinute
+          : parseInt(minuteText, 10) || 0;
 
-      goals.push(
-        `P${minuteText}: ${homeScore}-${awayScore}`
-      );
+      goals.push({
+        numericMinute,
+        text: `P${minuteText}: ${homeScore}-${awayScore}`
+      });
     }
   }
 
-
-  if (
-    !goals.length
-  ) {
-
-    return (
-      'Chưa lấy được dữ liệu'
-    );
+  if (!goals.length) {
+    return 'Chưa có bàn thắng / Chưa lấy được dữ liệu';
   }
 
+  // Sắp xếp các bàn thắng theo trình tự thời gian phút trận đấu
+  goals.sort((a, b) => a.numericMinute - b.numericMinute);
 
-  return [
-    ...new Set(goals)
-  ].join(' | ');
+  return [...new Set(goals.map(g => g.text))].join(' | ');
 }
 
 // ==========================================================
@@ -6061,7 +6041,7 @@ function cleanTelegramText(
 
 
 // ==========================================================
-// 43. SEND TELEGRAM ALERT
+// 43. SEND TELEGRAM ALERT (TINH GỌN - GIỮ ĐỦ 100% THÔNG TIN)
 // ==========================================================
 
 async function sendTelegramAlert(
@@ -6073,214 +6053,78 @@ async function sendTelegramAlert(
     !TELEGRAM_BOT_TOKEN ||
     !TELEGRAM_CHAT_ID
   ) {
-
-    console.log(
-      '[Telegram] Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID'
-    );
-
     return false;
   }
 
+  const percentage = safeNumber(item.ai.efficiency);
+  const previous = alertState.get(item.alertKey);
+  const alertNumber = previous ? previous.alertCount + 1 : 1;
+  const isBigBet = alertDecision?.bigBet === true;
 
-  const percentage =
-    safeNumber(
-      item.ai.efficiency
-    );
-
-
-  const previous =
-    alertState.get(
-      item.alertKey
-    );
-
-
-  const alertNumber =
-    previous
-      ? previous.alertCount + 1
-      : 1;
-
-
-  const isBigBet =
-    alertDecision?.bigBet === true;
-
-
-  let title =
-    '🔔 RUNG CHUÔNG VÀNG';
-
-
-  if (
-    isBigBet &&
-    percentage >= 85
-  ) {
-
-    title =
-      '🔥🔥🔥 BIG BET RẤT MẠNH 🔥🔥🔥';
-
-  } else if (
-    isBigBet
-  ) {
-
-    title =
-      '🔥🔥 BIG BET 🔥🔥';
+  let title = '🔔 THẦN TÀI ĐẾNNNN 🔔';
+  if (isBigBet && percentage >= 85) {
+    title = '🔥🔥🔥 BIG BET RẤT MẠNH 🔥🔥🔥';
+  } else if (isBigBet) {
+    title = '🔥🔥 BIG BET 🔥🔥';
   }
 
-
-  const scorePrediction =
-    item.scorePrediction;
-
-
-  const statsText =
-    formatStatsText(
-      item.stats
-    );
-
-
-  const momentumText =
-    formatMomentumText(
-      item.momentum
-    );
-
-
-  const oddsText =
-    item.odds?.text ||
-    '💰 Không có dữ liệu kèo';
-
-
-  const goalTimeline =
-    item.goalTimeline ||
-    'Không có dữ liệu';
-
+  const scorePrediction = item.scorePrediction;
+  const statsText = formatStatsText(item.stats);
+  const momentumText = formatMomentumText(item.momentum);
+  const oddsText = item.odds?.text || '💰 Không có dữ liệu kèo';
+  const goalTimeline = item.goalTimeline || 'Chưa có';
 
   const message = `
-${title}
+${title} | 🏆 ${cleanTelegramText(item.league)}
+⚔️ **${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}** (Phút ${item.minute}')
 
-🏆 GIẢI ĐẤU:
-${cleanTelegramText(item.league)}
-
-⚔️ TRẬN ĐẤU:
-${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
-
-⏱ PHÚT:
-${item.minute}'
-
-━━━━━━━━━━━━━━━━━━
-
-📊 THỐNG KÊ LIVE
-
+📊 **THỐNG KÊ LIVE:**
 ${statsText}
-
-━━━━━━━━━━━━━━━━━━
-
+⚡ **MOMENTUM:**
 ${momentumText}
-
-━━━━━━━━━━━━━━━━━━
-
-💰 KÈO NHÀ CÁI
-
-${oddsText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 PHÂN TÍCH RULE
-
+💰 **KÈO NHÀ CÁI:** ${oddsText}
+📈 **PHÂN TÍCH RULE AI (${percentage.toFixed(1)}% - ${item.ai.level}):**
 ${item.ai.detailText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 AI GOAL SCORE:
-${percentage.toFixed(1)}%
-
-${item.ai.level}
-
-🎯 NHẬN ĐỊNH:
-Khả năng xuất hiện THÊM BÀN THẮNG
-
-━━━━━━━━━━━━━━━━━━
-
-🔮 DỰ ĐOÁN TỶ SỐ FT:
-${scorePrediction.text}
-
-⚽ Dự kiến bàn còn lại:
-+${scorePrediction.expectedExtraGoals}
-
-🎯 Đội có khả năng ghi bàn:
-${scorePrediction.likelyScorer}
-
-📊 Sức ép:
-Chủ nhà ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}% Đội khách
-
-🔮 Độ mạnh dự đoán:
-${scorePrediction.confidence}
-
-━━━━━━━━━━━━━━━━━━
-
-⚽ DIỄN BIẾN BÀN THẮNG: ${goalTimeline}
-
-━━━━━━━━━━━━━━━━━━
-
-🚨 CẢNH BÁO #${alertNumber}
-
-📌 ${alertDecision.reason}
+🎯 **NHẬN ĐỊNH:** Khả năng xuất hiện THÊM BÀN THẮNG
+🔮 **DỰ ĐOÁN FT:** ${scorePrediction.text} | Dự kiến +${scorePrediction.expectedExtraGoals} bàn | Ghi bàn: ${scorePrediction.likelyScorer}
+📊 **SỨC ÉP:** Chủ nhà ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}% Khách | Độ mạnh: ${scorePrediction.confidence}
+⚽ **BÀN THẮNG:** ${goalTimeline}
+🚨 **RUNGGGG #${alertNumber}:** ${alertDecision.reason}
 `.trim();
 
-
   try {
-
     await axios.post(
       `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
-        chat_id:
-          TELEGRAM_CHAT_ID,
-
-        text:
-          message,
-
-        disable_web_page_preview:
-          true
+        chat_id: TELEGRAM_CHAT_ID,
+        text: message,
+        disable_web_page_preview: true
       },
-      {
-        timeout: 10000
-      }
+      { timeout: 10000 }
     );
-
 
     alertState.set(
       item.alertKey,
       {
-        lastPercentage:
-          percentage,
-
-        lastMinute:
-          item.minute,
-
-        alertCount:
-          alertNumber,
-
-        bigBetSent:
-          (previous?.bigBetSent || false) ||
-          isBigBet,
-
-        updatedAt:
-          Date.now()
+        lastPercentage: percentage,
+        lastMinute: item.minute,
+        alertCount: alertNumber,
+        bigBetSent: (previous?.bigBetSent || false) || isBigBet,
+        updatedAt: Date.now()
       }
     );
-
 
     console.log(
       `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}%`
     );
 
-
     return true;
 
   } catch (e) {
-
     console.error(
       '[Telegram Error]',
-      e.response?.data ||
-      e.message
+      e.response?.data || e.message
     );
-
     return false;
   }
 }
@@ -6480,7 +6324,7 @@ function hasUsefulStats(
 
 
 // ==========================================================
-// 47. SCAN ONE MATCH
+// 47. SCAN ONE MATCH (CẬP NHẬT ĐIỀU KIỆN GỬI TỪ PHÚT 65)
 // ==========================================================
 
 async function analyzeOneMatch(
@@ -6515,10 +6359,7 @@ async function analyzeOneMatch(
         );
 
 
-  // ======================================================
-  // CHỈ QUÉT 46 -> 92
-  // ======================================================
-
+  // Vẫn quét từ phút 46 để thu thập và lưu trữ dữ liệu/momentum
   if (
     !Number.isFinite(minute) ||
     minute < 46 ||
@@ -6528,10 +6369,6 @@ async function analyzeOneMatch(
     return null;
   }
 
-
-  // ======================================================
-  // FILTER LEAGUE
-  // ======================================================
 
   if (
     isFilteredLeague(
@@ -6549,22 +6386,12 @@ async function analyzeOneMatch(
   }
 
 
-  // ======================================================
-  // FETCH STATS
-  // ======================================================
-
   const stats =
     await fetchMatchDetailStats(
       match
     );
 
 
-  // ======================================================
-  // MOMENTUM
-  // ======================================================
-
-  // Alert key dùng tên đội để giữ chung
-  // trạng thái nếu API nguồn thay đổi.
   const alertKey =
     createMatchKey(
       match.homeName,
@@ -6572,6 +6399,7 @@ async function analyzeOneMatch(
     );
 
 
+  // Thu thập và lưu trữ snapshot momentum liên tục từ phút 46
   const momentum =
     calculateMomentum(
       alertKey,
@@ -6579,10 +6407,6 @@ async function analyzeOneMatch(
       minute
     );
 
-
-  // ======================================================
-  // ODDS
-  // ======================================================
 
   const odds =
     findMatchOdds(
@@ -6593,11 +6417,6 @@ async function analyzeOneMatch(
       match.awayScore
     );
 
-
-  // ======================================================
-  // Nếu không có stats và cũng không odds
-  // thì bỏ qua.
-  // ======================================================
 
   if (
     !hasUsefulStats(stats) &&
@@ -6612,10 +6431,6 @@ async function analyzeOneMatch(
   }
 
 
-  // ======================================================
-  // AI RULE
-  // ======================================================
-
   const ai =
     evaluateMatchDynamicAI(
       stats,
@@ -6626,10 +6441,6 @@ async function analyzeOneMatch(
       match.awayScore
     );
 
-
-  // ======================================================
-  // PREDICT FT SCORE
-  // ======================================================
 
   const scorePrediction =
     predictFinalScore(
@@ -6642,10 +6453,6 @@ async function analyzeOneMatch(
       ai.styleType
     );
 
-
-  // ======================================================
-  // ALERT DECISION
-  // ======================================================
 
   const alertDecision =
     shouldSendAlert(
@@ -6677,7 +6484,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | BLK ${stats.homeBlockedShots}-${stats.awayBlockedShots} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | BLK ${stats.homeBlockedShots}-${stats.awayBlockedShots} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${ai.shouldSend && alertDecision.send && minute >= 65 ? 'YES' : 'HOLD'}`
   );
 
 
@@ -6707,18 +6514,23 @@ async function analyzeOneMatch(
 
 
   // ======================================================
-  // SEND TELEGRAM
+  // SEND TELEGRAM (CHỈ GỬI KHI TỪ PHÚT 65 TRỞ ĐI)
   // ======================================================
 
   if (
     ai.shouldSend &&
     alertDecision.send
   ) {
-
-    await sendTelegramAlert(
-      result,
-      alertDecision
-    );
+    if (minute >= 65) {
+      await sendTelegramAlert(
+        result,
+        alertDecision
+      );
+    } else {
+      console.log(
+        `[Hold Telegram] ${match.homeName} vs ${match.awayName} | Đạt chuẩn (${ai.efficiency}%) nhưng đang ở phút ${minute} (<65) -> Chỉ lưu trữ dữ liệu, chưa bắn thông báo.`
+      );
+    }
   }
 
 
