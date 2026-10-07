@@ -1201,6 +1201,40 @@ function extractLiveFootballCandidates(data) {
     }
     walk(data); return out;
 }
+function extractLiveFootballLiveList(data) {
+    // Payload LiveFootball có thể đổi shape; ưu tiên các path phổ biến,
+    // sau đó dò sâu để tránh mất resolver chỉ vì response.live không tồn tại.
+    const preferred = [
+        data?.response?.live, data?.response?.matches, data?.response?.events,
+        data?.live, data?.matches, data?.events,
+        data?.data?.live, data?.data?.matches, data?.data?.events
+    ];
+    for (const arr of preferred) if (Array.isArray(arr) && arr.length) return arr;
+
+    let best = [];
+    const seen = new Set();
+    function looksLikeMatch(o) {
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+        const id = o.eventid ?? o.eventId ?? o.id ?? o.matchId ?? o.fixture_id;
+        const home = o.home ?? o.homeTeam ?? o.home_team ?? o.localteam ?? o.team1 ?? o.homeName;
+        const away = o.away ?? o.awayTeam ?? o.away_team ?? o.visitorteam ?? o.team2 ?? o.awayName;
+        return id != null && home != null && away != null;
+    }
+    function walk(node, depth = 0) {
+        if (!node || typeof node !== 'object' || depth > 6 || seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+            const matches = node.filter(looksLikeMatch);
+            if (matches.length > best.length) best = matches;
+            node.forEach(v => walk(v, depth + 1));
+            return;
+        }
+        Object.values(node).forEach(v => walk(v, depth + 1));
+    }
+    walk(data);
+    return best;
+}
+
 async function resolveLiveFootballMatchByName(homeName, awayName) {
     console.log(`    🔄 [LIVEFOOTBALL] Tìm trận: ${homeName} vs ${awayName}`);
     const cachedEvent = getCachedLiveFootballEvent(homeName, awayName);
@@ -1215,7 +1249,7 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
             const response = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
                 headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST }, timeout: 7000
             });
-            liveList = Array.isArray(response.data?.response?.live) ? response.data.response.live : [];
+            liveList = extractLiveFootballLiveList(response.data);
             resolverLiveCache.livefootball={ts:now,data:liveList};
             console.log(`    📥 [LIVEFOOTBALL LIST] live=${liveList.length}`);
         }
@@ -1245,13 +1279,19 @@ function extractLiveFootballStatistics(data) {
     function walk(n){
         if(!n || typeof n!=='object') return;
         if(Array.isArray(n)){ n.forEach(walk); return; }
-        const key=String(n.key||'');
-        const arr=Array.isArray(n.stats)?n.stats:null;
+        const key=String(n.key||n.name||n.type||n.label||'').trim();
+        const normKey=key.toLowerCase().replace(/[\s_-]+/g,'');
+        let arr=Array.isArray(n.stats)?n.stats:null;
+        if(!arr){
+            const hv=n.home ?? n.homeValue ?? n.home_value ?? n.valueHome ?? n.local;
+            const av=n.away ?? n.awayValue ?? n.away_value ?? n.valueAway ?? n.visitor;
+            if(hv!==undefined && av!==undefined) arr=[hv,av];
+        }
         if(arr && arr.length>=2 && arr[0]!==null && arr[1]!==null){
-            const a=Number(arr[0]), b=Number(arr[1]);
+            const a=Number(String(arr[0]).replace('%','')), b=Number(String(arr[1]).replace('%',''));
             if(Number.isFinite(a)&&Number.isFinite(b)){
-                if(key==='total_shots'){ stats.totalShots=a+b; present.totalShots=true; }
-                else if(key==='ShotsOnTarget'){ stats.shotsOnTarget=a+b; present.shotsOnTarget=true; }
+                if(['totalshots','shotstotal','shots','totalattempts','goalattempts'].includes(normKey)){ stats.totalShots=Math.max(stats.totalShots ?? 0,a+b); present.totalShots=true; }
+                else if(['shotsontarget','shotontarget','ontarget'].includes(normKey)){ stats.shotsOnTarget=Math.max(stats.shotsOnTarget ?? 0,a+b); present.shotsOnTarget=true; }
                 else if(key==='corners'){ stats.corners=a+b; present.corners=true; }
                 else if(key==='red_cards'){ stats.redCards=a+b; present.redCards=true; }
                 else if(key==='BallPossesion'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
@@ -1360,7 +1400,7 @@ function extractLivescoreStatistics(data) {
             const sum = hv + av;
             if (name.includes('shot on target') || name.includes('shots on target')) {
                 stats.shotsOnTarget = Math.max(stats.shotsOnTarget ?? 0, sum); present.shotsOnTarget = true;
-            } else if (name.includes('total shot') || name.includes('shots total')) {
+            } else if (name.includes('total shot') || name.includes('shots total') || name === 'shots' || name.includes('total attempts') || name.includes('goal attempts')) {
                 stats.totalShots = Math.max(stats.totalShots ?? 0, sum); present.totalShots = true;
             } else if (name.includes('corner')) {
                 stats.corners = Math.max(stats.corners ?? 0, sum); present.corners = true;
