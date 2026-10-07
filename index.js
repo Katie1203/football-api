@@ -1245,6 +1245,39 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
         return null;
     } catch(err) { console.log(`    ⚠️ [LIVEFOOTBALL LIVE ERROR] ${err.message}`); return null; }
 }
+function normalizeStatKey(v) {
+    return String(v ?? '').toLowerCase().replace(/[%_\-]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function numericStatValue(v) {
+    if (v === undefined || v === null || v === '') return null;
+    const n = Number(String(v).replace('%','').trim());
+    return Number.isFinite(n) ? n : null;
+}
+function readStatPair(n) {
+    const arrays = [n.stats, n.values, n.value, n.score];
+    for (const a of arrays) {
+        if (Array.isArray(a) && a.length >= 2) {
+            const h=numericStatValue(a[0]), w=numericStatValue(a[1]);
+            if(h!==null && w!==null) return [h,w];
+        }
+    }
+    const pairs = [
+        [n.home,n.away],[n.homeValue,n.awayValue],[n.home_value,n.away_value],
+        [n.H,n.A],[n.Value1,n.Value2],[n.V1,n.V2],[n.homeStat,n.awayStat]
+    ];
+    for(const [a,b] of pairs){ const h=numericStatValue(a), w=numericStatValue(b); if(h!==null&&w!==null)return [h,w]; }
+    return null;
+}
+function classifyStatKey(raw) {
+    const k=normalizeStatKey(raw);
+    if (!k) return null;
+    if (/shots? on target|shots? on goal|on target shots?|target shots?|shotontarget/.test(k)) return 'shotsOnTarget';
+    if (/total shots?|shots? total|goal attempts?|attempts total|total attempts?/.test(k)) return 'totalShots';
+    if (/corner kicks?|corners?/.test(k)) return 'corners';
+    if (/red cards?|sending off/.test(k)) return 'redCards';
+    if (/ball possession|possession|ballposs/.test(k)) return 'possession';
+    return null;
+}
 function extractLiveFootballStatistics(data) {
     const stats={ totalShots:null, shotsOnTarget:null, corners:null, redCards:null, possession:null };
     const present={ totalShots:false, shotsOnTarget:false, corners:false, redCards:false, possession:false };
@@ -1252,21 +1285,20 @@ function extractLiveFootballStatistics(data) {
     function walk(n){
         if(!n || typeof n!=='object') return;
         if(Array.isArray(n)){ n.forEach(walk); return; }
-        const key=String(n.key||'');
-        const arr=Array.isArray(n.stats)?n.stats:null;
-        if(arr && arr.length>=2 && arr[0]!==null && arr[1]!==null){
-            const a=Number(arr[0]), b=Number(arr[1]);
-            if(Number.isFinite(a)&&Number.isFinite(b)){
-                if(key==='total_shots'){ stats.totalShots=a+b; present.totalShots=true; }
-                else if(key==='ShotsOnTarget'){ stats.shotsOnTarget=a+b; present.shotsOnTarget=true; }
-                else if(key==='corners'){ stats.corners=a+b; present.corners=true; }
-                else if(key==='red_cards'){ stats.redCards=a+b; present.redCards=true; }
-                else if(key==='BallPossesion'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
-                else if(key==='expected_goals'){ advancedStats.xg=Math.max(advancedStats.xg,a+b); }
-                else if(key==='big_chance'){ advancedStats.bigChances=Math.max(advancedStats.bigChances,a+b); }
-                else if(key==='shots_inside_box'){ advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,a+b); }
-                else if(key==='touches_opp_box'){ advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,a+b); }
-            }
+        const rawKey=n.key ?? n.name ?? n.type ?? n.title ?? n.Nm ?? n.StatName ?? n.statName ?? n.label ?? '';
+        const key=normalizeStatKey(rawKey);
+        const pair=readStatPair(n);
+        if(pair){
+            const [a,b]=pair, sum=a+b, cls=classifyStatKey(rawKey);
+            if(cls==='totalShots'){ stats.totalShots=Math.max(stats.totalShots??0,sum); present.totalShots=true; }
+            else if(cls==='shotsOnTarget'){ stats.shotsOnTarget=Math.max(stats.shotsOnTarget??0,sum); present.shotsOnTarget=true; }
+            else if(cls==='corners'){ stats.corners=Math.max(stats.corners??0,sum); present.corners=true; }
+            else if(cls==='redCards'){ stats.redCards=Math.max(stats.redCards??0,sum); present.redCards=true; }
+            else if(cls==='possession'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
+            if(/expected goals|expected_goals|\bxg\b/.test(key)) advancedStats.xg=Math.max(advancedStats.xg,sum);
+            else if(/big chance/.test(key)) advancedStats.bigChances=Math.max(advancedStats.bigChances,sum);
+            else if(/shots? inside.*box/.test(key)) advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,sum);
+            else if(/touches?.*(opp|opposition).*box/.test(key)) advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,sum);
         }
         Object.values(n).forEach(v=>{if(v&&typeof v==='object')walk(v)});
     }
@@ -1346,53 +1378,61 @@ async function resolveLivescoreMatchByName(homeName, awayName) {
 }
 
 function extractLivescoreStatistics(data) {
-    // V16.7: dùng null + present mask rõ ràng. Không còn biến giá trị mặc định 0
-    // thành "đã có dữ liệu". Số 0 chỉ hợp lệ khi API thực sự trả field đó.
     const stats = { shotsOnTarget:null, totalShots:null, corners:null, redCards:null, possession:null };
     const present = { shotsOnTarget:false, totalShots:false, corners:false, redCards:false, possession:false };
     const advancedStats = { xg:0, bigChances:0, shotsInsideBox:0, touchesOppBox:0 };
-
     function walk(node) {
         if (!node || typeof node !== 'object') return;
         if (Array.isArray(node)) { node.forEach(walk); return; }
-
-        const name = String(node.name || node.type || node.title || node.Nm || node.StatName || '').toLowerCase();
-        const hvRaw = node.home ?? node.homeValue ?? node.H ?? node.Value1 ?? node.V1;
-        const avRaw = node.away ?? node.awayValue ?? node.A ?? node.Value2 ?? node.V2;
-        const hv = Number(String(hvRaw ?? '').replace('%','').trim());
-        const av = Number(String(avRaw ?? '').replace('%','').trim());
-        const hasPair = hvRaw !== undefined && hvRaw !== null && avRaw !== undefined && avRaw !== null && Number.isFinite(hv) && Number.isFinite(av);
-
-        if (name && hasPair) {
-            const sum = hv + av;
-            if (name.includes('shot on target') || name.includes('shots on target')) {
-                stats.shotsOnTarget = Math.max(stats.shotsOnTarget ?? 0, sum); present.shotsOnTarget = true;
-            } else if (name.includes('total shot') || name.includes('shots total')) {
-                stats.totalShots = Math.max(stats.totalShots ?? 0, sum); present.totalShots = true;
-            } else if (name.includes('corner')) {
-                stats.corners = Math.max(stats.corners ?? 0, sum); present.corners = true;
-            } else if (name.includes('red card')) {
-                stats.redCards = Math.max(stats.redCards ?? 0, sum); present.redCards = true;
-            } else if (name.includes('possession')) {
-                stats.possession = `${hv}% - ${av}%`; present.possession = true;
-            }
+        const rawName=node.name ?? node.type ?? node.title ?? node.Nm ?? node.StatName ?? node.statName ?? node.key ?? node.label ?? '';
+        const pair=readStatPair(node);
+        if(pair){
+            const [hv,av]=pair, sum=hv+av, cls=classifyStatKey(rawName);
+            if(cls==='shotsOnTarget'){stats.shotsOnTarget=Math.max(stats.shotsOnTarget??0,sum);present.shotsOnTarget=true;}
+            else if(cls==='totalShots'){stats.totalShots=Math.max(stats.totalShots??0,sum);present.totalShots=true;}
+            else if(cls==='corners'){stats.corners=Math.max(stats.corners??0,sum);present.corners=true;}
+            else if(cls==='redCards'){stats.redCards=Math.max(stats.redCards??0,sum);present.redCards=true;}
+            else if(cls==='possession'){stats.possession=`${hv}% - ${av}%`;present.possession=true;}
+            const name=normalizeStatKey(rawName);
+            if(/expected goals|\bxg\b/.test(name))advancedStats.xg=Math.max(advancedStats.xg,sum);
+            else if(/big chance/.test(name))advancedStats.bigChances=Math.max(advancedStats.bigChances,sum);
+            else if(/shots? inside.*box/.test(name))advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,sum);
+            else if(/touches?.*(opp|opposition).*box/.test(name))advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,sum);
         }
-        Object.values(node).forEach(v => { if (v && typeof v === 'object') walk(v); });
+        Object.values(node).forEach(v=>{if(v&&typeof v==='object')walk(v);});
     }
     walk(data);
+    return {foundItems:Object.values(present).filter(Boolean).length,sofaStats:stats,present,advancedStats};
+}
+async function fetchLivescoreScoreboard(eid) {
+    try {
+        const response = await axios.get(`https://${LIVESCORE_HOST}/matches/v2/get-scoreboard?Eid=${encodeURIComponent(eid)}&Category=soccer`, {
+            headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVESCORE_HOST },
+            timeout: 6500
+        });
+        const ok = !!response.data && (typeof response.data !== 'object' || Object.keys(response.data).length > 0);
+        console.log(`    ${ok ? '✅' : '⚠️'} [LIVESCORE6 SCOREBOARD] Eid=${eid} | ${ok ? 'response OK' : 'response rỗng'}`);
+        return response.data || null;
+    } catch (err) {
+        console.log(`    ⚠️ [LIVESCORE6 SCOREBOARD ERROR] Eid=${eid} | ${err.message}`);
+        return null;
+    }
+}
 
-    return {
-        foundItems: Object.values(present).filter(Boolean).length,
-        sofaStats: stats,
-        present,
-        advancedStats
-    };
+function auditFieldList(parsed) {
+    const p = parsed?.present || {};
+    const names = {totalShots:'Shots',shotsOnTarget:'SOT',corners:'Corners',possession:'Poss',redCards:'Red'};
+    return Object.keys(names).map(k => `${names[k]}:${p[k] ? '✓' : '✗'}`).join(' ');
 }
 
 async function fetchCrossSourcePartialStats(homeName, awayName) {
     try {
         const match = await resolveLivescoreMatchByName(homeName, awayName);
         if (!match) return null;
+
+        // V17.4.9: xác minh Eid bằng Scoreboard trước khi đọc Statistics.
+        // Scoreboard chỉ hỗ trợ resolver/phút/tỷ số; KHÔNG dùng thay Statistics.
+        await fetchLivescoreScoreboard(match.id);
 
         const url = `https://${LIVESCORE_HOST}/matches/v2/get-statistics?Category=soccer&Eid=${encodeURIComponent(match.id)}`;
         const response = await axios.get(url, {
@@ -1405,7 +1445,7 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
 
         const parsed = extractLivescoreStatistics(response.data);
         if (parsed.foundItems > 0) {
-            console.log(`    🛟 [PARTIAL STATS OK] Livescore6 Eid=${match.id} | fields=${parsed.foundItems}`);
+            console.log(`    🛟 [PARTIAL STATS OK] Livescore6 Eid=${match.id} | fields=${parsed.foundItems} | ${auditFieldList(parsed)}`);
             return {
                 ...parsed,
                 statsAvailable: true,
@@ -1415,7 +1455,7 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
             };
         }
 
-        console.log(`    ⚠️ [PARTIAL STATS EMPTY] Livescore6 có trận nhưng endpoint statistics cũng rỗng`);
+        console.log(`    ⚠️ [PARTIAL STATS EMPTY] Livescore6 Eid=${match.id} | Statistics rỗng | ${auditFieldList(parsed)}`);
         return null;
     } catch (err) {
         console.log(`    ⚠️ [CROSS-SOURCE ERROR] ${err.message}`);
@@ -1424,6 +1464,17 @@ async function fetchCrossSourcePartialStats(homeName, awayName) {
 }
 
 async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = '') {
+    // V17.4.9: 3 nguồn bổ sung lẫn nhau + SOURCE AUDIT + Livescore6 Scoreboard resolver.
+    // Mọi nguồn quy về pipeline field-by-field: SofaScore -> LiveFootball -> Livescore6.
+    // Nếu Sofa không resolve được ID, LiveFootball + Livescore6 vẫn tiếp tục bù field thiếu.
+    if (source !== 'sofascore') {
+        console.log(`    🔄 [3-WAY STATS] discovery=${source} -> hợp nhất SofaScore + LiveFootball + Livescore6`);
+        let sofaId = null;
+        if (homeName && awayName) {
+            try { sofaId = await resolveSofaEventIdByName(homeName, awayName, matchId); } catch (_) {}
+        }
+        return fetchMatchDetailStats(sofaId || matchId, 'sofascore', homeName, awayName);
+    }
     if (source === 'sofascore') {
         const missingCacheKey = `${String(homeName).toLowerCase()}|${String(awayName).toLowerCase()}`;
         const missingUntil = dataMissingRetryCache.get(missingCacheKey) || 0;
@@ -1452,6 +1503,7 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         }
 
         let effectiveMatchId = String(matchId);
+        console.log(`    📡 [SOURCE AUDIT] SofaScore | MATCH=${matchId ? 'YES' : 'NO'} | fields=${parsed.foundItems}/5 | ${auditFieldList(parsed)}`);
 
         // V14: nếu ID hiện tại không trả stats, tìm lại event ID theo tên 2 đội.
         if (parsed.foundItems === 0 && homeName && awayName) {
@@ -1493,6 +1545,7 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         const needMore = () => Object.values(sofaPresent).some(v => !v);
         if (homeName && awayName && needMore()) {
             const lf = await fetchLiveFootballPartialStats(homeName, awayName);
+            console.log(`    📡 [SOURCE AUDIT] LiveFootball | MATCH=${lf?.crossSourceMatchId ? 'YES' : 'NO'} | fields=${lf?.foundItems || 0}/5 | ${auditFieldList(lf)}`);
             if (lf?.foundItems > 0) {
                 const merged = mergeMissingStats(parsed.sofaStats, sofaPresent, lf.sofaStats, lf.present);
                 parsed.sofaStats = merged.stats; sofaPresent = merged.present;
@@ -1509,6 +1562,7 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
         }
         if (homeName && awayName && needMore()) {
             const ls = await fetchCrossSourcePartialStats(homeName, awayName);
+            console.log(`    📡 [SOURCE AUDIT] Livescore6 | MATCH=${ls?.crossSourceMatchId ? 'YES' : 'NO'} | fields=${ls?.foundItems || 0}/5 | ${auditFieldList(ls)}`);
             if (ls?.foundItems > 0) {
                 const lsPresent = ls.present || inferStatPresenceFromObject(ls.sofaStats);
                 const merged = mergeMissingStats(parsed.sofaStats, sofaPresent, ls.sofaStats, lsPresent);
@@ -1534,6 +1588,7 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             redCards: 'Red Cards'
         };
         const missingFields = Object.keys(missingLabels).filter(k => !sofaPresent[k]);
+        console.log(`    🧩 [SOURCE AUDIT MERGED] ${homeName} vs ${awayName} | ${parsed.foundItems}/5 | ${auditFieldList({present:sofaPresent})} | nguồn=${sourceTrail.join('>')}`);
         if (missingFields.length > 0 && parsed.foundItems > 0) {
             console.log(`    ⚠️ [THIẾU CHỈ SỐ] ${homeName} vs ${awayName} | thiếu ${missingFields.length}/5: ${missingFields.map(k => missingLabels[k]).join(', ')} | có ${parsed.foundItems}/5 | nguồn=${sourceTrail.join('>')}`);
         }
