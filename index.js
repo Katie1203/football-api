@@ -799,28 +799,26 @@ async function fetchLiveMatchesDualSource() {
             liveList = Array.isArray(lfRes.data?.response?.live) ? lfRes.data.response.live : [];
             resolverLiveCache.livefootball = { ts: now, data: liveList };
         }
-        const lfCandidates = extractLiveFootballCandidates(liveList);
-        let lfAdded = 0;
-        for (const c of lfCandidates) {
-            const raw = c.raw || {};
-            const enriched = {
-                ...raw,
-                id: c.id,
-                eventid: c.id,
-                _lfHome: c.home,
-                _lfAway: c.away,
-                _lfMinute: raw.minute ?? raw.matchMinute ?? raw.liveMinute ?? raw.time?.minute ?? raw.time?.current ?? raw.elapsed ?? raw.elapsedTime ?? raw.timer ?? raw.clock,
-                _lfLeague: raw.league?.name ?? raw.leagueName ?? raw.tournament?.name ?? raw.tournamentName ?? raw.competition?.name ?? raw.competitionName ?? '',
-                _lfCategory: raw.country?.name ?? raw.country ?? raw.category?.name ?? raw.category ?? ''
-            };
-            const n0 = collected.length;
-            addEligible(enriched, 'livefootball');
-            if (collected.length > n0) lfAdded++;
+        function extractLiveFootballCandidates(data) {
+    const out = [], seen = new Set();
+    function walk(n) {
+        if (!n || typeof n !== 'object') return;
+        if (Array.isArray(n)) { n.forEach(walk); return; }
+        
+        // Vét cạn mọi biến thể tên đội và ID của LiveFootball
+        const id = String(n.eventid ?? n.eventId ?? n.matchId ?? n.id ?? n.MatchId ?? '');
+        const home = String(n._lfHome ?? n.homeTeam?.name ?? n.home?.name ?? n.homeName ?? n.team1?.name ?? n.team1 ?? n.home_team ?? n.HomeName ?? n.T1?.[0]?.Nm ?? '').trim();
+        const away = String(n._lfAway ?? n.awayTeam?.name ?? n.away?.name ?? n.awayName ?? n.team2?.name ?? n.team2 ?? n.away_team ?? n.AwayName ?? n.T2?.[0]?.Nm ?? '').trim();
+        
+        if (id && home && away && !seen.has(id)) {
+            seen.add(id);
+            out.push({ id, home, away, raw: n });
         }
-        console.log(`[Source: LiveFootball] Candidate=${lfCandidates.length} | Bổ sung sau PRE-API GATE + dedupe=${lfAdded}`);
-    } catch (err) {
-        console.error(`❌ [LiveFootball Discovery Error]: ${err.message}`);
+        Object.values(n).forEach(v => { if (v && typeof v === 'object') walk(v); });
     }
+    walk(data);
+    return out;
+}
 
     // 3) Livescore6 discovery luôn chạy để BỔ SUNG trận SofaScore/LiveFootball bỏ sót.
     try {
@@ -1391,11 +1389,15 @@ function extractLivescoreMatchCandidates(data) {
         if (!obj || typeof obj !== 'object') return;
         if (Array.isArray(obj)) { obj.forEach(walk); return; }
 
-        const id = String(obj.Eid || obj.id || obj.MatchId || '');
-        const home = (obj.T1 && obj.T1[0] && (obj.T1[0].Nm || obj.T1[0].Name))
-            || obj.homeTeam?.name || obj.Home?.Nm || obj.Home?.Name || obj.homeName || '';
-        const away = (obj.T2 && obj.T2[0] && (obj.T2[0].Nm || obj.T2[0].Name))
-            || obj.awayTeam?.name || obj.Away?.Nm || obj.Away?.Name || obj.awayName || '';
+        const id = String(obj.Eid || obj.id || obj.MatchId || obj.matchId || '');
+        const home = String(
+            (obj.T1 && obj.T1[0] && (obj.T1[0].Nm || obj.T1[0].Name)) ||
+            obj.homeTeam?.name || obj.Home?.Nm || obj.Home?.Name || obj.homeName || obj.T1Name || ''
+        ).trim();
+        const away = String(
+            (obj.T2 && obj.T2[0] && (obj.T2[0].Nm || obj.T2[0].Name)) ||
+            obj.awayTeam?.name || obj.Away?.Nm || obj.Away?.Name || obj.awayName || obj.T2Name || ''
+        ).trim();
 
         if (id && home && away && !seen.has(id)) {
             seen.add(id);
@@ -1406,7 +1408,6 @@ function extractLivescoreMatchCandidates(data) {
     walk(data);
     return out;
 }
-
 async function resolveLivescoreMatchByName(homeName, awayName) {
     console.log(`    🔄 [CROSS-SOURCE] Tìm trận trên Livescore6: ${homeName} vs ${awayName}`);
     const currentVN = getVietnamTime();
