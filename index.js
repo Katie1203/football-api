@@ -1204,19 +1204,41 @@ function mergeMissingStats(baseStats, basePresent, incomingStats, incomingPresen
     return { stats: out, present, filled };
 }
 function extractLiveFootballCandidates(data) {
-    const out=[], seen=new Set();
+    const out = [], seen = new Set();
     function walk(n) {
         if (!n || typeof n !== 'object') return;
-        if (Array.isArray(n)) { n.forEach(walk); return; }
-        const id = n.eventid ?? n.eventId ?? n.matchId ?? n.id;
-        const home = n.homeTeam?.name ?? n.home?.name ?? n.homeName ?? n.team1?.name ?? n.team1 ?? n.home_team ?? '';
-        const away = n.awayTeam?.name ?? n.away?.name ?? n.awayName ?? n.team2?.name ?? n.team2 ?? n.away_team ?? '';
-        if (id && home && away && !seen.has(String(id))) {
-            seen.add(String(id)); out.push({ id:String(id), home:String(home), away:String(away), raw:n });
+        if (Array.isArray(n)) { 
+            n.forEach(walk); 
+            return; 
         }
-        Object.values(n).forEach(v=>{ if(v && typeof v==='object') walk(v); });
+        
+        // Vét cạn mọi biến thể ID và Tên đội của LiveFootball
+        const id = String(n.eventid ?? n.eventId ?? n.matchId ?? n.id ?? n.MatchId ?? '');
+        const home = String(
+            n._lfHome ?? n.homeTeam?.name ?? n.home?.name ?? n.homeName ?? 
+            n.team1?.name ?? n.team1 ?? n.home_team ?? n.HomeName ?? 
+            n.T1?.[0]?.Nm ?? n.homeTeamName ?? ''
+        ).trim();
+        const away = String(
+            n._lfAway ?? n.awayTeam?.name ?? n.away?.name ?? n.awayName ?? 
+            n.team2?.name ?? n.team2 ?? n.away_team ?? n.AwayName ?? 
+            n.T2?.[0]?.Nm ?? n.awayTeamName ?? ''
+        ).trim();
+        
+        if (id && home && away && !seen.has(id)) {
+            seen.add(id);
+            out.push({ id, home, away, raw: n });
+        }
+        
+        // Đệ quy quét sâu vào tất cả các nhánh con của JSON
+        for (const key of Object.keys(n)) {
+            if (n[key] && typeof n[key] === 'object') {
+                walk(n[key]);
+            }
+        }
     }
-    walk(data); return out;
+    walk(data);
+    return out;
 }
 async function resolveLiveFootballMatchByName(homeName, awayName) {
     console.log(`    🔄 [LIVEFOOTBALL] Tìm trận: ${homeName} vs ${awayName}`);
