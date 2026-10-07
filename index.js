@@ -61,9 +61,9 @@ const ALERT_STATE_TTL =
 const STATS_CACHE_TTL =
   90 * 1000;
 
-// Quét 3 phút / lần
+// Quét 7 phút / lần
 const SCAN_INTERVAL_MS =
-  3 * 60 * 1000;
+  7 * 60 * 1000;
 
 
 const alertState = new Map();
@@ -7142,7 +7142,7 @@ app.listen(
 
 
     console.log(
-      `Auto scan every ${SCAN_INTERVAL_MS / 7 * 60 * 1000} minutes`
+      `Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`
     );
 
 
@@ -7177,4 +7177,7 @@ setInterval(
       );
   },
   SCAN_INTERVAL_MS
+);
+
+  }
 );
