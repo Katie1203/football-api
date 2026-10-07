@@ -1147,36 +1147,46 @@ function extractEventArrayDeep(data) {
     }
     walk(data); return out;
 }
+function normName(v = '') {
+    return String(v || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/&/g, ' and ')
+        .replace(/\breserves?\b/g, ' reserve ')
+        .replace(/\bunder[ -]?(20|21|23)\b/g, ' u$1 ')
+        .replace(/\bu[ -]?(20|21|23)\b/g, ' u$1 ')
+        .replace(/\b(fc|cf|club|sc|sv|usd|ac|afc|vfb|fsv|cd|nk|fk|ks|as|deportivo|football|soccer|united|city|team)\b/g, '')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 function resolverTokens(name) {
-    return String(name || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'')
-        .replace(/&/g,' and ')
-        .replace(/\breserves?\b/g,' reserve ')
-        .replace(/\bunder[ -]?(20|21|23)\b/g,' u$1 ')
-        .replace(/\bu[ -]?(20|21|23)\b/g,' u$1 ')
-        .replace(/\b(fc|cf|club|sc|sv|usd|ac|afc|vfb|fsv|cd|nk|fk|ks|as|deportivo|football|soccer)\b/g,' ')
-        .replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+    return normName(name);
 }
-function teamSimilarity(a,b) {
-    const x=resolverTokens(a), y=resolverTokens(b);
-    if(!x||!y) return 0;
-    if(x===y) return 1;
-    if(x.includes(y)||y.includes(x)) return .90;
-    const A=new Set(x.split(/\s+/).filter(q=>q.length>=2));
-    const B=new Set(y.split(/\s+/).filter(q=>q.length>=2));
-    if(!A.size||!B.size)return 0;
-    let hit=0; for(const q of A) if(B.has(q)) hit++;
-    const dice=2*hit/(A.size+B.size);
-    const firstA=[...A][0], firstB=[...B][0];
-    return Math.min(1, dice + (firstA===firstB ? 0.08 : 0));
+
+function teamSimilarity(a, b) {
+    const x = resolverTokens(a), y = resolverTokens(b);
+    if (!x || !y) return 0;
+    if (x === y) return 1;
+    if (x.includes(y) || y.includes(x)) return .90;
+    const A = new Set(x.split(/\s+/).filter(q => q.length >= 2));
+    const B = new Set(y.split(/\s+/).filter(q => q.length >= 2));
+    if (!A.size || !B.size) return 0;
+    let hit = 0; for (const q of A) if (B.has(q)) hit++;
+    const dice = 2 * hit / (A.size + B.size);
+    const firstA = [...A][0], firstB = [...B][0];
+    return Math.min(1, dice + (firstA === firstB ? 0.08 : 0));
 }
+
 function pairMatchScore(homeName, awayName, cHome, cAway) {
-    const directH=teamSimilarity(homeName,cHome), directA=teamSimilarity(awayName,cAway);
-    const revH=teamSimilarity(homeName,cAway), revA=teamSimilarity(awayName,cHome);
-    const direct=(directH+directA)/2, reversed=(revH+revA)/2;
-    const score=Math.max(direct,reversed);
-    // Không cho một đội match rất mạnh che lấp đội còn lại hoàn toàn.
-    const weakest = direct >= reversed ? Math.min(directH,directA) : Math.min(revH,revA);
-    return { score: weakest < 0.30 ? score * 0.75 : score, reversed: reversed > direct };
+    const directH = teamSimilarity(homeName, cHome), directA = teamSimilarity(awayName, cAway);
+    const revH = teamSimilarity(homeName, cAway), revA = teamSimilarity(awayName, cHome);
+    const direct = (directH + directA) / 2, reversed = (revH + revA) / 2;
+    const score = Math.max(direct, reversed);
+    const weakest = direct >= reversed ? Math.min(directH, directA) : Math.min(revH, revA);
+    return { score: weakest < 0.25 ? score * 0.75 : score, reversed: reversed > direct };
 }
 async function resolveSofaEventIdByName(homeName,awayName,originalId) {
     console.log(`    🔎 [DEEP RESOLVER] ${homeName} vs ${awayName}`);
