@@ -981,7 +981,6 @@ async function fetchSofaJson(path, timeout = 6000) {
 function extractSofaStatistics(data) {
     let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
     let shotsOffTarget = 0, blockedShots = 0;
-    let shotsOffTargetPresent = false, blockedShotsPresent = false;
     let possessionHome = null, possessionAway = null;
     let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
     let foundItems = 0;
@@ -1010,9 +1009,9 @@ function extractSofaStatistics(data) {
             if (name.includes('shots on target') || name.includes('shot on target')) {
                 shotsOnTarget = Math.max(shotsOnTarget, sumVal); present.shotsOnTarget=true; foundItems++;
             } else if (name.includes('shots off target') || name.includes('shot off target')) {
-                shotsOffTarget = Math.max(shotsOffTarget, sumVal); shotsOffTargetPresent = true; foundItems++;
+                shotsOffTarget = Math.max(shotsOffTarget, sumVal); foundItems++;
             } else if (name.includes('blocked shots') || name.includes('blocked shot')) {
-                blockedShots = Math.max(blockedShots, sumVal); blockedShotsPresent = true; foundItems++;
+                blockedShots = Math.max(blockedShots, sumVal); foundItems++;
             } else if (name.includes('total shots') || name.includes('total shot')) {
                 totalShots = Math.max(totalShots, sumVal); present.totalShots=true; foundItems++;
             } else if (name.includes('corner')) {
@@ -1042,21 +1041,11 @@ function extractSofaStatistics(data) {
 
     roots.forEach(walk);
 
-    // Cơ chế bản cũ: nếu API không có Total Shots trực tiếp nhưng có đủ
-    // SOT + Shots Off Target + Blocked Shots thì dựng Total Shots.
-    // Chỉ dựng khi cả 3 thành phần thực sự tồn tại; không biến missing thành 0.
-    if (!present.totalShots && present.shotsOnTarget && shotsOffTargetPresent && blockedShotsPresent) {
-        totalShots = shotsOnTarget + shotsOffTarget + blockedShots;
-        present.totalShots = true;
-        foundItems++;
-        console.log(`    🧮 [TOTAL SHOTS REBUILD] Sofa = SOT(${shotsOnTarget}) + OFF(${shotsOffTarget}) + BLOCKED(${blockedShots}) = ${totalShots}`);
-    }
-
     return {
         foundItems,
         sofaStats: {
             shotsOnTarget,
-            totalShots: present.totalShots ? totalShots : null,
+            totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots),
             shotsOffTarget,
             blockedShots,
             corners,
@@ -1212,6 +1201,40 @@ function extractLiveFootballCandidates(data) {
     }
     walk(data); return out;
 }
+function extractLiveFootballLiveList(data) {
+    // Payload LiveFootball có thể đổi shape; ưu tiên các path phổ biến,
+    // sau đó dò sâu để tránh mất resolver chỉ vì response.live không tồn tại.
+    const preferred = [
+        data?.response?.live, data?.response?.matches, data?.response?.events,
+        data?.live, data?.matches, data?.events,
+        data?.data?.live, data?.data?.matches, data?.data?.events
+    ];
+    for (const arr of preferred) if (Array.isArray(arr) && arr.length) return arr;
+
+    let best = [];
+    const seen = new Set();
+    function looksLikeMatch(o) {
+        if (!o || typeof o !== 'object' || Array.isArray(o)) return false;
+        const id = o.eventid ?? o.eventId ?? o.id ?? o.matchId ?? o.fixture_id;
+        const home = o.home ?? o.homeTeam ?? o.home_team ?? o.localteam ?? o.team1 ?? o.homeName;
+        const away = o.away ?? o.awayTeam ?? o.away_team ?? o.visitorteam ?? o.team2 ?? o.awayName;
+        return id != null && home != null && away != null;
+    }
+    function walk(node, depth = 0) {
+        if (!node || typeof node !== 'object' || depth > 6 || seen.has(node)) return;
+        seen.add(node);
+        if (Array.isArray(node)) {
+            const matches = node.filter(looksLikeMatch);
+            if (matches.length > best.length) best = matches;
+            node.forEach(v => walk(v, depth + 1));
+            return;
+        }
+        Object.values(node).forEach(v => walk(v, depth + 1));
+    }
+    walk(data);
+    return best;
+}
+
 async function resolveLiveFootballMatchByName(homeName, awayName) {
     console.log(`    🔄 [LIVEFOOTBALL] Tìm trận: ${homeName} vs ${awayName}`);
     const cachedEvent = getCachedLiveFootballEvent(homeName, awayName);
@@ -1226,7 +1249,7 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
             const response = await axios.get(`https://${LIVEFOOTBALL_HOST}${LIVEFOOTBALL_LIVE_PATH}`, {
                 headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVEFOOTBALL_HOST }, timeout: 7000
             });
-            liveList = Array.isArray(response.data?.response?.live) ? response.data.response.live : [];
+            liveList = extractLiveFootballLiveList(response.data);
             resolverLiveCache.livefootball={ts:now,data:liveList};
             console.log(`    📥 [LIVEFOOTBALL LIST] live=${liveList.length}`);
         }
@@ -1250,67 +1273,38 @@ async function resolveLiveFootballMatchByName(homeName, awayName) {
     } catch(err) { console.log(`    ⚠️ [LIVEFOOTBALL LIVE ERROR] ${err.message}`); return null; }
 }
 function extractLiveFootballStatistics(data) {
-    const stats={ totalShots:null, shotsOnTarget:null, shotsOffTarget:null, blockedShots:null, corners:null, redCards:null, possession:null };
-    const present={ totalShots:false, shotsOnTarget:false, shotsOffTarget:false, blockedShots:false, corners:false, redCards:false, possession:false };
+    const stats={ totalShots:null, shotsOnTarget:null, corners:null, redCards:null, possession:null };
+    const present={ totalShots:false, shotsOnTarget:false, corners:false, redCards:false, possession:false };
     const advancedStats={ xg:0, bigChances:0, shotsInsideBox:0, touchesOppBox:0 };
-
-    function norm(v){ return String(v || '').toLowerCase().replace(/[\s_-]+/g,''); }
-    function pairFrom(n){
-        if (Array.isArray(n.stats) && n.stats.length >= 2) return [n.stats[0], n.stats[1]];
-        if (Array.isArray(n.values) && n.values.length >= 2) return [n.values[0], n.values[1]];
-        const a=n.home ?? n.homeValue ?? n.home_value ?? n.valueHome ?? n.local;
-        const b=n.away ?? n.awayValue ?? n.away_value ?? n.valueAway ?? n.visitor;
-        return (a !== undefined && b !== undefined) ? [a,b] : null;
-    }
     function walk(n){
         if(!n || typeof n!=='object') return;
         if(Array.isArray(n)){ n.forEach(walk); return; }
-
-        const keyRaw=String(n.key ?? n.name ?? n.type ?? n.title ?? n.label ?? '');
-        const key=norm(keyRaw);
-        const arr=pairFrom(n);
-        if(arr && arr[0]!==null && arr[1]!==null){
-            const a=Number(String(arr[0]).replace('%',''));
-            const b=Number(String(arr[1]).replace('%',''));
+        const key=String(n.key||n.name||n.type||n.label||'').trim();
+        const normKey=key.toLowerCase().replace(/[\s_-]+/g,'');
+        let arr=Array.isArray(n.stats)?n.stats:null;
+        if(!arr){
+            const hv=n.home ?? n.homeValue ?? n.home_value ?? n.valueHome ?? n.local;
+            const av=n.away ?? n.awayValue ?? n.away_value ?? n.valueAway ?? n.visitor;
+            if(hv!==undefined && av!==undefined) arr=[hv,av];
+        }
+        if(arr && arr.length>=2 && arr[0]!==null && arr[1]!==null){
+            const a=Number(String(arr[0]).replace('%','')), b=Number(String(arr[1]).replace('%',''));
             if(Number.isFinite(a)&&Number.isFinite(b)){
-                const sum=a+b;
-                if(['totalshots','shotstotal','shots'].includes(key)){
-                    stats.totalShots=Math.max(stats.totalShots ?? 0,sum); present.totalShots=true;
-                } else if(['shotsontarget','shotontarget','ontarget'].includes(key)){
-                    stats.shotsOnTarget=Math.max(stats.shotsOnTarget ?? 0,sum); present.shotsOnTarget=true;
-                } else if(['shotsofftarget','shotofftarget','offtarget'].includes(key)){
-                    stats.shotsOffTarget=Math.max(stats.shotsOffTarget ?? 0,sum); present.shotsOffTarget=true;
-                } else if(['blockedshots','blockedshot','shotsblocked'].includes(key)){
-                    stats.blockedShots=Math.max(stats.blockedShots ?? 0,sum); present.blockedShots=true;
-                } else if(key==='corners' || key==='cornerkicks'){
-                    stats.corners=Math.max(stats.corners ?? 0,sum); present.corners=true;
-                } else if(key==='redcards' || key==='redcard'){
-                    stats.redCards=Math.max(stats.redCards ?? 0,sum); present.redCards=true;
-                } else if(key==='ballpossesion' || key==='ballpossession' || key==='possession'){
-                    stats.possession=`${a}% - ${b}%`; present.possession=true;
-                } else if(key==='expectedgoals' || key==='xg'){
-                    advancedStats.xg=Math.max(advancedStats.xg,sum);
-                } else if(key==='bigchance' || key==='bigchances'){
-                    advancedStats.bigChances=Math.max(advancedStats.bigChances,sum);
-                } else if(key==='shotsinsidebox'){
-                    advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,sum);
-                } else if(key==='touchesoppbox' || key==='touchesinoppositionbox'){
-                    advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,sum);
-                }
+                if(['totalshots','shotstotal','shots','totalattempts','goalattempts'].includes(normKey)){ stats.totalShots=Math.max(stats.totalShots ?? 0,a+b); present.totalShots=true; }
+                else if(['shotsontarget','shotontarget','ontarget'].includes(normKey)){ stats.shotsOnTarget=Math.max(stats.shotsOnTarget ?? 0,a+b); present.shotsOnTarget=true; }
+                else if(key==='corners'){ stats.corners=a+b; present.corners=true; }
+                else if(key==='red_cards'){ stats.redCards=a+b; present.redCards=true; }
+                else if(key==='BallPossesion'){ stats.possession=`${a}% - ${b}%`; present.possession=true; }
+                else if(key==='expected_goals'){ advancedStats.xg=Math.max(advancedStats.xg,a+b); }
+                else if(key==='big_chance'){ advancedStats.bigChances=Math.max(advancedStats.bigChances,a+b); }
+                else if(key==='shots_inside_box'){ advancedStats.shotsInsideBox=Math.max(advancedStats.shotsInsideBox,a+b); }
+                else if(key==='touches_opp_box'){ advancedStats.touchesOppBox=Math.max(advancedStats.touchesOppBox,a+b); }
             }
         }
         Object.values(n).forEach(v=>{if(v&&typeof v==='object')walk(v)});
     }
     walk(data);
-
-    if(!present.totalShots && present.shotsOnTarget && present.shotsOffTarget && present.blockedShots){
-        stats.totalShots=(stats.shotsOnTarget||0)+(stats.shotsOffTarget||0)+(stats.blockedShots||0);
-        present.totalShots=true;
-        console.log(`    🧮 [TOTAL SHOTS REBUILD] LiveFootball = SOT(${stats.shotsOnTarget}) + OFF(${stats.shotsOffTarget}) + BLOCKED(${stats.blockedShots}) = ${stats.totalShots}`);
-    }
-
-    const corePresent={ totalShots:present.totalShots, shotsOnTarget:present.shotsOnTarget, corners:present.corners, redCards:present.redCards, possession:present.possession };
-    return { foundItems:Object.values(corePresent).filter(Boolean).length, sofaStats:stats, present:corePresent, advancedStats };
+    return { foundItems:Object.values(present).filter(Boolean).length, sofaStats:stats, present, advancedStats };
 }
 async function fetchLiveFootballPartialStats(homeName,awayName){
     const match=await resolveLiveFootballMatchByName(homeName,awayName);
@@ -1385,15 +1379,17 @@ async function resolveLivescoreMatchByName(homeName, awayName) {
 }
 
 function extractLivescoreStatistics(data) {
-    const stats = { shotsOnTarget:null, totalShots:null, shotsOffTarget:null, blockedShots:null, corners:null, redCards:null, possession:null };
-    const present = { shotsOnTarget:false, totalShots:false, shotsOffTarget:false, blockedShots:false, corners:false, redCards:false, possession:false };
+    // V16.7: dùng null + present mask rõ ràng. Không còn biến giá trị mặc định 0
+    // thành "đã có dữ liệu". Số 0 chỉ hợp lệ khi API thực sự trả field đó.
+    const stats = { shotsOnTarget:null, totalShots:null, corners:null, redCards:null, possession:null };
+    const present = { shotsOnTarget:false, totalShots:false, corners:false, redCards:false, possession:false };
     const advancedStats = { xg:0, bigChances:0, shotsInsideBox:0, touchesOppBox:0 };
 
     function walk(node) {
         if (!node || typeof node !== 'object') return;
         if (Array.isArray(node)) { node.forEach(walk); return; }
 
-        const name = String(node.name || node.type || node.title || node.Nm || node.StatName || '').toLowerCase().replace(/[_-]/g,' ');
+        const name = String(node.name || node.type || node.title || node.Nm || node.StatName || '').toLowerCase();
         const hvRaw = node.home ?? node.homeValue ?? node.H ?? node.Value1 ?? node.V1;
         const avRaw = node.away ?? node.awayValue ?? node.A ?? node.Value2 ?? node.V2;
         const hv = Number(String(hvRaw ?? '').replace('%','').trim());
@@ -1402,12 +1398,8 @@ function extractLivescoreStatistics(data) {
 
         if (name && hasPair) {
             const sum = hv + av;
-            if (name.includes('shot on target') || name.includes('shots on target') || name.includes('shots on goal')) {
+            if (name.includes('shot on target') || name.includes('shots on target')) {
                 stats.shotsOnTarget = Math.max(stats.shotsOnTarget ?? 0, sum); present.shotsOnTarget = true;
-            } else if (name.includes('shots off target') || name.includes('shot off target') || name === 'off target') {
-                stats.shotsOffTarget = Math.max(stats.shotsOffTarget ?? 0, sum); present.shotsOffTarget = true;
-            } else if (name.includes('blocked shot') || name.includes('shots blocked')) {
-                stats.blockedShots = Math.max(stats.blockedShots ?? 0, sum); present.blockedShots = true;
             } else if (name.includes('total shot') || name.includes('shots total') || name === 'shots' || name.includes('total attempts') || name.includes('goal attempts')) {
                 stats.totalShots = Math.max(stats.totalShots ?? 0, sum); present.totalShots = true;
             } else if (name.includes('corner')) {
@@ -1422,20 +1414,14 @@ function extractLivescoreStatistics(data) {
     }
     walk(data);
 
-    if (!present.totalShots && present.shotsOnTarget && present.shotsOffTarget && present.blockedShots) {
-        stats.totalShots = (stats.shotsOnTarget||0) + (stats.shotsOffTarget||0) + (stats.blockedShots||0);
-        present.totalShots = true;
-        console.log(`    🧮 [TOTAL SHOTS REBUILD] Livescore6 = SOT(${stats.shotsOnTarget}) + OFF(${stats.shotsOffTarget}) + BLOCKED(${stats.blockedShots}) = ${stats.totalShots}`);
-    }
-
-    const corePresent = { shotsOnTarget:present.shotsOnTarget, totalShots:present.totalShots, corners:present.corners, redCards:present.redCards, possession:present.possession };
     return {
-        foundItems: Object.values(corePresent).filter(Boolean).length,
+        foundItems: Object.values(present).filter(Boolean).length,
         sofaStats: stats,
-        present: corePresent,
+        present,
         advancedStats
     };
 }
+
 async function fetchCrossSourcePartialStats(homeName, awayName) {
     try {
         const match = await resolveLivescoreMatchByName(homeName, awayName);
