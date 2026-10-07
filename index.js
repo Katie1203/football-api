@@ -2493,159 +2493,211 @@ function parseStatsFromRawMatch(
 // Không gọi nhiều API thừa.
 // ==========================================================
 
+// ==========================================================
+// CROSS-SOURCE PARTIAL STATS
+// 5 chỉ số ưu tiên để quyết định có cần fallback thêm hay không:
+// ATT / Dangerous Attack / Total Shots / SOT / Corners.
+// Mục tiêu: ít nhất 4/5; nếu dữ liệu raw của 3 nguồn ghép được 5/5 thì giữ 5/5.
+// Chỉ gọi detail API khi sau khi ghép raw vẫn < 4/5 để tránh lãng phí API.
+// ==========================================================
+
+function getCoreStatsCoverage(stats) {
+
+  if (!stats) {
+    return 0;
+  }
+
+  const checks = [
+    safeNumber(stats.homeAttacks) + safeNumber(stats.awayAttacks) > 0,
+    safeNumber(stats.homeDangerousAttacks) + safeNumber(stats.awayDangerousAttacks) > 0,
+    safeNumber(stats.homeTotalShots) + safeNumber(stats.awayTotalShots) > 0,
+    safeNumber(stats.homeShotsOnTarget) + safeNumber(stats.awayShotsOnTarget) > 0,
+    safeNumber(stats.homeCorners) + safeNumber(stats.awayCorners) > 0
+  ];
+
+  return checks.filter(Boolean).length;
+}
+
+
+function mergeMissingStats(target, source) {
+
+  if (!target || !source) {
+    return target;
+  }
+
+  const keys = Object.keys(createEmptyStats());
+
+  for (const key of keys) {
+
+    if (key === 'hasData' || key === 'source') {
+      continue;
+    }
+
+    const oldValue = safeNumber(target[key]);
+    const newValue = safeNumber(source[key]);
+
+    // Chỉ bổ sung ô còn thiếu; không ghi đè dữ liệu nguồn ưu tiên.
+    if (oldValue <= 0 && newValue > 0) {
+      target[key] = newValue;
+    }
+  }
+
+  if (source.hasData) {
+    target.hasData = true;
+  }
+
+  return target;
+}
+
+
+async function fetchStatsForSourceMatch(sourceMatch) {
+
+  if (!sourceMatch) {
+    return createEmptyStats();
+  }
+
+  if (sourceMatch.source === 'sofascore') {
+    return fetchSofaScoreStats(sourceMatch.id);
+  }
+
+  if (sourceMatch.source === 'flashscore') {
+    return fetchFlashScoreStats(sourceMatch.id);
+  }
+
+  // Live Football hiện không có detail-stat endpoint riêng trong bản này.
+  // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
+  if (sourceMatch.source === 'live-football') {
+    return parseStatsFromRawMatch(sourceMatch.raw);
+  }
+
+  return createEmptyStats();
+}
+
+
 async function fetchMatchDetailStats(
   match
 ) {
 
+  // Cache theo tên trận để 3 nguồn dùng chung kết quả đã ghép.
+  const matchKey = createMatchKey(
+    match.homeName,
+    match.awayName
+  );
+
   const cacheKey =
+    `cross:${matchKey || `${match.source}:${match.id}`}`;
 
-    `${match.source}:${match.id}`;
-
-
-  const cached =
-    statsCache.get(
-      cacheKey
-    );
-
+  const cached = statsCache.get(cacheKey);
 
   if (
     cached &&
-    Date.now() -
-      cached.time <
-      STATS_CACHE_TTL
+    Date.now() - cached.time < STATS_CACHE_TTL
   ) {
-
     return cached.data;
   }
 
 
-  // ------------------------------------------
-  // BƯỚC 1:
-  // Thử lấy ngay trong raw match
-  // ------------------------------------------
-
-  let stats =
-    parseStatsFromRawMatch(
-      match.raw
-    );
+  // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
+  const sourceMatches = Array.isArray(match.crossSourceMatches)
+    ? match.crossSourceMatches
+    : [match];
 
 
-  // ------------------------------------------
-  // BƯỚC 2:
-  // Nếu raw thiếu dữ liệu
-  // thì gọi API statistics
-  // ------------------------------------------
+  // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
+  let stats = parseStatsFromRawMatch(match.raw);
 
-  if (
-    !stats.hasData
-  ) {
+  for (const sourceMatch of sourceMatches) {
 
     if (
-      match.source ===
-      'sofascore'
+      sourceMatch.source === match.source &&
+      String(sourceMatch.id) === String(match.id)
     ) {
+      continue;
+    }
 
-      stats =
-        await fetchSofaScoreStats(
-          match.id
-        );
+    const rawStats = parseStatsFromRawMatch(sourceMatch.raw);
+    mergeMissingStats(stats, rawStats);
+  }
 
-    } else if (
-      match.source ===
-      'flashscore'
-    ) {
 
-      stats =
-        await fetchFlashScoreStats(
-          match.id
-        );
+  // BƯỚC 2: nếu vẫn chưa đủ 4/5 mới gọi detail API theo từng nguồn.
+  // Ưu tiên SofaScore -> FlashScore -> Live Football.
+  const sourcePriority = {
+    sofascore: 3,
+    flashscore: 2,
+    'live-football': 1
+  };
+
+  const orderedSources = [...sourceMatches].sort(
+    (a, b) =>
+      (sourcePriority[b.source] || 0) -
+      (sourcePriority[a.source] || 0)
+  );
+
+  if (getCoreStatsCoverage(stats) < 4) {
+
+    for (const sourceMatch of orderedSources) {
+
+      if (getCoreStatsCoverage(stats) >= 4) {
+        break;
+      }
+
+      const extraStats =
+        await fetchStatsForSourceMatch(sourceMatch);
+
+      mergeMissingStats(stats, extraStats);
     }
   }
 
 
-  // ------------------------------------------
-  // BƯỚC 3:
-  // Nếu total shots không có,
-  // nhưng có SOT + off target + blocked
-  // thì tự tính
-  // ------------------------------------------
-
-  if (
-    stats.homeTotalShots <= 0
-  ) {
-
+  // BƯỚC 3: Total Shots fallback như logic cũ.
+  if (stats.homeTotalShots <= 0) {
     stats.homeTotalShots =
-
       stats.homeShotsOnTarget +
-
       stats.homeShotsOffTarget +
-
       stats.homeBlockedShots;
   }
 
-
-  if (
-    stats.awayTotalShots <= 0
-  ) {
-
+  if (stats.awayTotalShots <= 0) {
     stats.awayTotalShots =
-
       stats.awayShotsOnTarget +
-
       stats.awayShotsOffTarget +
-
       stats.awayBlockedShots;
   }
 
 
-  // ------------------------------------------
-  // Possession fallback
-  // Nếu chỉ có một bên
-  // ------------------------------------------
-
+  // Possession fallback như logic cũ.
   if (
     stats.homePossession > 0 &&
     stats.awayPossession <= 0
   ) {
-
-    stats.awayPossession =
-      Math.max(
-        0,
-        100 -
-        stats.homePossession
-      );
+    stats.awayPossession = Math.max(
+      0,
+      100 - stats.homePossession
+    );
   }
-
 
   if (
     stats.awayPossession > 0 &&
     stats.homePossession <= 0
   ) {
-
-    stats.homePossession =
-      Math.max(
-        0,
-        100 -
-        stats.awayPossession
-      );
+    stats.homePossession = Math.max(
+      0,
+      100 - stats.awayPossession
+    );
   }
 
 
-  // ------------------------------------------
-  // CACHE
-  // ------------------------------------------
+  stats.source =
+    `cross-source-${getCoreStatsCoverage(stats)}/5`;
 
   statsCache.set(
     cacheKey,
     {
-      time:
-        Date.now(),
-
-      data:
-        stats
+      time: Date.now(),
+      data: stats
     }
   );
-
 
   return stats;
 }
@@ -6332,80 +6384,55 @@ function deduplicateMatches(
   matches
 ) {
 
-  const uniqueMap =
-    new Map();
-
+  const grouped = new Map();
 
   const SOURCE_PRIORITY = {
-
     sofascore: 3,
-
     flashscore: 2,
-
     'live-football': 1
-
   };
 
+  // Gom cùng một trận theo tên đội, nhưng KHÔNG vứt các nguồn phụ.
+  for (const match of matches) {
 
-  for (
-    const match of matches
-  ) {
-
-    const key =
-      createMatchKey(
-        match.homeName,
-        match.awayName
-      );
-
+    const key = createMatchKey(
+      match.homeName,
+      match.awayName
+    );
 
     if (!key || key === '_') {
       continue;
     }
 
-
-    const existing =
-      uniqueMap.get(key);
-
-
-    if (!existing) {
-
-      uniqueMap.set(
-        key,
-        match
-      );
-
-      continue;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
     }
 
-
-    const currentPriority =
-      SOURCE_PRIORITY[
-        match.source
-      ] || 0;
-
-
-    const existingPriority =
-      SOURCE_PRIORITY[
-        existing.source
-      ] || 0;
-
-
-    if (
-      currentPriority >
-      existingPriority
-    ) {
-
-      uniqueMap.set(
-        key,
-        match
-      );
-    }
+    grouped.get(key).push(match);
   }
 
 
-  return Array.from(
-    uniqueMap.values()
-  );
+  const result = [];
+
+  for (const sourceMatches of grouped.values()) {
+
+    sourceMatches.sort(
+      (a, b) =>
+        (SOURCE_PRIORITY[b.source] || 0) -
+        (SOURCE_PRIORITY[a.source] || 0)
+    );
+
+    // Vẫn giữ SofaScore làm match chính như logic cũ,
+    // nhưng gắn các bản cùng trận từ FlashScore/Live Football
+    // để fetchMatchDetailStats bổ sung chỉ số còn thiếu.
+    const primary = sourceMatches[0];
+
+    primary.crossSourceMatches = sourceMatches;
+
+    result.push(primary);
+  }
+
+  return result;
 }
 
 
