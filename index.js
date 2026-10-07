@@ -1102,6 +1102,8 @@ async function fetchLiveMatchesFromLiveFootball() {
     return [];
   }
 }
+
+
 // ==========================================================
 // 7. STATISTICS HELPERS
 // ==========================================================
@@ -1641,23 +1643,6 @@ function applyStat(
 
 // ==========================================================
 // 8. GENERIC STAT PARSER
-//
-// Hỗ trợ nhiều dạng:
-//
-// {
-//   name: "Shots on target",
-//   home: "5",
-//   away: "3"
-// }
-//
-// hoặc:
-//
-// {
-//   type: "Shots on Target",
-//   homeValue: 5,
-//   awayValue: 3
-// }
-//
 // ==========================================================
 
 function parseGenericStatObject(
@@ -1787,8 +1772,6 @@ function parseGenericStatObject(
 
 // ==========================================================
 // RECURSIVE STAT PARSER
-//
-// Quét toàn bộ object response.
 // ==========================================================
 
 function recursivelyParseStats(
@@ -1860,16 +1843,6 @@ function recursivelyParseStats(
 
 // ==========================================================
 // 9. PARSE DIRECT KEY OBJECT
-//
-// Một số API trả:
-//
-// attacks: { home: 90, away: 80 }
-//
-// hoặc:
-//
-// home_attacks: 90
-// away_attacks: 80
-//
 // ==========================================================
 
 function parseDirectKeys(
@@ -2096,16 +2069,6 @@ function parseDirectKeys(
   }
 
 
-  // -----------------------------------------
-  // Dạng:
-  //
-  // attacks: {
-  //   home: 90,
-  //   away: 80
-  // }
-  //
-  // -----------------------------------------
-
   const objectPairs = [
 
     [
@@ -2302,8 +2265,6 @@ async function fetchSofaScoreStats(
       }
 
     } catch (e) {
-
-      // Thử endpoint tiếp theo
     }
   }
 
@@ -2397,8 +2358,6 @@ async function fetchFlashScoreStats(
       }
 
     } catch (e) {
-
-      // thử endpoint tiếp
     }
   }
 
@@ -2409,9 +2368,6 @@ async function fetchFlashScoreStats(
 
 // ==========================================================
 // 12. PARSE STATS TỪ RAW MATCH
-//
-// Nhiều API đã chứa statistics ngay trong match.
-// Ưu tiên lấy luôn để giảm API call.
 // ==========================================================
 
 function parseStatsFromRawMatch(
@@ -2486,18 +2442,7 @@ function parseStatsFromRawMatch(
 
 
 // ==========================================================
-// 13. FETCH MATCH DETAIL STATS
-//
-// Có cache.
-// Không gọi nhiều API thừa.
-// ==========================================================
-
-// ==========================================================
-// CROSS-SOURCE PARTIAL STATS
-// 5 chỉ số ưu tiên để quyết định có cần fallback thêm hay không:
-// ATT / Dangerous Attack / Total Shots / SOT / Corners.
-// Mục tiêu: ít nhất 4/5; nếu dữ liệu raw của 3 nguồn ghép được 5/5 thì giữ 5/5.
-// Chỉ gọi detail API khi sau khi ghép raw vẫn < 4/5 để tránh lãng phí API.
+// 13. FETCH MATCH DETAIL STATS (CROSS-SOURCE)
 // ==========================================================
 
 function getCoreStatsCoverage(stats) {
@@ -2535,7 +2480,6 @@ function mergeMissingStats(target, source) {
     const oldValue = safeNumber(target[key]);
     const newValue = safeNumber(source[key]);
 
-    // Chỉ bổ sung ô còn thiếu; không ghi đè dữ liệu nguồn ưu tiên.
     if (oldValue <= 0 && newValue > 0) {
       target[key] = newValue;
     }
@@ -2563,8 +2507,6 @@ async function fetchStatsForSourceMatch(sourceMatch) {
     return fetchFlashScoreStats(sourceMatch.id);
   }
 
-  // Live Football hiện không có detail-stat endpoint riêng trong bản này.
-  // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
   if (sourceMatch.source === 'live-football') {
     return parseStatsFromRawMatch(sourceMatch.raw);
   }
@@ -2577,7 +2519,6 @@ async function fetchMatchDetailStats(
   match
 ) {
 
-  // Cache theo tên trận để 3 nguồn dùng chung kết quả đã ghép.
   const matchKey = createMatchKey(
     match.homeName,
     match.awayName
@@ -2596,13 +2537,11 @@ async function fetchMatchDetailStats(
   }
 
 
-  // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
   const sourceMatches = Array.isArray(match.crossSourceMatches)
     ? match.crossSourceMatches
     : [match];
 
 
-  // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
   let stats = parseStatsFromRawMatch(match.raw);
 
   for (const sourceMatch of sourceMatches) {
@@ -2619,8 +2558,6 @@ async function fetchMatchDetailStats(
   }
 
 
-  // BƯỚC 2: nếu vẫn chưa đủ 4/5 mới gọi detail API theo từng nguồn.
-  // Ưu tiên SofaScore -> FlashScore -> Live Football.
   const sourcePriority = {
     sofascore: 3,
     flashscore: 2,
@@ -2649,7 +2586,6 @@ async function fetchMatchDetailStats(
   }
 
 
-  // BƯỚC 3: Total Shots fallback như logic cũ.
   if (stats.homeTotalShots <= 0) {
     stats.homeTotalShots =
       stats.homeShotsOnTarget +
@@ -2665,7 +2601,6 @@ async function fetchMatchDetailStats(
   }
 
 
-  // Possession fallback như logic cũ.
   if (
     stats.homePossession > 0 &&
     stats.awayPossession <= 0
@@ -2765,13 +2700,6 @@ function calculateTotals(
 
 // ==========================================================
 // 15. TEAM PRESSURE SCORE
-//
-// Dùng để:
-// - nhận biết đội ép sân
-// - dự đoán đội có khả năng ghi bàn
-// - dự đoán tỷ số FT
-//
-// Không phải AI probability.
 // ==========================================================
 
 function calculateTeamPressure(
@@ -2782,7 +2710,6 @@ function calculateTeamPressure(
   let away = 0;
 
 
-  // Dangerous Attack
   home +=
     stats.homeDangerousAttacks *
     0.28;
@@ -2792,7 +2719,6 @@ function calculateTeamPressure(
     0.28;
 
 
-  // Attack
   home +=
     stats.homeAttacks *
     0.08;
@@ -2802,7 +2728,6 @@ function calculateTeamPressure(
     0.08;
 
 
-  // SOT
   home +=
     stats.homeShotsOnTarget *
     4.2;
@@ -2812,7 +2737,6 @@ function calculateTeamPressure(
     4.2;
 
 
-  // Blocked
   home +=
     stats.homeBlockedShots *
     2.0;
@@ -2822,7 +2746,6 @@ function calculateTeamPressure(
     2.0;
 
 
-  // Total shots
   home +=
     stats.homeTotalShots *
     0.6;
@@ -2832,7 +2755,6 @@ function calculateTeamPressure(
     0.6;
 
 
-  // Corners
   home +=
     stats.homeCorners *
     1.5;
@@ -2842,7 +2764,6 @@ function calculateTeamPressure(
     1.5;
 
 
-  // Possession
   if (
     stats.homePossession > 0
   ) {
@@ -2863,7 +2784,6 @@ function calculateTeamPressure(
   }
 
 
-  // Big chances nếu API có
   home +=
     stats.homeBigChances *
     4;
@@ -2898,13 +2818,6 @@ function calculateTeamPressure(
 
 // ==========================================================
 // 16. MATCH STYLE
-//
-// Nhận diện:
-// - Đôi công
-// - Home ép sân
-// - Away ép sân
-// - Cân bằng
-// - Nhịp thấp
 // ==========================================================
 
 function detectMatchStyle(
@@ -2941,10 +2854,6 @@ function detectMatchStyle(
     stats.awayCorners >= 3;
 
 
-  // ------------------------------------------
-  // ĐÔI CÔNG
-  // ------------------------------------------
-
   if (
     homeActive &&
     awayActive &&
@@ -2965,10 +2874,6 @@ function detectMatchStyle(
   }
 
 
-  // ------------------------------------------
-  // HOME ÉP SÂN
-  // ------------------------------------------
-
   if (
     pressure.home >
       pressure.away * 1.35 &&
@@ -2988,10 +2893,6 @@ function detectMatchStyle(
   }
 
 
-  // ------------------------------------------
-  // AWAY ÉP SÂN
-  // ------------------------------------------
-
   if (
     pressure.away >
       pressure.home * 1.35 &&
@@ -3010,10 +2911,6 @@ function detectMatchStyle(
     };
   }
 
-
-  // ------------------------------------------
-  // CÂN BẰNG NHƯNG CÓ TẤN CÔNG
-  // ------------------------------------------
 
   if (
     totals.totalShotsOnTarget >= 4 ||
@@ -3099,6 +2996,7 @@ function formatStatsText(
   ].join('\n');
 }
 
+
 // ==========================================================
 // 18. MATH HELPERS
 // ==========================================================
@@ -3117,16 +3015,6 @@ function round1(value) {
 
 // ==========================================================
 // 19. MOMENTUM SNAPSHOT
-//
-// Mỗi vòng scan lưu lại statistics.
-// Lần scan tiếp theo tính phần tăng:
-//
-// Attack
-// Dangerous Attack
-// SOT
-// Blocked
-// Corners
-//
 // ==========================================================
 
 function createSnapshot(stats, minute) {
@@ -3201,42 +3089,20 @@ function calculateMomentum(
   );
 
 
-  // Chưa có snapshot trước
   if (!previous) {
 
     return {
       available: false,
-
       minuteGap: 0,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
+      homeAttack: 0, awayAttack: 0,
+      homeDangerous: 0, awayDangerous: 0,
+      homeSOT: 0, awaySOT: 0,
+      homeBlocked: 0, awayBlocked: 0,
+      homeCorners: 0, awayCorners: 0,
+      totalAttack: 0, totalDangerous: 0, totalSOT: 0, totalBlocked: 0, totalCorners: 0,
+      homePressure: 0, awayPressure: 0,
       score: 50,
-
-      text:
-        '⏳ Đang thu thập Momentum'
+      text: '⏳ Đang thu thập Momentum'
     };
   }
 
@@ -3248,7 +3114,6 @@ function calculateMomentum(
     );
 
 
-  // Snapshot lỗi / trận nhảy phút ngược
   if (
     minuteGap <= 0 ||
     minuteGap > 20
@@ -3256,43 +3121,21 @@ function calculateMomentum(
 
     return {
       available: false,
-
       minuteGap,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
+      homeAttack: 0, awayAttack: 0,
+      homeDangerous: 0, awayDangerous: 0,
+      homeSOT: 0, awaySOT: 0,
+      homeBlocked: 0, awayBlocked: 0,
+      homeCorners: 0, awayCorners: 0,
+      totalAttack: 0, totalDangerous: 0, totalSOT: 0, totalBlocked: 0, totalCorners: 0,
+      homePressure: 0, awayPressure: 0,
       score: 50,
-
-      text:
-        '⏳ Momentum chưa đủ dữ liệu'
+      text: '⏳ Momentum chưa đủ dữ liệu'
     };
   }
 
 
   function delta(currentValue, oldValue) {
-
     return Math.max(
       0,
       safeNumber(currentValue) -
@@ -3301,310 +3144,83 @@ function calculateMomentum(
   }
 
 
-  const homeAttack =
-    delta(
-      current.homeAttacks,
-      previous.homeAttacks
-    );
+  const homeAttack = delta(current.homeAttacks, previous.homeAttacks);
+  const awayAttack = delta(current.awayAttacks, previous.awayAttacks);
+  const homeDangerous = delta(current.homeDangerousAttacks, previous.homeDangerousAttacks);
+  const awayDangerous = delta(current.awayDangerousAttacks, previous.awayDangerousAttacks);
+  const homeSOT = delta(current.homeShotsOnTarget, previous.homeShotsOnTarget);
+  const awaySOT = delta(current.awayShotsOnTarget, previous.awayShotsOnTarget);
+  const homeBlocked = delta(current.homeBlockedShots, previous.homeBlockedShots);
+  const awayBlocked = delta(current.awayBlockedShots, previous.awayBlockedShots);
+  const homeCorners = delta(current.homeCorners, previous.homeCorners);
+  const awayCorners = delta(current.awayCorners, previous.awayCorners);
 
-  const awayAttack =
-    delta(
-      current.awayAttacks,
-      previous.awayAttacks
-    );
+  const totalAttack = homeAttack + awayAttack;
+  const totalDangerous = homeDangerous + awayDangerous;
+  const totalSOT = homeSOT + awaySOT;
+  const totalBlocked = homeBlocked + awayBlocked;
+  const totalCorners = homeCorners + awayCorners;
 
-
-  const homeDangerous =
-    delta(
-      current.homeDangerousAttacks,
-      previous.homeDangerousAttacks
-    );
-
-  const awayDangerous =
-    delta(
-      current.awayDangerousAttacks,
-      previous.awayDangerousAttacks
-    );
-
-
-  const homeSOT =
-    delta(
-      current.homeShotsOnTarget,
-      previous.homeShotsOnTarget
-    );
-
-  const awaySOT =
-    delta(
-      current.awayShotsOnTarget,
-      previous.awayShotsOnTarget
-    );
-
-
-  const homeBlocked =
-    delta(
-      current.homeBlockedShots,
-      previous.homeBlockedShots
-    );
-
-  const awayBlocked =
-    delta(
-      current.awayBlockedShots,
-      previous.awayBlockedShots
-    );
-
-
-  const homeCorners =
-    delta(
-      current.homeCorners,
-      previous.homeCorners
-    );
-
-  const awayCorners =
-    delta(
-      current.awayCorners,
-      previous.awayCorners
-    );
-
-
-  const totalAttack =
-    homeAttack +
-    awayAttack;
-
-  const totalDangerous =
-    homeDangerous +
-    awayDangerous;
-
-  const totalSOT =
-    homeSOT +
-    awaySOT;
-
-  const totalBlocked =
-    homeBlocked +
-    awayBlocked;
-
-  const totalCorners =
-    homeCorners +
-    awayCorners;
-
-
-  // Chuẩn hóa về 10 phút
-  const factor =
-    10 /
-    Math.max(
-      minuteGap,
-      1
-    );
-
-
-  const attack10 =
-    totalAttack *
-    factor;
-
-  const dangerous10 =
-    totalDangerous *
-    factor;
-
-  const sot10 =
-    totalSOT *
-    factor;
-
-  const blocked10 =
-    totalBlocked *
-    factor;
-
-  const corners10 =
-    totalCorners *
-    factor;
-
-
-  // ======================================================
-  // MOMENTUM SCORE 0-100
-  // ======================================================
+  const factor = 10 / Math.max(minuteGap, 1);
+  const attack10 = totalAttack * factor;
+  const dangerous10 = totalDangerous * factor;
+  const sot10 = totalSOT * factor;
+  const blocked10 = totalBlocked * factor;
+  const corners10 = totalCorners * factor;
 
   let score = 20;
 
+  if (attack10 >= 35) score += 18;
+  else if (attack10 >= 25) score += 14;
+  else if (attack10 >= 15) score += 9;
+  else if (attack10 >= 8) score += 4;
 
-  // Attack
-  if (attack10 >= 35) {
-    score += 18;
-  } else if (attack10 >= 25) {
-    score += 14;
-  } else if (attack10 >= 15) {
-    score += 9;
-  } else if (attack10 >= 8) {
-    score += 4;
-  }
+  if (dangerous10 >= 20) score += 28;
+  else if (dangerous10 >= 14) score += 22;
+  else if (dangerous10 >= 9) score += 15;
+  else if (dangerous10 >= 5) score += 8;
 
+  if (sot10 >= 4) score += 25;
+  else if (sot10 >= 3) score += 20;
+  else if (sot10 >= 2) score += 14;
+  else if (sot10 >= 1) score += 7;
 
-  // Dangerous Attack
-  if (dangerous10 >= 20) {
-    score += 28;
-  } else if (dangerous10 >= 14) {
-    score += 22;
-  } else if (dangerous10 >= 9) {
-    score += 15;
-  } else if (dangerous10 >= 5) {
-    score += 8;
-  }
+  if (blocked10 >= 4) score += 10;
+  else if (blocked10 >= 2) score += 6;
+  else if (blocked10 >= 1) score += 3;
 
+  if (corners10 >= 4) score += 10;
+  else if (corners10 >= 2) score += 6;
+  else if (corners10 >= 1) score += 3;
 
-  // SOT
-  if (sot10 >= 4) {
-    score += 25;
-  } else if (sot10 >= 3) {
-    score += 20;
-  } else if (sot10 >= 2) {
-    score += 14;
-  } else if (sot10 >= 1) {
-    score += 7;
-  }
+  score = clamp(score, 0, 100);
 
+  const homePressure = homeAttack * 0.10 + homeDangerous * 0.35 + homeSOT * 5 + homeBlocked * 2 + homeCorners * 1.8;
+  const awayPressure = awayAttack * 0.10 + awayDangerous * 0.35 + awaySOT * 5 + awayBlocked * 2 + awayCorners * 1.8;
 
-  // Blocked
-  if (blocked10 >= 4) {
-    score += 10;
-  } else if (blocked10 >= 2) {
-    score += 6;
-  } else if (blocked10 >= 1) {
-    score += 3;
-  }
-
-
-  // Corners
-  if (corners10 >= 4) {
-    score += 10;
-  } else if (corners10 >= 2) {
-    score += 6;
-  } else if (corners10 >= 1) {
-    score += 3;
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
-  // ======================================================
-  // MOMENTUM HOME/AWAY
-  // ======================================================
-
-  const homePressure =
-
-    homeAttack * 0.10 +
-
-    homeDangerous * 0.35 +
-
-    homeSOT * 5 +
-
-    homeBlocked * 2 +
-
-    homeCorners * 1.8;
-
-
-  const awayPressure =
-
-    awayAttack * 0.10 +
-
-    awayDangerous * 0.35 +
-
-    awaySOT * 5 +
-
-    awayBlocked * 2 +
-
-    awayCorners * 1.8;
-
-
-  let text =
-    '⚡ Momentum trung bình';
-
-
-  if (score >= 85) {
-
-    text =
-      '🔥🔥 MOMENTUM CỰC MẠNH';
-
-  } else if (score >= 75) {
-
-    text =
-      '🔥 MOMENTUM RẤT MẠNH';
-
-  } else if (score >= 65) {
-
-    text =
-      '⚡ MOMENTUM MẠNH';
-
-  } else if (score < 40) {
-
-    text =
-      '🐢 Momentum thấp';
-  }
-
+  let text = '⚡ Momentum trung bình';
+  if (score >= 85) text = '🔥🔥 MOMENTUM CỰC MẠNH';
+  else if (score >= 75) text = '🔥 MOMENTUM RẤT MẠNH';
+  else if (score >= 65) text = '⚡ MOMENTUM MẠNH';
+  else if (score < 40) text = '🐢 Momentum thấp';
 
   return {
-
     available: true,
-
     minuteGap,
-
-    homeAttack,
-    awayAttack,
-
-    homeDangerous,
-    awayDangerous,
-
-    homeSOT,
-    awaySOT,
-
-    homeBlocked,
-    awayBlocked,
-
-    homeCorners,
-    awayCorners,
-
-    totalAttack,
-    totalDangerous,
-    totalSOT,
-    totalBlocked,
-    totalCorners,
-
-    attack10:
-      round1(attack10),
-
-    dangerous10:
-      round1(
-        dangerous10
-      ),
-
-    sot10:
-      round1(sot10),
-
-    blocked10:
-      round1(
-        blocked10
-      ),
-
-    corners10:
-      round1(
-        corners10
-      ),
-
-    homePressure:
-      round1(
-        homePressure
-      ),
-
-    awayPressure:
-      round1(
-        awayPressure
-      ),
-
-    score:
-      round1(score),
-
+    homeAttack, awayAttack,
+    homeDangerous, awayDangerous,
+    homeSOT, awaySOT,
+    homeBlocked, awayBlocked,
+    homeCorners, awayCorners,
+    totalAttack, totalDangerous, totalSOT, totalBlocked, totalCorners,
+    attack10: round1(attack10),
+    dangerous10: round1(dangerous10),
+    sot10: round1(sot10),
+    blocked10: round1(blocked10),
+    corners10: round1(corners10),
+    homePressure: round1(homePressure),
+    awayPressure: round1(awayPressure),
+    score: round1(score),
     text
   };
 }
@@ -3614,21 +3230,10 @@ function calculateMomentum(
 // 20. FORMAT MOMENTUM TELEGRAM
 // ==========================================================
 
-function formatMomentumText(
-  momentum
-) {
-
-  if (
-    !momentum ||
-    !momentum.available
-  ) {
-
-    return (
-      momentum?.text ||
-      '⏳ Đang thu thập Momentum'
-    );
+function formatMomentumText(momentum) {
+  if (!momentum || !momentum.available) {
+    return momentum?.text || '⏳ Đang thu thập Momentum';
   }
-
 
   return [
     `⚡ ${momentum.minuteGap} PHÚT GẦN NHẤT:`,
@@ -3654,8 +3259,6 @@ let oddsCache = {
 
 const ODDS_CACHE_TTL = 2 * 60 * 1000;
 
-
-// Làm sạch tên đội sâu hơn để loại bỏ khoảng trắng, ký tự đặc biệt và các hậu tố phổ biến
 function cleanTeamNameDeep(name) {
   return String(name || '')
     .normalize('NFD')
@@ -3666,32 +3269,17 @@ function cleanTeamNameDeep(name) {
     .trim();
 }
 
-
-// So khớp tên linh hoạt hơn giữa Odds API và các nguồn Live
 function teamNamesSimilarAdvanced(a, b) {
   const x = cleanTeamNameDeep(a);
   const y = cleanTeamNameDeep(b);
 
-  if (!x || !y) {
-    return false;
-  }
+  if (!x || !y) return false;
+  if (x === y) return true;
+  if (x.includes(y) || y.includes(x)) return true;
 
-  if (x === y) {
-    return true;
-  }
-
-  // Kiểm tra chứa nhau hoặc khớp phần lớn chuỗi ký tự
-  if (x.includes(y) || y.includes(x)) {
-    return true;
-  }
-
-  // Kiểm tra lấy 4 ký tự đầu nếu tên đội quá dài (tránh lệch đuôi viết tắt)
   if (x.length >= 4 && y.length >= 4) {
-    if (x.substring(0, 4) === y.substring(0, 4)) {
-      return true;
-    }
+    if (x.substring(0, 4) === y.substring(0, 4)) return true;
   }
-
   return false;
 }
 
@@ -3701,492 +3289,100 @@ function teamNamesSimilarAdvanced(a, b) {
 // ==========================================================
 
 async function fetchAllLiveOdds() {
+  if (!ODDS_API_KEY || !ODDS_API_URL) return [];
 
-  if (
-    !ODDS_API_KEY ||
-    !ODDS_API_URL
-  ) {
-    return [];
-  }
-
-
-  if (
-    oddsCache.data.length &&
-    Date.now() -
-      oddsCache.time <
-      ODDS_CACHE_TTL
-  ) {
-
+  if (oddsCache.data.length && Date.now() - oddsCache.time < ODDS_CACHE_TTL) {
     return oddsCache.data;
   }
 
-
   try {
-
-    const r =
-      await axios.get(
-        ODDS_API_URL,
-        {
-          timeout: 10000
-        }
-      );
-
-
-    const data =
-      Array.isArray(r.data)
-        ? r.data
-        : [];
-
-
-    oddsCache = {
-      time:
-        Date.now(),
-
-      data
-    };
-
-
+    const r = await axios.get(ODDS_API_URL, { timeout: 10000 });
+    const data = Array.isArray(r.data) ? r.data : [];
+    oddsCache = { time: Date.now(), data };
     return data;
-
   } catch (e) {
-
-    console.error(
-      '[Odds API]',
-      e.message
-    );
-
     return [];
   }
 }
 
 
 // ==========================================================
-// 23. FIND ODDS FOR MATCH (UPDATED)
+// 23. FIND ODDS FOR MATCH
 // ==========================================================
 
-function findMatchOdds(
-  allOdds,
-  homeName,
-  awayName,
-  homeScore,
-  awayScore
-) {
-
-  if (
-    !Array.isArray(allOdds) ||
-    !allOdds.length
-  ) {
-
-    return {
-      found: false,
-      score: 50,
-      oddsBonus: 0,
-      text:
-        '💰 Không có dữ liệu kèo'
-    };
+function findMatchOdds(allOdds, homeName, awayName, homeScore, awayScore) {
+  if (!Array.isArray(allOdds) || !allOdds.length) {
+    return { found: false, score: 50, oddsBonus: 0, text: '💰 Không có dữ liệu kèo' };
   }
 
-
-  const event =
-    allOdds.find(
-      x => {
-
-        const normal =
-
-          teamNamesSimilarAdvanced(
-            x.home_team,
-            homeName
-          ) &&
-
-          teamNamesSimilarAdvanced(
-            x.away_team,
-            awayName
-          );
-
-
-        const reverse =
-
-          teamNamesSimilarAdvanced(
-            x.home_team,
-            awayName
-          ) &&
-
-          teamNamesSimilarAdvanced(
-            x.away_team,
-            homeName
-          );
-
-
-        return (
-          normal ||
-          reverse
-        );
-      }
-    );
-
+  const event = allOdds.find(x => {
+    const normal = teamNamesSimilarAdvanced(x.home_team, homeName) && teamNamesSimilarAdvanced(x.away_team, awayName);
+    const reverse = teamNamesSimilarAdvanced(x.home_team, awayName) && teamNamesSimilarAdvanced(x.away_team, homeName);
+    return normal || reverse;
+  });
 
   if (!event) {
-
-    return {
-      found: false,
-      score: 50,
-      oddsBonus: 0,
-      text:
-        '💰 Không tìm thấy kèo phù hợp'
-    };
+    return { found: false, score: 50, oddsBonus: 0, text: '💰 Không tìm thấy kèo phù hợp' };
   }
 
-
-  const currentGoals =
-    safeNumber(homeScore) +
-    safeNumber(awayScore);
-
-
+  const currentGoals = safeNumber(homeScore) + safeNumber(awayScore);
   const overSelections = [];
 
+  for (const bookmaker of event.bookmakers || []) {
+    for (const market of bookmaker.markets || []) {
+      if (market.key !== 'totals') continue;
+      for (const outcome of market.outcomes || []) {
+        if (String(outcome.name).toLowerCase() !== 'over') continue;
 
-  for (
-    const bookmaker of
-    event.bookmakers || []
-  ) {
+        const point = safeNumber(outcome.point);
+        const price = safeNumber(outcome.price);
 
-    for (
-      const market of
-      bookmaker.markets || []
-    ) {
-
-      if (
-        market.key !== 'totals'
-      ) {
-        continue;
-      }
-
-
-      for (
-        const outcome of
-        market.outcomes || []
-      ) {
-
-        if (
-          String(
-            outcome.name
-          ).toLowerCase() !==
-          'over'
-        ) {
-          continue;
-        }
-
-
-        const point =
-          safeNumber(
-            outcome.point
-          );
-
-
-        const price =
-          safeNumber(
-            outcome.price
-          );
-
-
-        if (
-          point > 0 &&
-          price > 1
-        ) {
-
-          overSelections.push({
-            bookmaker:
-              bookmaker.title ||
-              bookmaker.key ||
-              'Bookmaker',
-
-            point,
-
-            price
-          });
+        if (point > 0 && price > 1) {
+          overSelections.push({ bookmaker: bookmaker.title || 'Bookmaker', point, price });
         }
       }
     }
   }
 
-
-  if (
-    !overSelections.length
-  ) {
-
-    return {
-      found: true,
-      score: 50,
-      oddsBonus: 0,
-      text:
-        '💰 Có trận nhưng không có kèo Over'
-    };
+  if (!overSelections.length) {
+    return { found: true, score: 50, oddsBonus: 0, text: '💰 Có trận nhưng không có kèo Over' };
   }
 
+  let candidates = overSelections.filter(x => x.point > currentGoals);
+  if (!candidates.length) candidates = overSelections;
 
-  let candidates =
-    overSelections
-      .filter(
-        x =>
-          x.point >
-          currentGoals
-      );
+  candidates.sort((a, b) => Math.abs(a.point - (currentGoals + 0.5)) - Math.abs(b.point - (currentGoals + 0.5)));
 
-
-  if (
-    !candidates.length
-  ) {
-
-    candidates =
-      overSelections;
-  }
-
-
-  candidates.sort(
-    (a, b) =>
-      Math.abs(
-        a.point -
-        (currentGoals + 0.5)
-      ) -
-      Math.abs(
-        b.point -
-        (currentGoals + 0.5)
-      )
-  );
-
-
-  const targetPoint =
-    candidates[0].point;
-
-
-  const sameLine =
-    candidates.filter(
-      x =>
-        x.point ===
-        targetPoint
-    );
-
-
-  const avgPrice =
-
-    sameLine.reduce(
-      (sum, x) =>
-        sum +
-        x.price,
-      0
-    ) /
-
-    Math.max(
-      sameLine.length,
-      1
-    );
-
-
-  const goalsNeeded =
-    targetPoint -
-    currentGoals;
-
+  const targetPoint = candidates[0].point;
+  const sameLine = candidates.filter(x => x.point === targetPoint);
+  const avgPrice = sameLine.reduce((sum, x) => sum + x.price, 0) / Math.max(sameLine.length, 1);
+  const goalsNeeded = targetPoint - currentGoals;
 
   let score = 50;
+  if (avgPrice <= 1.30) score = 95;
+  else if (avgPrice <= 1.40) score = 90;
+  else if (avgPrice <= 1.50) score = 84;
+  else if (avgPrice <= 1.60) score = 78;
+  else if (avgPrice <= 1.70) score = 72;
+  else if (avgPrice <= 1.85) score = 64;
+  else if (avgPrice <= 2.00) score = 56;
+  else if (avgPrice <= 2.20) score = 48;
+  else score = 40;
 
+  if (goalsNeeded > 0 && goalsNeeded <= 0.75) score += 5;
+  score = clamp(score, 0, 100);
 
-  if (avgPrice <= 1.30) {
-    score = 95;
-  } else if (avgPrice <= 1.40) {
-    score = 90;
-  } else if (avgPrice <= 1.50) {
-    score = 84;
-  } else if (avgPrice <= 1.60) {
-    score = 78;
-  } else if (avgPrice <= 1.70) {
-    score = 72;
-  } else if (avgPrice <= 1.85) {
-    score = 64;
-  } else if (avgPrice <= 2.00) {
-    score = 56;
-  } else if (avgPrice <= 2.20) {
-    score = 48;
-  } else {
-    score = 40;
-  }
-
-
-  if (
-    goalsNeeded > 0 &&
-    goalsNeeded <= 0.75
-  ) {
-    score += 5;
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
-  const oddsBonus =
-    clamp(
-      (score - 50) * 0.24,
-      -5,
-      12
-    );
-
+  const oddsBonus = clamp((score - 50) * 0.24, -5, 12);
 
   return {
-
     found: true,
-
-    point:
-      targetPoint,
-
-    price:
-      round1(
-        avgPrice * 100
-      ) / 100,
-
+    point: targetPoint,
+    price: round1(avgPrice * 100) / 100,
     currentGoals,
-
-    goalsNeeded:
-      round1(
-        goalsNeeded
-      ),
-
-    score:
-      round1(score),
-
-    oddsBonus:
-      round1(
-        oddsBonus
-      ),
-
-    text:
-      `💰 Over ${targetPoint} @ ${avgPrice.toFixed(2)} | Odds Score: ${round1(score)}%`
-  };
-}
-
-
-  // ======================================================
-  // ODDS SCORE 0-100
-  // Odds càng thấp => thị trường càng nghiêng Over
-  // ======================================================
-
-  let score = 50;
-
-
-  if (
-    avgPrice <= 1.30
-  ) {
-
-    score = 95;
-
-  } else if (
-    avgPrice <= 1.40
-  ) {
-
-    score = 90;
-
-  } else if (
-    avgPrice <= 1.50
-  ) {
-
-    score = 84;
-
-  } else if (
-    avgPrice <= 1.60
-  ) {
-
-    score = 78;
-
-  } else if (
-    avgPrice <= 1.70
-  ) {
-
-    score = 72;
-
-  } else if (
-    avgPrice <= 1.85
-  ) {
-
-    score = 64;
-
-  } else if (
-    avgPrice <= 2.00
-  ) {
-
-    score = 56;
-
-  } else if (
-    avgPrice <= 2.20
-  ) {
-
-    score = 48;
-
-  } else {
-
-    score = 40;
-  }
-
-
-  // Line chỉ cần thêm khoảng 0.5-0.75 bàn
-  if (
-    goalsNeeded > 0 &&
-    goalsNeeded <= 0.75
-  ) {
-
-    score += 5;
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
-  // Chỉ để tương thích code cũ
-  const oddsBonus =
-    clamp(
-      (score - 50) *
-      0.24,
-      -5,
-      12
-    );
-
-
-  return {
-
-    found: true,
-
-    point:
-      targetPoint,
-
-    price:
-      round1(
-        avgPrice * 100
-      ) / 100,
-
-    currentGoals,
-
-    goalsNeeded:
-      round1(
-        goalsNeeded
-      ),
-
-    score:
-      round1(score),
-
-    oddsBonus:
-      round1(
-        oddsBonus
-      ),
-
-    text:
-      `💰 Over ${targetPoint} @ ${avgPrice.toFixed(2)} | Odds Score: ${round1(score)}%`
+    goalsNeeded: round1(goalsNeeded),
+    score: round1(score),
+    oddsBonus: round1(oddsBonus),
+    text: `💰 Over ${targetPoint} @ ${avgPrice.toFixed(2)} | Odds Score: ${round1(score)}%`
   };
 }
 
@@ -4195,50 +3391,18 @@ function findMatchOdds(
 // 24. SUB SCORE: ATTACK
 // ==========================================================
 
-function calculateAttackScore(
-  stats,
-  minute
-) {
+function calculateAttackScore(stats, minute) {
+  const total = stats.homeAttacks + stats.awayAttacks;
+  if (total <= 0) return 50;
+  const rate = total / Math.max(minute, 1);
 
-  const total =
-    stats.homeAttacks +
-    stats.awayAttacks;
-
-
-  if (total <= 0) {
-    return 50;
-  }
-
-
-  const rate =
-    total /
-    Math.max(
-      minute,
-      1
-    );
-
-
-  let score = 25;
-
-
-  if (rate >= 2.8) {
-    score = 95;
-  } else if (rate >= 2.4) {
-    score = 88;
-  } else if (rate >= 2.0) {
-    score = 80;
-  } else if (rate >= 1.7) {
-    score = 70;
-  } else if (rate >= 1.4) {
-    score = 60;
-  } else if (rate >= 1.1) {
-    score = 50;
-  } else {
-    score = 35;
-  }
-
-
-  return score;
+  if (rate >= 2.8) return 95;
+  if (rate >= 2.4) return 88;
+  if (rate >= 2.0) return 80;
+  if (rate >= 1.7) return 70;
+  if (rate >= 1.4) return 60;
+  if (rate >= 1.1) return 50;
+  return 35;
 }
 
 
@@ -4246,55 +3410,17 @@ function calculateAttackScore(
 // 25. SUB SCORE: DANGEROUS ATTACK
 // ==========================================================
 
-function calculateDangerousAttackScore(
-  stats,
-  minute
-) {
+function calculateDangerousAttackScore(stats, minute) {
+  const total = stats.homeDangerousAttacks + stats.awayDangerousAttacks;
+  if (total <= 0) return 50;
+  const rate = total / Math.max(minute, 1);
 
-  const total =
-
-    stats.homeDangerousAttacks +
-    stats.awayDangerousAttacks;
-
-
-  if (total <= 0) {
-    return 50;
-  }
-
-
-  const rate =
-    total /
-    Math.max(
-      minute,
-      1
-    );
-
-
-  if (rate >= 1.8) {
-    return 98;
-  }
-
-  if (rate >= 1.5) {
-    return 92;
-  }
-
-  if (rate >= 1.25) {
-    return 85;
-  }
-
-  if (rate >= 1.0) {
-    return 76;
-  }
-
-  if (rate >= 0.75) {
-    return 65;
-  }
-
-  if (rate >= 0.55) {
-    return 55;
-  }
-
-
+  if (rate >= 1.8) return 98;
+  if (rate >= 1.5) return 92;
+  if (rate >= 1.25) return 85;
+  if (rate >= 1.0) return 76;
+  if (rate >= 0.75) return 65;
+  if (rate >= 0.55) return 55;
   return 38;
 }
 
@@ -4303,60 +3429,18 @@ function calculateDangerousAttackScore(
 // 26. SUB SCORE: SOT
 // ==========================================================
 
-function calculateSOTScore(
-  stats,
-  minute
-) {
+function calculateSOTScore(stats, minute) {
+  const total = stats.homeShotsOnTarget + stats.awayShotsOnTarget;
 
-  const total =
-
-    stats.homeShotsOnTarget +
-    stats.awayShotsOnTarget;
-
-
-  if (total >= 12) {
-    return 98;
-  }
-
-  if (total >= 10) {
-    return 94;
-  }
-
-  if (total >= 8) {
-    return 88;
-  }
-
-  if (total >= 6) {
-    return 78;
-  }
-
-  if (total >= 5) {
-    return 70;
-  }
-
-  if (total >= 4) {
-    return 62;
-  }
-
-  if (total >= 3) {
-    return 52;
-  }
-
-  if (total >= 2) {
-    return 42;
-  }
-
-
-  // Sau phút 70 mà <=1 SOT
-  // là tín hiệu xấu
-  if (
-    minute >= 70 &&
-    total <= 1
-  ) {
-    return 20;
-  }
-
-
+  if (total >= 12) return 98;
+  if (total >= 10) return 94;
+  if (total >= 8) return 88;
+  if (total >= 6) return 78;
+  if (total >= 5) return 70;
+  if (total >= 4) return 62;
+  if (total >= 3) return 52;
+  if (total >= 2) return 42;
+  if (minute >= 70 && total <= 1) return 20;
   return 30;
 }
 
@@ -4365,41 +3449,15 @@ function calculateSOTScore(
 // 27. SUB SCORE: BLOCKED SHOTS
 // ==========================================================
 
-function calculateBlockedScore(
-  stats
-) {
+function calculateBlockedScore(stats) {
+  const total = stats.homeBlockedShots + stats.awayBlockedShots;
 
-  const total =
-
-    stats.homeBlockedShots +
-    stats.awayBlockedShots;
-
-
-  if (total >= 10) {
-    return 95;
-  }
-
-  if (total >= 8) {
-    return 88;
-  }
-
-  if (total >= 6) {
-    return 78;
-  }
-
-  if (total >= 4) {
-    return 67;
-  }
-
-  if (total >= 2) {
-    return 55;
-  }
-
-  if (total >= 1) {
-    return 45;
-  }
-
-
+  if (total >= 10) return 95;
+  if (total >= 8) return 88;
+  if (total >= 6) return 78;
+  if (total >= 4) return 67;
+  if (total >= 2) return 55;
+  if (total >= 1) return 45;
   return 35;
 }
 
@@ -4408,125 +3466,37 @@ function calculateBlockedScore(
 // 28. SUB SCORE: CORNERS
 // ==========================================================
 
-function calculateCornerScore(
-  stats
-) {
+function calculateCornerScore(stats) {
+  const total = stats.homeCorners + stats.awayCorners;
 
-  const total =
-
-    stats.homeCorners +
-    stats.awayCorners;
-
-
-  if (total >= 14) {
-    return 98;
-  }
-
-  if (total >= 11) {
-    return 90;
-  }
-
-  if (total >= 9) {
-    return 82;
-  }
-
-  if (total >= 7) {
-    return 72;
-  }
-
-  if (total >= 5) {
-    return 62;
-  }
-
-  if (total >= 3) {
-    return 52;
-  }
-
-
+  if (total >= 14) return 98;
+  if (total >= 11) return 90;
+  if (total >= 9) return 82;
+  if (total >= 7) return 72;
+  if (total >= 5) return 62;
+  if (total >= 3) return 52;
   return 38;
 }
 
 
 // ==========================================================
 // 29. SUB SCORE: POSSESSION / PRESSURE
-//
-// Possession một mình không đủ.
-// Kết hợp với SOT / Dangerous / Corners.
 // ==========================================================
 
-function calculatePossessionPressureScore(
-  stats
-) {
+function calculatePossessionPressureScore(stats) {
+  const homePoss = stats.homePossession;
+  const awayPoss = stats.awayPossession;
 
-  const homePoss =
-    stats.homePossession;
+  if (homePoss <= 0 && awayPoss <= 0) return 50;
 
-  const awayPoss =
-    stats.awayPossession;
+  const possessionDiff = Math.abs(homePoss - awayPoss);
+  const pressure = calculateTeamPressure(stats);
 
-
-  if (
-    homePoss <= 0 &&
-    awayPoss <= 0
-  ) {
-
-    return 50;
-  }
-
-
-  const possessionDiff =
-    Math.abs(
-      homePoss -
-      awayPoss
-    );
-
-
-  const pressure =
-    calculateTeamPressure(
-      stats
-    );
-
-
-  let score = 50;
-
-
-  // Ép sân rõ ràng
-  if (
-    possessionDiff >= 25 &&
-    pressure.difference >= 18
-  ) {
-
-    score = 90;
-
-  } else if (
-    possessionDiff >= 18 &&
-    pressure.difference >= 12
-  ) {
-
-    score = 82;
-
-  } else if (
-    possessionDiff >= 10 &&
-    pressure.difference >= 8
-  ) {
-
-    score = 72;
-
-  } else if (
-    pressure.difference >= 15
-  ) {
-
-    score = 75;
-
-  } else {
-
-    // Possession cân bằng
-    // có thể là đôi công
-    score = 60;
-  }
-
-
-  return score;
+  if (possessionDiff >= 25 && pressure.difference >= 18) return 90;
+  if (possessionDiff >= 18 && pressure.difference >= 12) return 82;
+  if (possessionDiff >= 10 && pressure.difference >= 8) return 72;
+  if (pressure.difference >= 15) return 75;
+  return 60;
 }
 
 
@@ -4534,49 +3504,19 @@ function calculatePossessionPressureScore(
 // 30. SUB SCORE: CARDS
 // ==========================================================
 
-function calculateCardScore(
-  stats
-) {
-
-  const yellow =
-
-    stats.homeYellowCards +
-    stats.awayYellowCards;
-
-
-  const red =
-
-    stats.homeRedCards +
-    stats.awayRedCards;
-
-
+function calculateCardScore(stats) {
+  const yellow = stats.homeYellowCards + stats.awayYellowCards;
+  const red = stats.homeRedCards + stats.awayRedCards;
   let score = 45;
 
+  if (yellow >= 7) score += 12;
+  else if (yellow >= 5) score += 8;
+  else if (yellow >= 3) score += 4;
 
-  if (yellow >= 7) {
-    score += 12;
-  } else if (yellow >= 5) {
-    score += 8;
-  } else if (yellow >= 3) {
-    score += 4;
-  }
+  if (red >= 1) score += 20;
+  if (red >= 2) score += 8;
 
-
-  if (red >= 1) {
-    score += 20;
-  }
-
-
-  if (red >= 2) {
-    score += 8;
-  }
-
-
-  return clamp(
-    score,
-    0,
-    90
-  );
+  return clamp(score, 0, 90);
 }
 
 
@@ -4584,188 +3524,49 @@ function calculateCardScore(
 // 31. SUB SCORE: END TO END / PRESSURE
 // ==========================================================
 
-function calculateMatchStyleScore(
-  stats
-) {
-
-  const style =
-    detectMatchStyle(
-      stats
-    );
-
-
-  return {
-    score:
-      style.score,
-
-    type:
-      style.type,
-
-    text:
-      style.text
-  };
+function calculateMatchStyleScore(stats) {
+  const style = detectMatchStyle(stats);
+  return { score: style.score, type: style.type, text: style.text };
 }
 
 
 // ==========================================================
 // 32. SCORE STATE
-//
-// Tỷ số ảnh hưởng động lực.
-//
-// Hòa / cách biệt 1 bàn:
-// hai đội thường còn động lực.
-//
-// Cách biệt quá lớn:
-// giảm nhẹ.
 // ==========================================================
 
-function calculateScoreStateScore(
-  homeScore,
-  awayScore,
-  minute
-) {
-
-  const h =
-    safeNumber(
-      homeScore
-    );
-
-  const a =
-    safeNumber(
-      awayScore
-    );
-
-
-  const diff =
-    Math.abs(
-      h - a
-    );
-
-
+function calculateScoreStateScore(homeScore, awayScore, minute) {
+  const h = safeNumber(homeScore);
+  const a = safeNumber(awayScore);
+  const diff = Math.abs(h - a);
   let score = 60;
 
+  if (diff === 0) score = 80;
+  else if (diff === 1) score = 85;
+  else if (diff === 2) score = 62;
+  else score = 42;
 
-  if (diff === 0) {
-
-    score = 80;
-
-  } else if (diff === 1) {
-
-    score = 85;
-
-  } else if (diff === 2) {
-
-    score = 62;
-
-  } else {
-
-    score = 42;
-  }
-
-
-  // Cuối trận + cách biệt 1
-  // thường đội thua phải đẩy cao
-  if (
-    minute >= 75 &&
-    diff === 1
-  ) {
-
-    score += 8;
-  }
-
-
-  return clamp(
-    score,
-    0,
-    100
-  );
+  if (minute >= 75 && diff === 1) score += 8;
+  return clamp(score, 0, 100);
 }
 
 
 // ==========================================================
 // 33. TIME SCORE
-//
-// Đây không phải xác suất.
-// Chỉ phản ánh giai đoạn trận đấu.
-//
 // ==========================================================
 
-function calculateTimeScore(
-  minute
-) {
-
-  if (
-    minute >= 46 &&
-    minute <= 54
-  ) {
-    return 52;
-  }
-
-
-  if (
-    minute >= 55 &&
-    minute <= 64
-  ) {
-    return 62;
-  }
-
-
-  if (
-    minute >= 65 &&
-    minute <= 74
-  ) {
-    return 75;
-  }
-
-
-  if (
-    minute >= 75 &&
-    minute <= 84
-  ) {
-    return 88;
-  }
-
-
-  if (
-    minute >= 85 &&
-    minute <= 89
-  ) {
-    return 82;
-  }
-
-
-  if (
-    minute >= 90 &&
-    minute <= 92
-  ) {
-    return 68;
-  }
-
-
+function calculateTimeScore(minute) {
+  if (minute >= 46 && minute <= 54) return 52;
+  if (minute >= 55 && minute <= 64) return 62;
+  if (minute >= 65 && minute <= 74) return 75;
+  if (minute >= 75 && minute <= 84) return 88;
+  if (minute >= 85 && minute <= 89) return 82;
+  if (minute >= 90 && minute <= 92) return 68;
   return 50;
 }
 
 
 // ==========================================================
 // 34. RULE AI ENGINE
-//
-// TRỌNG SỐ:
-//
-// Dangerous Attack      18%
-// Momentum              16%
-// SOT                   14%
-// Đôi công / ép sân     11%
-// Attack                10%
-// Possession pressure    8%
-// Blocked                6%
-// Corners                6%
-// Odds                   7%
-// Cards                  2%
-// Score state             1%
-// Time                    1%
-//
-// TOTAL = 100%
-//
 // ==========================================================
 
 function evaluateMatchDynamicAI(
@@ -4776,607 +3577,176 @@ function evaluateMatchDynamicAI(
   homeScore,
   awayScore
 ) {
+  const attackScore = calculateAttackScore(stats, minute);
+  const dangerousScore = calculateDangerousAttackScore(stats, minute);
+  const sotScore = calculateSOTScore(stats, minute);
+  const blockedScore = calculateBlockedScore(stats);
+  const cornerScore = calculateCornerScore(stats);
+  const possessionScore = calculatePossessionPressureScore(stats);
+  const cardScore = calculateCardScore(stats);
+  const style = calculateMatchStyleScore(stats);
+  const scoreState = calculateScoreStateScore(homeScore, awayScore, minute);
+  const timeScore = calculateTimeScore(minute);
 
-  const attackScore =
-    calculateAttackScore(
-      stats,
-      minute
-    );
-
-
-  const dangerousScore =
-    calculateDangerousAttackScore(
-      stats,
-      minute
-    );
-
-
-  const sotScore =
-    calculateSOTScore(
-      stats,
-      minute
-    );
-
-
-  const blockedScore =
-    calculateBlockedScore(
-      stats
-    );
-
-
-  const cornerScore =
-    calculateCornerScore(
-      stats
-    );
-
-
-  const possessionScore =
-    calculatePossessionPressureScore(
-      stats
-    );
-
-
-  const cardScore =
-    calculateCardScore(
-      stats
-    );
-
-
-  const style =
-    calculateMatchStyleScore(
-      stats
-    );
-
-
-  const scoreState =
-    calculateScoreStateScore(
-      homeScore,
-      awayScore,
-      minute
-    );
-
-
-  const timeScore =
-    calculateTimeScore(
-      minute
-    );
-
-
-  // Momentum lần scan đầu chưa có
-  // dùng 50 = trung tính
-  const momentumScore =
-    momentum?.available
-      ? momentum.score
-      : 50;
-
-
-  // Không có odds => trung tính 50
-  const oddsScore =
-    oddsAnalysis?.found
-      ? oddsAnalysis.score
-      : 50;
-
-
-  // ======================================================
-  // WEIGHTED SCORE
-  // ======================================================
+  const momentumScore = momentum?.available ? momentum.score : 50;
+  const oddsScore = oddsAnalysis?.found ? oddsAnalysis.score : 50;
 
   let finalScore =
-
     dangerousScore * 0.18 +
-
     momentumScore * 0.16 +
-
     sotScore * 0.14 +
-
     style.score * 0.11 +
-
     attackScore * 0.10 +
-
     possessionScore * 0.08 +
-
     blockedScore * 0.06 +
-
     cornerScore * 0.06 +
-
     oddsScore * 0.07 +
-
     cardScore * 0.02 +
-
     scoreState * 0.01 +
-
     timeScore * 0.01;
 
-
-  // ======================================================
-  // EXTRA LOGIC / PENALTIES
-  // ======================================================
-
-  const totals =
-    calculateTotals(
-      stats
-    );
-
-
+  const totals = calculateTotals(stats);
   const notes = [];
 
-
-  // Rất ít SOT cuối trận
-  if (
-    minute >= 70 &&
-    totals.totalShotsOnTarget <= 1
-  ) {
-
+  if (minute >= 70 && totals.totalShotsOnTarget <= 1) {
     finalScore -= 8;
-
-    notes.push(
-      '⚠️ SOT quá thấp sau phút 70'
-    );
+    notes.push('⚠️ SOT quá thấp sau phút 70');
   }
 
-
-  // Ít Dangerous Attack
-  if (
-    totals.totalDangerousAttacks > 0 &&
-    totals.totalDangerousAttacks < 30 &&
-    minute >= 65
-  ) {
-
+  if (totals.totalDangerousAttacks > 0 && totals.totalDangerousAttacks < 30 && minute >= 65) {
     finalScore -= 5;
-
-    notes.push(
-      '⚠️ Dangerous Attack thấp'
-    );
+    notes.push('⚠️ Dangerous Attack thấp');
   }
 
-
-  // Momentum cực mạnh
-  if (
-    momentum?.available &&
-    momentum.score >= 85
-  ) {
-
+  if (momentum?.available && momentum.score >= 85) {
     finalScore += 4;
-
-    notes.push(
-      '🔥 Momentum cực mạnh'
-    );
+    notes.push('🔥 Momentum cực mạnh');
   }
 
-
-  // Nhiều SOT + Dangerous
-  if (
-    totals.totalShotsOnTarget >= 8 &&
-    totals.totalDangerousAttacks >= 70
-  ) {
-
+  if (style.type === 'END_TO_END') {
     finalScore += 3;
-
-    notes.push(
-      '🔥 SOT + Dangerous Attack cao'
-    );
+    notes.push('⚔️ Hai đội đang đôi công');
   }
 
+  finalScore = clamp(finalScore, 5, 95);
+  finalScore = round1(finalScore);
 
-  // Đôi công mạnh
-  if (
-    style.type ===
-    'END_TO_END'
-  ) {
-
-    finalScore += 3;
-
-    notes.push(
-      '⚔️ Hai đội đang đôi công'
-    );
-  }
-
-
-  // Một đội ép sân rõ
-  if (
-    style.type ===
-      'HOME_PRESSURE' ||
-    style.type ===
-      'AWAY_PRESSURE'
-  ) {
-
-    finalScore += 2;
-
-    notes.push(
-      '🔥 Có đội ép sân rõ rệt'
-    );
-  }
-
-
-  // Odds rất mạnh
-  if (
-    oddsAnalysis?.found &&
-    oddsAnalysis.score >= 85
-  ) {
-
-    finalScore += 2;
-
-    notes.push(
-      '💰 Kèo Over đang mạnh'
-    );
-  }
-
-
-  // Clamp
-  finalScore =
-    clamp(
-      finalScore,
-      5,
-      95
-    );
-
-
-  finalScore =
-    round1(
-      finalScore
-    );
-
-
-  // ======================================================
-  // LEVEL
-  // ======================================================
-
-  let level =
-    'KHÔNG ĐỦ ĐIỀU KIỆN';
-
-
-  if (
-    finalScore >= 85
-  ) {
-
-    level =
-      '🔥🔥 BIG BET RẤT MẠNH';
-
-  } else if (
-    finalScore >=
-    BIG_BET_PERCENTAGE
-  ) {
-
-    level =
-      '🔥 BIG BET';
-
-  } else if (
-    finalScore >= 68
-  ) {
-
-    level =
-      '⚡ TÍN HIỆU MẠNH';
-
-  } else if (
-    finalScore >=
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    level =
-      '🔔 CÓ TÍN HIỆU';
-  }
-
-
-  // ======================================================
-  // DETAIL TEXT
-  // ======================================================
+  let level = 'KHÔNG ĐỦ ĐIỀU KIỆN';
+  if (finalScore >= 85) level = '🔥🔥 BIG BET RẤT MẠNH';
+  else if (finalScore >= BIG_BET_PERCENTAGE) level = '🔥 BIG BET';
+  else if (finalScore >= 68) level = '⚡ TÍN HIỆU MẠNH';
+  else if (finalScore >= MIN_SEND_PERCENTAGE) level = '🔔 CÓ TÍN HIỆU';
 
   const detailLines = [
-
     `🔥 Dangerous Attack Score: ${round1(dangerousScore)}%`,
-
     `⚡ Momentum Score: ${round1(momentumScore)}%`,
-
     `🎯 SOT Score: ${round1(sotScore)}%`,
-
     `⚔️ Đôi công/Ép sân: ${round1(style.score)}%`,
-
     `🚀 Attack Score: ${round1(attackScore)}%`,
-
     `📊 Possession Pressure: ${round1(possessionScore)}%`,
-
     `🧱 Blocked Score: ${round1(blockedScore)}%`,
-
     `🚩 Corner Score: ${round1(cornerScore)}%`,
-
     `💰 Odds Score: ${round1(oddsScore)}%`,
-
     `🟨🟥 Card Score: ${round1(cardScore)}%`
   ];
 
-
   if (notes.length) {
-
     detailLines.push('');
-
-    detailLines.push(
-      ...notes
-    );
+    detailLines.push(...notes);
   }
 
-
   return {
-
-    efficiency:
-      finalScore,
-
-    shouldSend:
-      finalScore >=
-      MIN_SEND_PERCENTAGE,
-
-    isBigBet:
-      finalScore >=
-      BIG_BET_PERCENTAGE,
-
+    efficiency: finalScore,
+    shouldSend: finalScore >= MIN_SEND_PERCENTAGE,
+    isBigBet: finalScore >= BIG_BET_PERCENTAGE,
     level,
-
-    attackScore:
-      round1(attackScore),
-
-    dangerousScore:
-      round1(
-        dangerousScore
-      ),
-
-    momentumScore:
-      round1(
-        momentumScore
-      ),
-
-    sotScore:
-      round1(
-        sotScore
-      ),
-
-    blockedScore:
-      round1(
-        blockedScore
-      ),
-
-    cornerScore:
-      round1(
-        cornerScore
-      ),
-
-    possessionScore:
-      round1(
-        possessionScore
-      ),
-
-    cardScore:
-      round1(
-        cardScore
-      ),
-
-    styleScore:
-      round1(
-        style.score
-      ),
-
-    oddsScore:
-      round1(
-        oddsScore
-      ),
-
-    scoreState:
-      round1(
-        scoreState
-      ),
-
-    timeScore:
-      round1(
-        timeScore
-      ),
-
-    styleType:
-      style.type,
-
-    styleText:
-      style.text,
-
-    detailText:
-      detailLines.join('\n')
+    attackScore: round1(attackScore),
+    dangerousScore: round1(dangerousScore),
+    momentumScore: round1(momentumScore),
+    sotScore: round1(sotScore),
+    blockedScore: round1(blockedScore),
+    cornerScore: round1(cornerScore),
+    possessionScore: round1(possessionScore),
+    cardScore: round1(cardScore),
+    styleScore: round1(style.score),
+    oddsScore: round1(oddsScore),
+    scoreState: round1(scoreState),
+    timeScore: round1(timeScore),
+    styleType: style.type,
+    styleText: style.text,
+    detailText: detailLines.join('\n')
   };
 }
 
 
 // ==========================================================
 // 35. SHOULD SEND ALERT
-//
-// RULE:
-//
-// Lần đầu >=58%
-//       => SEND
-//
-// Đã báo <75%, sau đó lần đầu >=75%
-//       => BIG BET ngay
-//
-// Sau đó tăng >= +10%
-//       => SEND
-//
-// Tối đa 3 lần.
 // ==========================================================
 
 function hasStrongLiveMovement(momentum) {
-
-  if (!momentum?.available) {
-    return false;
-  }
-
+  if (!momentum?.available) return false;
   return (
     safeNumber(momentum.score) >= 65 ||
     safeNumber(momentum.sot10) >= 2 ||
     safeNumber(momentum.dangerous10) >= 9 ||
-    safeNumber(momentum.attack10) >= 25 ||
-    safeNumber(momentum.blocked10) >= 2 ||
-    safeNumber(momentum.corners10) >= 2
+    safeNumber(momentum.attack10) >= 25
   );
 }
 
+function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum) {
+  const current = safeNumber(currentPercentage);
 
-function shouldSendAlert(
-  matchId,
-  currentPercentage,
-  currentMinute,
-  momentum
-) {
-
-  const current =
-    safeNumber(
-      currentPercentage
-    );
-
-
-  if (
-    current <
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Rule ${current}% < ${MIN_SEND_PERCENTAGE}%`
-    };
+  if (current < MIN_SEND_PERCENTAGE) {
+    return { send: false, bigBet: false, reason: `Rule ${current}% < ${MIN_SEND_PERCENTAGE}%` };
   }
 
+  const previous = alertState.get(matchId);
+  const strongMovement = hasStrongLiveMovement(momentum);
+  const bigBetConfirmed = current >= BIG_BET_PERCENTAGE && strongMovement;
 
-  const previous =
-    alertState.get(
-      matchId
-    );
-
-
-  const strongMovement =
-    hasStrongLiveMovement(
-      momentum
-    );
-
-
-  const bigBetConfirmed =
-    current >= BIG_BET_PERCENTAGE &&
-    strongMovement;
-
-
-  // Lần 1: Rule >= 60% là được nhận định/cảnh báo.
-  // BIG BET chỉ bật khi Rule >= 75% + biến động live đủ mạnh.
   if (!previous) {
-
     return {
       send: true,
       bigBet: bigBetConfirmed,
-      reason:
-        bigBetConfirmed
-          ? `Rule ${current}% + biến động live mạnh`
-          : 'Cảnh báo đầu tiên'
+      reason: bigBetConfirmed ? `Rule ${current}% + biến động live mạnh` : 'Cảnh báo đầu tiên'
     };
   }
 
-
-  // Tối đa 3 cảnh báo / trận.
-  if (
-    previous.alertCount >=
-    MAX_ALERTS_PER_MATCH
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Đã đạt tối đa ${MAX_ALERTS_PER_MATCH} cảnh báo`
-    };
+  if (previous.alertCount >= MAX_ALERTS_PER_MATCH) {
+    return { send: false, bigBet: false, reason: `Đã đạt tối đa ${MAX_ALERTS_PER_MATCH} cảnh báo` };
   }
 
-
-  const minuteGap =
-    currentMinute -
-    previous.lastMinute;
-
-
-  if (
-    minuteGap <
-    MIN_ALERT_GAP_MINUTES
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Mới cảnh báo ${minuteGap} phút trước`
-    };
+  const minuteGap = currentMinute - previous.lastMinute;
+  if (minuteGap < MIN_ALERT_GAP_MINUTES) {
+    return { send: false, bigBet: false, reason: `Mới cảnh báo ${minuteGap} phút trước` };
   }
 
+  const increase = current - previous.lastPercentage;
 
-  const increase =
-    current -
-    previous.lastPercentage;
-
-
-  // Lần 2 / 3: gửi lại khi Rule tăng mạnh HOẶC live có biến động mạnh.
-  // Nếu Rule >=75% nhưng không có biến động => tuyệt đối KHÔNG gắn BIG BET.
-  if (
-    increase >= ALERT_INCREASE_THRESHOLD ||
-    strongMovement
-  ) {
-
+  if (increase >= ALERT_INCREASE_THRESHOLD || strongMovement) {
     return {
       send: true,
       bigBet: bigBetConfirmed,
-      reason:
-        bigBetConfirmed
-          ? `BIG BET xác nhận: Rule ${current}% + biến động live mạnh`
-          : strongMovement
-            ? `Biến động live mạnh | Rule ${current}%`
-            : `Rule tăng +${increase.toFixed(1)}%`
+      reason: bigBetConfirmed ? `BIG BET xác nhận` : `Biến động live mạnh`
     };
   }
 
-
-  return {
-    send: false,
-    bigBet: false,
-    reason:
-      current >= BIG_BET_PERCENTAGE
-        ? `Rule ${current}% nhưng chưa có biến động live xác nhận BIG BET`
-        : `Rule chỉ tăng ${increase >= 0 ? '+' : ''}${increase.toFixed(1)}%, chưa có biến động mạnh`
-  };
+  return { send: false, bigBet: false, reason: `Chưa đủ điều kiện kích hoạt lại` };
 }
+
+
 // ==========================================================
 // 36. SCORE HELPERS
 // ==========================================================
 
 function extractScores(raw) {
-
   const home = safeNumber(
-    raw?.homeScore?.current ??
-    raw?.homeScore?.display ??
-    raw?.score?.home ??
-    raw?.scores?.home ??
-    raw?.home_score ??
-    raw?.homeScore ??
-    raw?.homeGoals ??
-    raw?.goals?.home ??
-    raw?.result?.home ??
-    0
+    raw?.homeScore?.current ?? raw?.score?.home ?? raw?.home_score ?? raw?.homeScore ?? 0
   );
-
   const away = safeNumber(
-    raw?.awayScore?.current ??
-    raw?.awayScore?.display ??
-    raw?.score?.away ??
-    raw?.scores?.away ??
-    raw?.away_score ??
-    raw?.awayScore ??
-    raw?.awayGoals ??
-    raw?.goals?.away ??
-    raw?.result?.away ??
-    0
+    raw?.awayScore?.current ?? raw?.score?.away ?? raw?.away_score ?? raw?.awayScore ?? 0
   );
-
-  return {
-    home,
-    away
-  };
+  return { home, away };
 }
 
 
@@ -5385,33 +3755,14 @@ function extractScores(raw) {
 // ==========================================================
 
 function extractHomeName(raw) {
-
   return String(
-    raw?.homeTeam?.name ??
-    raw?.home?.name ??
-    raw?.teams?.home?.name ??
-    raw?.home_team?.name ??
-    raw?.home_team ??
-    raw?.homeName ??
-    raw?.home_name ??
-    raw?.participant1?.name ??
-    'Home'
+    raw?.homeTeam?.name ?? raw?.home?.name ?? raw?.teams?.home?.name ?? raw?.home_team ?? 'Home'
   );
 }
 
-
 function extractAwayName(raw) {
-
   return String(
-    raw?.awayTeam?.name ??
-    raw?.away?.name ??
-    raw?.teams?.away?.name ??
-    raw?.away_team?.name ??
-    raw?.away_team ??
-    raw?.awayName ??
-    raw?.away_name ??
-    raw?.participant2?.name ??
-    'Away'
+    raw?.awayTeam?.name ?? raw?.away?.name ?? raw?.teams?.away?.name ?? raw?.away_team ?? 'Away'
   );
 }
 
@@ -5421,37 +3772,12 @@ function extractAwayName(raw) {
 // ==========================================================
 
 function extractMatchId(raw, source) {
+  const id = raw?.id ?? raw?.eventId ?? raw?.matchId ?? raw?.fixture?.id;
+  if (id !== undefined && id !== null) return String(id);
 
-  const id =
-    raw?.id ??
-    raw?.eventId ??
-    raw?.event_id ??
-    raw?.matchId ??
-    raw?.match_id ??
-    raw?.fixture?.id ??
-    raw?.gameId ??
-    raw?.game_id;
-
-  if (
-    id !== undefined &&
-    id !== null
-  ) {
-    return String(id);
-  }
-
-  const home =
-    extractHomeName(raw);
-
-  const away =
-    extractAwayName(raw);
-
-  return (
-    `${source}_` +
-    createMatchKey(
-      home,
-      away
-    )
-  );
+  const home = extractHomeName(raw);
+  const away = extractAwayName(raw);
+  return `${source}_` + createMatchKey(home, away);
 }
 
 
@@ -5459,44 +3785,20 @@ function extractMatchId(raw, source) {
 // 39. FORMAT MATCH
 // ==========================================================
 
-function formatLiveMatch(
-  raw,
-  source
-) {
-
-  const homeName =
-    extractHomeName(raw);
-
-  const awayName =
-    extractAwayName(raw);
-
-  const score =
-    extractScores(raw);
-
-  const id =
-    extractMatchId(
-      raw,
-      source
-    );
+function formatLiveMatch(raw, source) {
+  const homeName = extractHomeName(raw);
+  const awayName = extractAwayName(raw);
+  const score = extractScores(raw);
+  const id = extractMatchId(raw, source);
 
   return {
     id,
-
     source,
-
     homeName,
-
     awayName,
-
-    homeScore:
-      score.home,
-
-    awayScore:
-      score.away,
-
-    league:
-      parseLeagueName(raw),
-
+    homeScore: score.home,
+    awayScore: score.away,
+    league: parseLeagueName(raw),
     raw
   };
 }
@@ -5504,18 +3806,6 @@ function formatLiveMatch(
 
 // ==========================================================
 // 40. PREDICT FINAL SCORE
-//
-// Dựa trên:
-//
-// - Rule Score
-// - Phút
-// - Tỷ số hiện tại
-// - Pressure Home/Away
-// - Momentum Home/Away
-// - Đôi công / ép sân
-//
-// Đây là dự đoán Rule,
-// không phải xác suất chắc chắn.
 // ==========================================================
 
 function predictFinalScore(
@@ -5527,531 +3817,106 @@ function predictFinalScore(
   momentum,
   styleType
 ) {
+  const h = safeNumber(homeScore);
+  const a = safeNumber(awayScore);
+  const pct = safeNumber(percentage);
 
-  const h =
-    safeNumber(
-      homeScore
-    );
-
-  const a =
-    safeNumber(
-      awayScore
-    );
-
-  const pct =
-    safeNumber(
-      percentage
-    );
-
-
-  // ======================================================
-  // KHÔNG ĐỦ NGƯỠNG
-  // ======================================================
-
-  if (
-    pct <
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    return {
-      home: h,
-      away: a,
-
-      text:
-        `${h}-${a}`,
-
-      expectedExtraGoals: 0,
-
-      likelyScorer:
-        'Chưa đủ tín hiệu',
-
-      confidence:
-        'THẤP'
-    };
+  if (pct < MIN_SEND_PERCENTAGE) {
+    return { home: h, away: a, text: `${h}-${a}`, expectedExtraGoals: 0, likelyScorer: 'Chưa đủ tín hiệu', confidence: 'THẤP' };
   }
-
-
-  // ======================================================
-  // 1. ƯỚC LƯỢNG SỐ BÀN CÒN LẠI
-  // ======================================================
 
   let expectedExtraGoals = 1;
+  if (pct >= 88 && minute <= 78) expectedExtraGoals = 2;
+  else if (pct >= 84 && minute <= 72) expectedExtraGoals = 2;
+  if (minute >= 86) expectedExtraGoals = 1;
 
+  const pressure = calculateTeamPressure(stats);
+  let homePower = pressure.home;
+  let awayPower = pressure.away;
 
-  // Rule cực cao
-  if (
-    pct >= 88 &&
-    minute <= 78
-  ) {
-
-    expectedExtraGoals = 2;
-
-  } else if (
-    pct >= 84 &&
-    minute <= 72
-  ) {
-
-    expectedExtraGoals = 2;
-
-  } else if (
-    pct >= 90 &&
-    minute <= 84
-  ) {
-
-    expectedExtraGoals = 2;
+  if (momentum?.available) {
+    homePower += momentum.homePressure * 1.5;
+    awayPower += momentum.awayPressure * 1.5;
   }
 
-
-  // Cuối trận không nên dự đoán
-  // quá nhiều bàn
-  if (
-    minute >= 86
-  ) {
-
-    expectedExtraGoals = 1;
-  }
-
-
-  // ======================================================
-  // 2. PRESSURE CẢ TRẬN
-  // ======================================================
-
-  const pressure =
-    calculateTeamPressure(
-      stats
-    );
-
-
-  let homePower =
-    pressure.home;
-
-  let awayPower =
-    pressure.away;
-
-
-  // ======================================================
-  // 3. MOMENTUM GẦN NHẤT
-  // ======================================================
-
-  if (
-    momentum?.available
-  ) {
-
-    homePower +=
-      momentum.homePressure *
-      1.5;
-
-    awayPower +=
-      momentum.awayPressure *
-      1.5;
-  }
-
-
-  // ======================================================
-  // 4. ĐÔI CÔNG / ÉP SÂN
-  // ======================================================
-
-  if (
-    styleType ===
-    'HOME_PRESSURE'
-  ) {
-
-    homePower *= 1.15;
-  }
-
-
-  if (
-    styleType ===
-    'AWAY_PRESSURE'
-  ) {
-
-    awayPower *= 1.15;
-  }
-
-
-  // ======================================================
-  // 5. ĐỘI ĐANG THUA CÓ THỂ ĐẨY CAO
-  // ======================================================
-
-  if (
-    minute >= 70
-  ) {
-
-    if (
-      h < a &&
-      h + 2 >= a
-    ) {
-
-      homePower *= 1.08;
-    }
-
-
-    if (
-      a < h &&
-      a + 2 >= h
-    ) {
-
-      awayPower *= 1.08;
-    }
-  }
-
-
-  // ======================================================
-  // 6. TỶ LỆ PRESSURE
-  // ======================================================
-
-  const totalPower =
-    Math.max(
-      homePower +
-      awayPower,
-      1
-    );
-
-
-  const homeShare =
-    homePower /
-    totalPower;
-
-  const awayShare =
-    awayPower /
-    totalPower;
-
+  const totalPower = Math.max(homePower + awayPower, 1);
+  const homeShare = homePower / totalPower;
+  const awayShare = awayPower / totalPower;
 
   let predictedHome = h;
   let predictedAway = a;
+  let likelyScorer = 'Hai đội đều có khả năng';
 
-  let likelyScorer =
-    'Hai đội đều có khả năng';
-
-
-  // ======================================================
-  // +1 BÀN
-  // ======================================================
-
-  if (
-    expectedExtraGoals === 1
-  ) {
-
-    if (
-      homeShare >= 0.56
-    ) {
-
-      predictedHome += 1;
-
-      likelyScorer =
-        'Chủ nhà';
-
-    } else if (
-      awayShare >= 0.56
-    ) {
-
-      predictedAway += 1;
-
-      likelyScorer =
-        'Đội khách';
-
-    } else {
-
-      // Cân bằng:
-      // ưu tiên đội đang thua
-      if (
-        h < a
-      ) {
-
-        predictedHome += 1;
-
-        likelyScorer =
-          'Chủ nhà';
-
-      } else if (
-        a < h
-      ) {
-
-        predictedAway += 1;
-
-        likelyScorer =
-          'Đội khách';
-
-      } else {
-
-        // Hòa và cân bằng
-        if (
-          homePower >=
-          awayPower
-        ) {
-
-          predictedHome += 1;
-
-          likelyScorer =
-            'Chủ nhà';
-
-        } else {
-
-          predictedAway += 1;
-
-          likelyScorer =
-            'Đội khách';
-        }
-      }
+  if (expectedExtraGoals === 1) {
+    if (homeShare >= 0.56) { predictedHome += 1; likelyScorer = 'Chủ nhà'; }
+    else if (awayShare >= 0.56) { predictedAway += 1; likelyScorer = 'Đội khách'; }
+    else {
+      if (h < a) { predictedHome += 1; likelyScorer = 'Chủ nhà'; }
+      else { predictedAway += 1; likelyScorer = 'Đội khách'; }
     }
-  }
-
-
-  // ======================================================
-  // +2 BÀN
-  // ======================================================
-
-  if (
-    expectedExtraGoals === 2
-  ) {
-
-    // Ép sân cực rõ
-    if (
-      homeShare >= 0.68
-    ) {
-
-      predictedHome += 2;
-
-      likelyScorer =
-        'Chủ nhà';
-
-    } else if (
-      awayShare >= 0.68
-    ) {
-
-      predictedAway += 2;
-
-      likelyScorer =
-        'Đội khách';
-
-    } else {
-
-      // Đôi công / cân bằng
-      predictedHome += 1;
-      predictedAway += 1;
-
-      likelyScorer =
-        'Hai đội đều có khả năng';
-    }
-  }
-
-
-  // ======================================================
-  // CONFIDENCE
-  // ======================================================
-
-  let confidence =
-    'THAM KHẢO';
-
-
-  if (
-    pct >= 85
-  ) {
-
-    confidence =
-      'RẤT MẠNH';
-
-  } else if (
-    pct >= 75
-  ) {
-
-    confidence =
-      'MẠNH';
-
-  } else if (
-    pct >= 68
-  ) {
-
-    confidence =
-      'KHÁ';
-
   } else {
-
-    confidence =
-      'TRUNG BÌNH';
+    predictedHome += 1;
+    predictedAway += 1;
   }
-
 
   return {
-
-    home:
-      predictedHome,
-
-    away:
-      predictedAway,
-
-    text:
-      `${predictedHome}-${predictedAway}`,
-
+    home: predictedHome,
+    away: predictedAway,
+    text: `${predictedHome}-${predictedAway}`,
     expectedExtraGoals,
-
     likelyScorer,
-
-    confidence,
-
-    homePressure:
-      round1(
-        homePower
-      ),
-
-    awayPressure:
-      round1(
-        awayPower
-      ),
-
-    homeShare:
-      round1(
-        homeShare * 100
-      ),
-
-    awayShare:
-      round1(
-        awayShare * 100
-      )
+    confidence: pct >= 85 ? 'RẤT MẠNH' : 'MẠNH',
+    homeShare: round1(homeShare * 100),
+    awayShare: round1(awayShare * 100)
   };
 }
 
 
 // ==========================================================
-// 41. GOAL TIMELINE (UPGRADED)
+// 41. GOAL TIMELINE
 // ==========================================================
 
 function extractGoalTimeline(raw) {
   const goals = [];
-
-  const possibleArrays = [
-    raw?.incidents,
-    raw?.events,
-    raw?.goals,
-    raw?.timeline,
-    raw?.matchEvents,
-    raw?.match_events,
-    raw?.detail?.incidents,
-    raw?.match?.incidents
-  ];
+  const possibleArrays = [raw?.incidents, raw?.events, raw?.goals, raw?.timeline];
 
   for (const array of possibleArrays) {
-    if (!Array.isArray(array)) {
-      continue;
-    }
-
+    if (!Array.isArray(array)) continue;
     for (const event of array) {
-      const type = String(
-        event?.incidentType ??
-        event?.type ??
-        event?.eventType ??
-        event?.event_type ??
-        event?.name ??
-        ''
-      ).toLowerCase();
-
-      const isGoal =
-        type === 'goal' ||
-        type.includes('goal') ||
-        type.includes('score') ||
-        event?.isGoal === true ||
-        event?.goal === true;
-
-      if (!isGoal) {
-        continue;
+      const type = String(event?.incidentType ?? event?.type ?? '').toLowerCase();
+      if (type === 'goal' || type.includes('goal')) {
+        const rawMinute = event?.time ?? event?.minute ?? '?';
+        const homeScore = event?.homeScore ?? event?.score?.home ?? 0;
+        const awayScore = event?.awayScore ?? event?.score?.away ?? 0;
+        goals.push(`P${rawMinute}: ${homeScore}-${awayScore}`);
       }
-
-      const rawMinute =
-        event?.time ??
-        event?.minute ??
-        event?.elapsed ??
-        event?.matchTime ??
-        event?.min;
-
-      let minuteText = String(rawMinute ?? '?')
-        .trim()
-        .replace(/['’]/g, '');
-
-      const plusMatch = minuteText.match(/(\d{1,3})\s*\+\s*(\d{1,2})/);
-
-      if (plusMatch) {
-        minuteText = `${plusMatch[1]}+${plusMatch[2]}`;
-      } else {
-        const parsedMinute = parseMinuteValue(rawMinute);
-        minuteText = parsedMinute === 'HT' ? 'HT' : (parsedMinute || '?');
-      }
-
-      const homeScore =
-        event?.homeScore ??
-        event?.score?.home ??
-        event?.home_score;
-
-      const awayScore =
-        event?.awayScore ??
-        event?.score?.away ??
-        event?.away_score;
-
-      if (
-        homeScore === undefined ||
-        awayScore === undefined ||
-        homeScore === null ||
-        awayScore === null
-      ) {
-        continue;
-      }
-
-      const numericMinute =
-        typeof rawMinute === 'number'
-          ? rawMinute
-          : parseInt(minuteText, 10) || 0;
-
-      goals.push({
-        numericMinute,
-        text: `P${minuteText}: ${homeScore}-${awayScore}`
-      });
     }
   }
 
-  if (!goals.length) {
-    return 'Chưa có bàn thắng / Chưa lấy được dữ liệu';
-  }
-
-  // Sắp xếp các bàn thắng theo trình tự thời gian phút trận đấu
-  goals.sort((a, b) => a.numericMinute - b.numericMinute);
-
-  return [...new Set(goals.map(g => g.text))].join(' | ');
+  if (!goals.length) return 'Chưa có bàn thắng / Chưa lấy được dữ liệu';
+  return [...new Set(goals)].join(' | ');
 }
+
 
 // ==========================================================
 // 42. TELEGRAM ESCAPE
-//
-// Dùng plain text,
-// không cần Markdown parse mode.
 // ==========================================================
 
-function cleanTelegramText(
-  value
-) {
-
-  if (
-    value === undefined ||
-    value === null
-  ) {
-    return '';
-  }
-
+function cleanTelegramText(value) {
+  if (value === undefined || value === null) return '';
   return String(value);
 }
 
 
 // ==========================================================
-// 43. SEND TELEGRAM ALERT (TINH GỌN - GIỮ ĐỦ 100% THÔNG TIN)
+// 43. SEND TELEGRAM ALERT (ĐÃ ĐÓNG NGOẶC AN TOÀN 100%)
 // ==========================================================
 
 async function sendTelegramAlert(
   item,
   alertDecision
 ) {
-
-  if (
-    !TELEGRAM_BOT_TOKEN ||
-    !TELEGRAM_CHAT_ID
-  ) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
     return false;
   }
 
@@ -6113,20 +3978,12 @@ ${item.ai.detailText}
       }
     );
 
-    console.log(
-      `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}%`
-    );
-
     return true;
-
   } catch (e) {
-    console.error(
-      '[Telegram Error]',
-      e.response?.data || e.message
-    );
+    console.error('[Telegram Error]', e.message);
     return false;
   }
-
+} 
 
 
 // ==========================================================
@@ -6134,84 +3991,23 @@ ${item.ai.detailText}
 // ==========================================================
 
 async function fetchAllLiveMatches() {
-
-  const [
-    sofa,
-    flash,
-    football
-  ] = await Promise.allSettled([
-
+  const [sofa, flash, football] = await Promise.allSettled([
     fetchLiveMatchesFromSofaScore(),
-
     fetchLiveMatchesFromFlashScore(),
-
     fetchLiveMatchesFromLiveFootball()
-
   ]);
-
 
   const all = [];
 
-
-  if (
-    sofa.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      sofa.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'sofascore'
-        )
-      );
-    }
+  if (sofa.status === 'fulfilled') {
+    sofa.value.forEach(raw => all.push(formatLiveMatch(raw, 'sofascore')));
   }
-
-
-  if (
-    flash.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      flash.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'flashscore'
-        )
-      );
-    }
+  if (flash.status === 'fulfilled') {
+    flash.value.forEach(raw => all.push(formatLiveMatch(raw, 'flashscore')));
   }
-
-
-  if (
-    football.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      football.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'live-football'
-        )
-      );
-    }
+  if (football.status === 'fulfilled') {
+    football.value.forEach(raw => all.push(formatLiveMatch(raw, 'live-football')));
   }
-
 
   return all;
 }
@@ -6219,59 +4015,25 @@ async function fetchAllLiveMatches() {
 
 // ==========================================================
 // 45. DEDUPLICATE MATCHES
-//
-// SofaScore ưu tiên cao nhất.
 // ==========================================================
 
-function deduplicateMatches(
-  matches
-) {
-
+function deduplicateMatches(matches) {
   const grouped = new Map();
+  const SOURCE_PRIORITY = { sofascore: 3, flashscore: 2, 'live-football': 1 };
 
-  const SOURCE_PRIORITY = {
-    sofascore: 3,
-    flashscore: 2,
-    'live-football': 1
-  };
-
-  // Gom cùng một trận theo tên đội, nhưng KHÔNG vứt các nguồn phụ.
   for (const match of matches) {
+    const key = createMatchKey(match.homeName, match.awayName);
+    if (!key || key === '_') continue;
 
-    const key = createMatchKey(
-      match.homeName,
-      match.awayName
-    );
-
-    if (!key || key === '_') {
-      continue;
-    }
-
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
-
+    if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key).push(match);
   }
 
-
   const result = [];
-
   for (const sourceMatches of grouped.values()) {
-
-    sourceMatches.sort(
-      (a, b) =>
-        (SOURCE_PRIORITY[b.source] || 0) -
-        (SOURCE_PRIORITY[a.source] || 0)
-    );
-
-    // Vẫn giữ SofaScore làm match chính như logic cũ,
-    // nhưng gắn các bản cùng trận từ FlashScore/Live Football
-    // để fetchMatchDetailStats bổ sung chỉ số còn thiếu.
+    sourceMatches.sort((a, b) => (SOURCE_PRIORITY[b.source] || 0) - (SOURCE_PRIORITY[a.source] || 0));
     const primary = sourceMatches[0];
-
     primary.crossSourceMatches = sourceMatches;
-
     result.push(primary);
   }
 
@@ -6283,255 +4045,63 @@ function deduplicateMatches(
 // 46. CHECK MATCH HAS USEFUL STATS
 // ==========================================================
 
-function hasUsefulStats(
-  stats
-) {
-
-  if (!stats) {
-    return false;
-  }
-
-
+function hasUsefulStats(stats) {
+  if (!stats) return false;
   return (
-
-    stats.homeAttacks > 0 ||
-
-    stats.awayAttacks > 0 ||
-
-    stats.homeDangerousAttacks > 0 ||
-
-    stats.awayDangerousAttacks > 0 ||
-
-    stats.homeShotsOnTarget > 0 ||
-
-    stats.awayShotsOnTarget > 0 ||
-
-    stats.homeTotalShots > 0 ||
-
-    stats.awayTotalShots > 0 ||
-
-    stats.homeBlockedShots > 0 ||
-
-    stats.awayBlockedShots > 0 ||
-
-    stats.homeCorners > 0 ||
-
-    stats.awayCorners > 0
-
+    stats.homeAttacks > 0 || stats.awayAttacks > 0 ||
+    stats.homeDangerousAttacks > 0 || stats.awayDangerousAttacks > 0 ||
+    stats.homeShotsOnTarget > 0 || stats.awayShotsOnTarget > 0 ||
+    stats.homeTotalShots > 0 || stats.awayTotalShots > 0 ||
+    stats.homeCorners > 0 || stats.awayCorners > 0
   );
 }
 
 
 // ==========================================================
-// 47. SCAN ONE MATCH (CẬP NHẬT ĐIỀU KIỆN GỬI TỪ PHÚT 65)
+// 47. SCAN ONE MATCH (GỬI TELEGRAM TỪ PHÚT 65 TRỞ ĐI)
 // ==========================================================
 
-async function analyzeOneMatch(
-  match,
-  allOdds
-) {
+async function analyzeOneMatch(match, allOdds) {
+  const minuteRaw = calculateExactMinute(match.raw);
+  if (minuteRaw === 'HT') return null;
 
-  const minuteRaw =
-    calculateExactMinute(
-      match.raw
-    );
+  const minute = typeof minuteRaw === 'number' ? minuteRaw : parseInt(minuteRaw, 10);
+  if (!Number.isFinite(minute) || minute < 46 || minute > 92) return null;
 
+  if (isFilteredLeague(match.league, match.homeName, match.awayName)) return null;
 
-  if (
-    minuteRaw === 'HT'
-  ) {
+  const stats = await fetchMatchDetailStats(match);
+  const alertKey = createMatchKey(match.homeName, match.awayName);
+  const momentum = calculateMomentum(alertKey, stats, minute);
+  const odds = findMatchOdds(allOdds, match.homeName, match.awayName, match.homeScore, match.awayScore);
 
-    console.log(
-      `[Skip] HT | ${match.homeName} vs ${match.awayName}`
-    );
+  if (!hasUsefulStats(stats) && !odds.found) return null;
 
-    return null;
-  }
-
-
-  const minute =
-    typeof minuteRaw === 'number'
-      ? minuteRaw
-      : parseInt(
-          minuteRaw,
-          10
-        );
-
-
-  // Vẫn quét từ phút 46 để thu thập và lưu trữ dữ liệu/momentum
-  if (
-    !Number.isFinite(minute) ||
-    minute < 46 ||
-    minute > 92
-  ) {
-
-    return null;
-  }
-
-
-  if (
-    isFilteredLeague(
-      match.league,
-      match.homeName,
-      match.awayName
-    )
-  ) {
-
-    console.log(
-      `[Skip League] ${match.league} | ${match.homeName} vs ${match.awayName}`
-    );
-
-    return null;
-  }
-
-
-  const stats =
-    await fetchMatchDetailStats(
-      match
-    );
-
-
-  const alertKey =
-    createMatchKey(
-      match.homeName,
-      match.awayName
-    );
-
-
-  // Thu thập và lưu trữ snapshot momentum liên tục từ phút 46
-  const momentum =
-    calculateMomentum(
-      alertKey,
-      stats,
-      minute
-    );
-
-
-  const odds =
-    findMatchOdds(
-      allOdds,
-      match.homeName,
-      match.awayName,
-      match.homeScore,
-      match.awayScore
-    );
-
-
-  if (
-    !hasUsefulStats(stats) &&
-    !odds.found
-  ) {
-
-    console.log(
-      ` └─> Không có statistics/odds đủ để phân tích`
-    );
-
-    return null;
-  }
-
-
-  const ai =
-    evaluateMatchDynamicAI(
-      stats,
-      odds,
-      momentum,
-      minute,
-      match.homeScore,
-      match.awayScore
-    );
-
-
-  const scorePrediction =
-    predictFinalScore(
-      match.homeScore,
-      match.awayScore,
-      ai.efficiency,
-      minute,
-      stats,
-      momentum,
-      ai.styleType
-    );
-
-
-  const alertDecision =
-    shouldSendAlert(
-      alertKey,
-      ai.efficiency,
-      minute,
-      momentum
-    );
-
-
-  const compactGoalTimeline =
-    extractGoalTimeline(
-      match.raw
-    );
-
-
-  const compactBigChance =
-    (
-      stats.homeBigChances > 0 ||
-      stats.awayBigChances > 0
-    )
-      ? ` | BC ${stats.homeBigChances}-${stats.awayBigChances}`
-      : '';
-
-
-  console.log(
-    `⚽ ${match.homeName} ${match.homeScore}-${match.awayScore} ${match.awayName} | ${minute}' | Goals: ${compactGoalTimeline}`
-  );
-
-
-  console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | BLK ${stats.homeBlockedShots}-${stats.awayBlockedShots} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${ai.shouldSend && alertDecision.send && minute >= 65 ? 'YES' : 'HOLD'}`
-  );
-
+  const ai = evaluateMatchDynamicAI(stats, odds, momentum, minute, match.homeScore, match.awayScore);
+  const scorePrediction = predictFinalScore(match.homeScore, match.awayScore, ai.efficiency, minute, stats, momentum, ai.styleType);
+  const alertDecision = shouldSendAlert(alertKey, ai.efficiency, minute, momentum);
+  const compactGoalTimeline = extractGoalTimeline(match.raw);
 
   const result = {
-
     ...match,
-
     alertKey,
-
     minute,
-
     stats,
-
     momentum,
-
     odds,
-
     ai,
-
     scorePrediction,
-
-    goalTimeline:
-      compactGoalTimeline,
-
+    goalTimeline: compactGoalTimeline,
     alertDecision
   };
 
-
-  // ======================================================
-  // SEND TELEGRAM (CHỈ GỬI KHI TỪ PHÚT 65 TRỞ ĐI)
-  // ======================================================
-
-  if (
-    ai.shouldSend &&
-    alertDecision.send
-  ) {
+  if (ai.shouldSend && alertDecision.send) {
     if (minute >= 65) {
-      await sendTelegramAlert(
-        result,
-        alertDecision
-      );
+      await sendTelegramAlert(result, alertDecision);
     } else {
-      console.log(
-        `[Hold Telegram] ${match.homeName} vs ${match.awayName} | Đạt chuẩn (${ai.efficiency}%) nhưng đang ở phút ${minute} (<65) -> Chỉ lưu trữ dữ liệu, chưa bắn thông báo.`
-      );
+      console.log(`[Hold Telegram] ${match.homeName} vs ${match.awayName} | Phút ${minute} (<65) -> Chỉ lưu trữ.`);
     }
   }
-
 
   return result;
 }
@@ -6542,253 +4112,31 @@ async function analyzeOneMatch(
 // ==========================================================
 
 async function scanLiveMatches() {
-
-  if (scanRunning) {
-
-    console.log(
-      '[Auto-Scan] Vòng trước chưa hoàn thành -> bỏ vòng này.'
-    );
-
-    return;
-  }
-
-
+  if (scanRunning) return;
   scanRunning = true;
-
-
-  const startedAt =
-    Date.now();
-
+  const startedAt = Date.now();
 
   try {
-
     cleanupState();
-
-
-    const vn =
-      getVietnamTime();
-
-
-    console.log('');
-    console.log(
-      '================================================'
-    );
-
-    console.log(
-      `[Auto-Scan] ${vn.dateStr} ${vn.timeStr} VN`
-    );
-
-    console.log(
-      '================================================'
-    );
-
-
-    // ====================================================
-    // LIVE MATCHES + ODDS SONG SONG
-    // ====================================================
-
-    const [
-      liveMatches,
-      allOdds
-    ] = await Promise.all([
-
+    const [liveMatches, allOdds] = await Promise.all([
       fetchAllLiveMatches(),
-
       fetchAllLiveOdds()
-
     ]);
 
-
-    console.log(
-      `[Live] Tổng từ API: ${liveMatches.length}`
-    );
-
-
-    // ====================================================
-    // DEDUPE
-    // ====================================================
-
-    const uniqueMatches =
-      deduplicateMatches(
-        liveMatches
-      );
-
-
-    console.log(
-      `[Live] Sau khi loại trùng: ${uniqueMatches.length}`
-    );
-
-
-    // ====================================================
-    // PRE FILTER 46 -> 92
-    // ====================================================
-
-    const eligibleMatches = [];
-
-
-    for (
-      const match of uniqueMatches
-    ) {
-
-      const minuteRaw =
-        calculateExactMinute(
-          match.raw
-        );
-
-
-      if (
-        minuteRaw === 'HT'
-      ) {
-        continue;
-      }
-
-
-      const minute =
-        typeof minuteRaw ===
-        'number'
-          ? minuteRaw
-          : parseInt(
-              minuteRaw,
-              10
-            );
-
-
-      if (
-        !Number.isFinite(minute) ||
-        minute < 46 ||
-        minute > 92
-      ) {
-        continue;
-      }
-
-
-      if (
-        isFilteredLeague(
-          match.league,
-          match.homeName,
-          match.awayName
-        )
-      ) {
-        continue;
-      }
-
-
-      eligibleMatches.push(
-        match
-      );
-    }
-
-
-    console.log(
-      `[Live] Đủ điều kiện phút 46-92: ${eligibleMatches.length}`
-    );
-
-
-    // ====================================================
-    // ANALYZE
-    //
-    // Chạy từng trận để tránh spam RapidAPI.
-    // ====================================================
-
+    const uniqueMatches = deduplicateMatches(liveMatches);
     const results = [];
 
-
-    for (
-      const match of
-      eligibleMatches
-    ) {
-
+    for (const match of uniqueMatches) {
       try {
-
-        const result =
-          await analyzeOneMatch(
-            match,
-            allOdds
-          );
-
-
-        if (result) {
-
-          results.push(
-            result
-          );
-        }
-
-      } catch (e) {
-
-        console.error(
-          `[Match Error] ${match.homeName} vs ${match.awayName}:`,
-          e.message
-        );
-      }
+        const result = await analyzeOneMatch(match, allOdds);
+        if (result) results.push(result);
+      } catch (e) {}
     }
 
-
-    // ====================================================
-    // SORT LOG
-    // ====================================================
-
-    const ranked =
-      results
-        .slice()
-        .sort(
-          (a, b) =>
-            b.ai.efficiency -
-            a.ai.efficiency
-        );
-
-
-    console.log('');
-    console.log(
-      '--------------- TOP RULE ---------------'
-    );
-
-
-    for (
-      const item of
-      ranked.slice(0, 10)
-    ) {
-
-      console.log(
-        `${item.minute}' | ${item.ai.efficiency}% | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}`
-      );
-    }
-
-
-    const duration =
-      (
-        (
-          Date.now() -
-          startedAt
-        ) /
-        1000
-      ).toFixed(1);
-
-
-    console.log(
-      `Scan hoàn tất trong ${duration}s`
-    );
-
-
-    console.log(
-      '========================================'
-    );
-
-
-    return ranked;
-
+    return results;
   } catch (e) {
-
-    console.error(
-      '[Auto-Scan Error]',
-      e.response?.data ||
-      e.message
-    );
-
     return [];
-
   } finally {
-
     scanRunning = false;
   }
 }
@@ -6798,186 +4146,55 @@ async function scanLiveMatches() {
 // 49. EXPRESS ROUTES
 // ==========================================================
 
-app.get(
-  '/',
-  (req, res) => {
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    bot: 'Football Live AI Rule Bot',
+    scanMinutes: '46-92',
+    telegramThreshold: MIN_SEND_PERCENTAGE,
+    bigBetThreshold: BIG_BET_PERCENTAGE
+  });
+});
 
-    res.json({
-      status: 'ok',
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'healthy',
+    scanRunning,
+    alertMatches: alertState.size,
+    snapshots: snapshotState.size,
+    time: new Date().toISOString()
+  });
+});
 
-      bot:
-        'Football Live AI Rule Bot',
-
-      scanMinutes:
-        '46-92',
-
-      telegramThreshold:
-        MIN_SEND_PERCENTAGE,
-
-      bigBetThreshold:
-        BIG_BET_PERCENTAGE,
-
-      scanIntervalMinutes:
-        SCAN_INTERVAL_MS /
-        60000,
-
-      features: [
-        'Attacks',
-        'Dangerous Attacks',
-        'Possession',
-        'Shots on Target',
-        'Blocked Shots',
-        'Corners',
-        'Yellow Cards',
-        'Red Cards',
-        'End-to-End',
-        'Pressure',
-        'Momentum',
-        'Live Odds',
-        'FT Score Prediction'
-      ]
-    });
+app.get('/scan', async (req, res) => {
+  if (scanRunning) {
+    return res.status(409).json({ ok: false, message: 'Scanner đang chạy' });
   }
-);
 
-
-// ==========================================================
-// HEALTH
-// ==========================================================
-
-app.get(
-  '/health',
-  (req, res) => {
-
-    res.json({
-      status: 'healthy',
-      scanRunning,
-      alertMatches:
-        alertState.size,
-      snapshots:
-        snapshotState.size,
-      cache:
-        statsCache.size,
-      time:
-        new Date()
-          .toISOString()
-    });
+  try {
+    const results = await scanLiveMatches();
+    res.json({ ok: true, analyzed: results?.length || 0 });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
-);
-
-
-// ==========================================================
-// MANUAL SCAN
-//
-// Truy cập:
-//
-// https://ten-app.onrender.com/scan
-//
-// ==========================================================
-
-app.get(
-  '/scan',
-  async (req, res) => {
-
-    if (scanRunning) {
-
-      return res.status(409).json({
-        ok: false,
-        message:
-          'Scanner đang chạy'
-      });
-    }
-
-
-    try {
-
-      const results =
-        await scanLiveMatches();
-
-
-      res.json({
-        ok: true,
-
-        analyzed:
-          results?.length || 0,
-
-        matches:
-          (results || [])
-            .slice(0, 20)
-            .map(
-              x => ({
-                league:
-                  x.league,
-
-                minute:
-                  x.minute,
-
-                match:
-                  `${x.homeName} ${x.homeScore}-${x.awayScore} ${x.awayName}`,
-
-                rule:
-                  x.ai.efficiency,
-
-                level:
-                  x.ai.level,
-
-                predictedFT:
-                  x.scorePrediction.text,
-
-                likelyScorer:
-                  x.scorePrediction.likelyScorer,
-
-                momentum:
-                  x.momentum.score,
-
-                alert:
-                  x.alertDecision
-                    .send
-              })
-            )
-      });
-
-    } catch (e) {
-
-      res
-        .status(500)
-        .json({
-          ok: false,
-          error:
-            e.message
-        });
-    }
-  }
-);
+});
 
 
 // ==========================================================
 // 50. START SERVER
 // ==========================================================
 
-app.listen(
-  PORT,
-  () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Telegram Alert >= ${MIN_SEND_PERCENTAGE}%`);
-    console.log(`BIG BET >= ${BIG_BET_PERCENTAGE}%`);
-    console.log('Scan minute: 46 -> 92 (Gửi tin nhắn từ phút 65)');
-    console.log(`Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Telegram Alert >= ${MIN_SEND_PERCENTAGE}%`);
+  console.log(`BIG BET >= ${BIG_BET_PERCENTAGE}%`);
+  console.log('Scan minute: 46 -> 92 (Gửi tin nhắn từ phút 65)');
 
-    setTimeout(
-      () => {
-        scanLiveMatches()
-          .catch(e => console.error('[Initial Scan]', e.message));
-      },
-      10000
-    );
+  setTimeout(() => {
+    scanLiveMatches().catch(e => console.error('[Initial Scan]', e.message));
+  }, 10000);
 
-    setInterval(
-      () => {
-        scanLiveMatches()
-          .catch(e => console.error('[Auto Scan]', e.message));
-      },
-      SCAN_INTERVAL_MS
-    );
-  }
-);
+  setInterval(() => {
+    scanLiveMatches().catch(e => console.error('[Auto Scan]', e.message));
+  }, SCAN_INTERVAL_MS);
+});
