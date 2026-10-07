@@ -978,165 +978,10 @@ async function fetchSofaJson(path, timeout = 6000) {
     }
 }
 
-
-// ==========================================================
-// ADD-ON FULL STATS PARSER FROM index(1)(4).js
-// Chỉ BỔ SUNG dữ liệu cho INDEX10, không thay parser/resolver hiện tại.
-// ==========================================================
-function extractLegacyFullStatsAddon(data) {
-    const out = {
-        totalShots:null, shotsOnTarget:null, shotsOffTarget:null, blockedShots:null,
-        corners:null, possession:null, redCards:null,
-        attacks:null, dangerousAttacks:null, yellowCards:null
-    };
-    const available = {};
-
-    const norm = v => String(v || '').toLowerCase().normalize('NFD')
-        .replace(/[\u0300-\u036f]/g,'').replace(/[_-]/g,' ')
-        .replace(/\s+/g,' ').trim();
-
-    const number = v => {
-        if (v === undefined || v === null || v === '') return null;
-        const n = parseFloat(String(v).replace('%','').replace(',','.').trim());
-        return Number.isFinite(n) ? n : null;
-    };
-
-    function detect(name) {
-        const n = norm(name);
-        if (!n) return null;
-        if (n.includes('dangerous attack') || n.includes('danger attacks')) return 'dangerousAttacks';
-        if (n === 'attacks' || n === 'attack' || n.includes('total attacks')) return 'attacks';
-        if (n.includes('shots on target') || n.includes('shot on target') ||
-            n.includes('shots on goal') || n.includes('shot on goal') || n === 'on target') return 'shotsOnTarget';
-        if (n.includes('blocked shots') || n.includes('shots blocked') || n.includes('blocked shot')) return 'blockedShots';
-        if (n.includes('shots off target') || n.includes('shot off target') || n === 'off target') return 'shotsOffTarget';
-        if (n === 'total shots' || n === 'shots total' || n === 'shots' ||
-            n.includes('total shot') || n.includes('total attempts') || n.includes('goal attempts')) return 'totalShots';
-        if (n.includes('ball possession') || n === 'possession' || n.includes('possession %')) return 'possession';
-        if (n.includes('corner kicks') || n.includes('corner kick') || n === 'corners' || n === 'corner') return 'corners';
-        if (n.includes('yellow cards') || n.includes('yellow card')) return 'yellowCards';
-        if (n.includes('red cards') || n.includes('red card')) return 'redCards';
-        return null;
-    }
-
-    function pair(obj) {
-        let h = obj.home ?? obj.homeValue ?? obj.home_value ?? obj.homeTeam ?? obj.home_team ??
-                obj.valueHome ?? obj.value_home ?? obj.H ?? obj.Value1 ?? obj.V1;
-        let a = obj.away ?? obj.awayValue ?? obj.away_value ?? obj.awayTeam ?? obj.away_team ??
-                obj.valueAway ?? obj.value_away ?? obj.A ?? obj.Value2 ?? obj.V2;
-        for (const arr of [obj.values, obj.value, obj.stats]) {
-            if (Array.isArray(arr) && arr.length >= 2) {
-                if (h === undefined) h = arr[0];
-                if (a === undefined) a = arr[1];
-            }
-        }
-        return {h:number(h), a:number(a),
-            provided:(h!==undefined&&h!==null&&h!=='') || (a!==undefined&&a!==null&&a!=='')};
-    }
-
-    function apply(type,h,a,provided) {
-        if (!type || !provided) return;
-        available[type] = true;
-        if (type === 'possession') {
-            if (h !== null && a !== null) out.possession = `${h}% - ${a}%`;
-            else if (h !== null) out.possession = `${h}% - ${Math.max(0,100-h)}%`;
-            else if (a !== null) out.possession = `${Math.max(0,100-a)}% - ${a}%`;
-            return;
-        }
-        const sum = (h ?? 0) + (a ?? 0);
-        out[type] = out[type] === null ? sum : Math.max(out[type], sum);
-    }
-
-    function direct(obj) {
-        if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
-        const pairs = [
-            ['totalShots',['homeTotalShots','home_total_shots','total_shots_home'],['awayTotalShots','away_total_shots','total_shots_away']],
-            ['shotsOnTarget',['homeShotsOnTarget','home_shots_on_target','shots_on_target_home'],['awayShotsOnTarget','away_shots_on_target','shots_on_target_away']],
-            ['shotsOffTarget',['homeShotsOffTarget','home_shots_off_target','shots_off_target_home'],['awayShotsOffTarget','away_shots_off_target','shots_off_target_away']],
-            ['blockedShots',['homeBlockedShots','home_blocked_shots','blocked_shots_home'],['awayBlockedShots','away_blocked_shots','blocked_shots_away']],
-            ['corners',['homeCorners','home_corners','corners_home'],['awayCorners','away_corners','corners_away']],
-            ['redCards',['homeRedCards','home_red_cards','red_cards_home'],['awayRedCards','away_red_cards','red_cards_away']],
-            ['yellowCards',['homeYellowCards','home_yellow_cards'],['awayYellowCards','away_yellow_cards']],
-            ['possession',['homePossession','home_possession'],['awayPossession','away_possession']],
-            ['attacks',['homeAttacks','home_attacks'],['awayAttacks','away_attacks']],
-            ['dangerousAttacks',['homeDangerousAttacks','home_dangerous_attacks'],['awayDangerousAttacks','away_dangerous_attacks']]
-        ];
-        for (const [type,hks,aks] of pairs) {
-            const hk=hks.find(k=>obj[k]!==undefined), ak=aks.find(k=>obj[k]!==undefined);
-            if (hk || ak) apply(type, number(hk?obj[hk]:null), number(ak?obj[ak]:null), true);
-        }
-        const objectKeys = [
-            ['totalShots','totalShots'],['total_shots','totalShots'],
-            ['shotsOnTarget','shotsOnTarget'],['shots_on_target','shotsOnTarget'],
-            ['shotsOffTarget','shotsOffTarget'],['shots_off_target','shotsOffTarget'],
-            ['blockedShots','blockedShots'],['blocked_shots','blockedShots'],
-            ['corners','corners'],['redCards','redCards'],['red_cards','redCards'],
-            ['possession','possession'],['attacks','attacks'],
-            ['dangerousAttacks','dangerousAttacks'],['dangerous_attacks','dangerousAttacks']
-        ];
-        for (const [key,type] of objectKeys) {
-            if (obj[key] && typeof obj[key] === 'object' && !Array.isArray(obj[key])) {
-                const p=pair(obj[key]); apply(type,p.h,p.a,p.provided);
-            }
-        }
-    }
-
-    function walk(node, depth=0) {
-        if (node === null || node === undefined || depth > 10) return;
-        if (Array.isArray(node)) { node.forEach(v=>walk(v,depth+1)); return; }
-        if (typeof node !== 'object') return;
-        direct(node);
-        const name = node.name ?? node.label ?? node.type ?? node.statName ??
-                     node.stat_name ?? node.title ?? node.key ?? node.slug ?? node.Nm ?? '';
-        const type = detect(name);
-        if (type) { const p=pair(node); apply(type,p.h,p.a,p.provided); }
-        Object.values(node).forEach(v=>{ if(v && typeof v==='object') walk(v,depth+1); });
-    }
-    walk(data);
-
-    // Cơ chế bản đầy đủ: Total Shots = SOT + Off Target + Blocked khi đủ 3 field thật.
-    if (!available.totalShots && available.shotsOnTarget &&
-        available.shotsOffTarget && available.blockedShots) {
-        out.totalShots = (out.shotsOnTarget||0) + (out.shotsOffTarget||0) + (out.blockedShots||0);
-        available.totalShots = true;
-    }
-    return {stats:out, available};
-}
-
-function augmentIndex10ParsedWithFullStats(parsed, rawData, label='Sofa') {
-    if (!parsed) return parsed;
-    const addon = extractLegacyFullStatsAddon(rawData);
-    parsed.sofaStats = parsed.sofaStats || {};
-    parsed.present = parsed.present || {totalShots:false,shotsOnTarget:false,corners:false,possession:false,redCards:false};
-
-    const core = ['totalShots','shotsOnTarget','corners','possession','redCards'];
-    const filled = [];
-    for (const k of core) {
-        if (!parsed.present[k] && addon.available[k]) {
-            parsed.sofaStats[k] = addon.stats[k];
-            parsed.present[k] = true;
-            filled.push(k);
-        }
-    }
-
-    // Giữ thêm các field phụ để Total Shots/debug vẫn có dữ liệu bản đầy đủ.
-    for (const k of ['shotsOffTarget','blockedShots','attacks','dangerousAttacks','yellowCards']) {
-        if ((parsed.sofaStats[k] === undefined || parsed.sofaStats[k] === null) && addon.available[k]) {
-            parsed.sofaStats[k] = addon.stats[k];
-        }
-    }
-
-    parsed.foundItems = Object.values(parsed.present).filter(Boolean).length;
-    if (filled.length) console.log(`    🧩 [FULL-STATS ADDON ${label}] bù: ${filled.join(', ')}`);
-    if (addon.available.totalShots && !filled.includes('totalShots') && parsed.present.totalShots) {
-        // Không ghi đè Total Shots mà INDEX10 đã có.
-    }
-    return parsed;
-}
-
 function extractSofaStatistics(data) {
     let shotsOnTarget = 0, corners = 0, redCards = 0, totalShots = 0;
     let shotsOffTarget = 0, blockedShots = 0;
+    let shotsOffTargetPresent = false, blockedShotsPresent = false;
     let possessionHome = null, possessionAway = null;
     let xg = 0, bigChances = 0, shotsInsideBox = 0, touchesOppBox = 0;
     let foundItems = 0;
@@ -1164,11 +1009,11 @@ function extractSofaStatistics(data) {
             const sumVal = (isNaN(homeVal) ? 0 : homeVal) + (isNaN(awayVal) ? 0 : awayVal);
             if (name.includes('shots on target') || name.includes('shot on target')) {
                 shotsOnTarget = Math.max(shotsOnTarget, sumVal); present.shotsOnTarget=true; foundItems++;
-            } else if (name.includes('shots off target') || name.includes('shot off target')) {
-                shotsOffTarget = Math.max(shotsOffTarget, sumVal); foundItems++;
-            } else if (name.includes('blocked shots') || name.includes('blocked shot')) {
-                blockedShots = Math.max(blockedShots, sumVal); foundItems++;
-            } else if (name.includes('total shots') || name.includes('total shot')) {
+            } else if (name.includes('shots off target') || name.includes('shot off target') || name.includes('off target')) {
+                shotsOffTarget = Math.max(shotsOffTarget, sumVal); shotsOffTargetPresent=true; foundItems++;
+            } else if (name.includes('blocked shots') || name.includes('shots blocked') || name.includes('blocked shot')) {
+                blockedShots = Math.max(blockedShots, sumVal); blockedShotsPresent=true; foundItems++;
+            } else if (name === 'total shots' || name === 'shots total' || name === 'shots' || name.includes('total shot')) {
                 totalShots = Math.max(totalShots, sumVal); present.totalShots=true; foundItems++;
             } else if (name.includes('corner')) {
                 corners = Math.max(corners, sumVal); present.corners=true; foundItems++;
@@ -1197,11 +1042,21 @@ function extractSofaStatistics(data) {
 
     roots.forEach(walk);
 
+    // TOTAL SHOTS ONLY FIX:
+    // Nếu không có Total Shots trực tiếp, dùng đúng cơ chế bản cũ.
+    // Chỉ đánh dấu có Total Shots khi SOT + Off Target + Blocked thực sự hiện diện.
+    if (!present.totalShots && present.shotsOnTarget && shotsOffTargetPresent && blockedShotsPresent) {
+        totalShots = shotsOnTarget + shotsOffTarget + blockedShots;
+        present.totalShots = true;
+        foundItems++;
+        console.log(`    🧮 [TOTAL SHOTS REBUILD] SOT(${shotsOnTarget}) + OFF(${shotsOffTarget}) + BLOCKED(${blockedShots}) = ${totalShots}`);
+    }
+
     return {
         foundItems,
         sofaStats: {
             shotsOnTarget,
-            totalShots: totalShots || (shotsOnTarget + shotsOffTarget + blockedShots),
+            totalShots: present.totalShots ? totalShots : (totalShots || (shotsOnTarget + shotsOffTarget + blockedShots)),
             shotsOffTarget,
             blockedShots,
             corners,
@@ -1587,21 +1442,17 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             };
         }
         const primary = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(matchId)}`);
-        let parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(primary), primary, 'Sofa-primary');
+        let parsed = extractSofaStatistics(primary);
 
         if (parsed.foundItems > 0) {
             console.log(`    ├─ [STAT OK] matches/get-statistics | fields=${parsed.foundItems}`);
         } else {
             console.log(`    ├─ [STAT EMPTY] matches/get-statistics -> thử events/get-statistics`);
             const legacy = await fetchSofaJson(`/events/get-statistics?eventId=${encodeURIComponent(matchId)}`);
-            parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(legacy), legacy, 'Sofa-legacy');
-            if (parsed.foundItems === 0) {
-                const eventVariant = await fetchSofaJson(`/matches/get-statistics?eventId=${encodeURIComponent(matchId)}`);
-                parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(eventVariant), eventVariant, 'Sofa-eventId');
-            }
+            parsed = extractSofaStatistics(legacy);
             console.log(parsed.foundItems > 0
-                ? `    ├─ [STAT OK] statistics fallback | fields=${parsed.foundItems}`
-                : `    ├─ [STAT EMPTY] cả 3 endpoint statistics`);
+                ? `    ├─ [STAT OK] events/get-statistics | fields=${parsed.foundItems}`
+                : `    ├─ [STAT EMPTY] cả 2 endpoint statistics`);
         }
 
         let effectiveMatchId = String(matchId);
@@ -1613,14 +1464,10 @@ async function fetchMatchDetailStats(matchId, source, homeName = '', awayName = 
             if (resolvedId && resolvedId !== String(matchId)) {
                 effectiveMatchId = resolvedId;
                 let retry = await fetchSofaJson(`/matches/get-statistics?matchId=${encodeURIComponent(effectiveMatchId)}`);
-                parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(retry), retry, 'Sofa-resolved');
+                parsed = extractSofaStatistics(retry);
                 if (parsed.foundItems === 0) {
                     retry = await fetchSofaJson(`/events/get-statistics?eventId=${encodeURIComponent(effectiveMatchId)}`);
-                    parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(retry), retry, 'Sofa-resolved-legacy');
-                }
-                if (parsed.foundItems === 0) {
-                    retry = await fetchSofaJson(`/matches/get-statistics?eventId=${encodeURIComponent(effectiveMatchId)}`);
-                    parsed = augmentIndex10ParsedWithFullStats(extractSofaStatistics(retry), retry, 'Sofa-resolved-eventId');
+                    parsed = extractSofaStatistics(retry);
                 }
                 console.log(parsed.foundItems > 0
                     ? `    ✅ [DEEP STAT OK] ID=${effectiveMatchId} | fields=${parsed.foundItems}`
