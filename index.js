@@ -4189,8 +4189,6 @@ function findMatchOdds(
     text:
       `💰 Over ${targetPoint} @ ${avgPrice.toFixed(2)} | Odds Score: ${round1(score)}%`
   };
-}
-
 
 // ==========================================================
 // 24. SUB SCORE: ATTACK
