@@ -872,29 +872,32 @@ async function fetchMatchIncidents(matchId, source, homeScore = 0, awayScore = 0
             if (goalEvents.length === 0) {
                 const totalGoals = homeScore + awayScore;
                 if (totalGoals > 0) {
-                    return `• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số hiện tại: ${homeScore}-${awayScore})`;
+                    return `Tỷ số hiện tại: ${homeScore}-${awayScore}`;
                 }
-                return '• Chưa có bàn thắng (Tỷ số: 0-0)';
+                return 'Chưa có bàn thắng (0-0)';
             }
 
             goalEvents.sort((a, b) => (a.time || 0) - (b.time || 0));
 
+            let runningHome = 0, runningAway = 0;
             const timeline = goalEvents.map(g => {
                 const min = g.time || 0;
                 const extra = g.addedTime ? `+${g.addedTime}` : '';
-                const player = g.player?.shortName || g.player?.name || 'Cầu thủ';
-                const isHome = g.isHome ? '⚽ [Chủ]' : '⚽ [Khách]';
-                const scoreStr = (g.homeScore !== undefined && g.awayScore !== undefined) ? `[${g.homeScore}-${g.awayScore}]` : '';
-                return `• Phút ${min}'${extra}: ${isHome} ${player} ${scoreStr}`;
+                if (g.homeScore !== undefined && g.awayScore !== undefined) {
+                    runningHome = Number(g.homeScore) || 0;
+                    runningAway = Number(g.awayScore) || 0;
+                } else if (g.isHome) runningHome += 1;
+                else runningAway += 1;
+                return `P${min}${extra}: ${runningHome}-${runningAway}`;
             });
 
-            return timeline.join('\n');
+            return timeline.join(' | ');
         } catch (err) {
             const totalGoals = homeScore + awayScore;
             if (totalGoals > 0) {
-                return `• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số: ${homeScore}-${awayScore})`;
+                return `Tỷ số hiện tại: ${homeScore}-${awayScore}`;
             }
-            return '• Chưa có bàn thắng (Tỷ số: 0-0)';
+            return 'Chưa có bàn thắng (0-0)';
         }
     } else {
         try {
@@ -920,29 +923,33 @@ async function fetchMatchIncidents(matchId, source, homeScore = 0, awayScore = 0
             if (goalEvents.length === 0) {
                 const totalGoals = homeScore + awayScore;
                 if (totalGoals > 0) {
-                    return `• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số hiện tại: ${homeScore}-${awayScore})`;
+                    return `Tỷ số hiện tại: ${homeScore}-${awayScore}`;
                 }
-                return '• Chưa có bàn thắng (Tỷ số: 0-0)';
+                return 'Chưa có bàn thắng (0-0)';
             }
 
             goalEvents.sort((a, b) => (a.time || a.minute || 0) - (b.time || b.minute || 0));
 
+            let runningHome = 0, runningAway = 0;
             const timeline = goalEvents.map(g => {
                 const min = g.time || g.minute || 0;
-                const player = g.player || g.playerName || g.player?.name || 'Cầu thủ';
                 const teamSide = String(g.team || g.homeAway || '').toLowerCase();
-                const isHome = teamSide.includes('home') || teamSide === 'h' ? '⚽ [Chủ]' : '⚽ [Khách]';
-                const scoreStr = (g.homeScore !== undefined && g.awayScore !== undefined) ? `[${g.homeScore}-${g.awayScore}]` : '';
-                return `• Phút ${min}': ${isHome} ${player} ${scoreStr}`;
+                const isHome = teamSide.includes('home') || teamSide === 'h';
+                if (g.homeScore !== undefined && g.awayScore !== undefined) {
+                    runningHome = Number(g.homeScore) || 0;
+                    runningAway = Number(g.awayScore) || 0;
+                } else if (isHome) runningHome += 1;
+                else runningAway += 1;
+                return `P${min}: ${runningHome}-${runningAway}`;
             });
 
-            return timeline.join('\n');
+            return timeline.join(' | ');
         } catch (err) {
             const totalGoals = homeScore + awayScore;
             if (totalGoals > 0) {
-                return `• Đã có ${totalGoals} bàn thắng được ghi (Tỷ số: ${homeScore}-${awayScore})`;
+                return `Tỷ số hiện tại: ${homeScore}-${awayScore}`;
             }
-            return '• Chưa có bàn thắng (Tỷ số: 0-0)';
+            return 'Chưa có bàn thắng (0-0)';
         }
     }
 }
@@ -1790,6 +1797,35 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         }
     }
 
+    // V17.4.6: ATTACK SURGE tại 70+ dùng snapshot đã cache từ 60-69 và chỉ xét cửa sổ gần nhất 5-10 phút.
+    // Nhờ vậy áp lực tăng mạnh trước phút 70 vẫn được mang vào quyết định tại 70+, nhưng spike quá cũ/ quá ngắn không được thưởng. Cap +12.
+    let attackSurgeAdjustment = 0;
+    if (minute >= 70 && momentumContext && Number(momentumContext.deltaMinute) >= 5 && Number(momentumContext.deltaMinute) <= 10) {
+        const d = momentumContext.deltas || {};
+        const dShots = Math.max(0, Number(d.shots || 0));
+        const dSot = Math.max(0, Number(d.sot || 0));
+
+        if (dShots >= 4) attackSurgeAdjustment += 3;
+        else if (dShots >= 3) attackSurgeAdjustment += 2;
+        else if (dShots >= 2) attackSurgeAdjustment += 1;
+
+        if (dSot >= 3) attackSurgeAdjustment += 8;
+        else if (dSot >= 2) attackSurgeAdjustment += 5;
+        else if (dSot >= 1) attackSurgeAdjustment += 2;
+
+        // Combo Shots + SOT cùng tăng: ưu tiên áp lực có chất lượng.
+        if (dShots >= 5 && dSot >= 3) attackSurgeAdjustment += 6;
+        else if (dShots >= 4 && dSot >= 2) attackSurgeAdjustment += 4;
+        else if (dShots >= 3 && dSot >= 1) attackSurgeAdjustment += 2;
+
+        attackSurgeAdjustment = Math.min(12, attackSurgeAdjustment);
+        if (attackSurgeAdjustment > 0) {
+            aiPercentage += attackSurgeAdjustment;
+            matchAnalysis.push(`🚀 Attack Surge 70+ (${Number(momentumContext.deltaMinute)}m): +${attackSurgeAdjustment}% | ΔShots +${dShots} | ΔSOT +${dSot}`);
+            hasTacticalData = true;
+        }
+    }
+
     let gameStateAdjustment = 0;
     const totalGoals = (Number(homeScore) || 0) + (Number(awayScore) || 0);
     if (minute >= 70 && minute <= 85 && Number(homeScore) !== Number(awayScore)) gameStateAdjustment += 3;
@@ -1834,6 +1870,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
             possessionAdjustment,
             sterilePenalty,
             momentumAdjustment,
+            attackSurgeAdjustment,
             gameStateAdjustment,
             redCardAdjustment
         }
@@ -1963,7 +2000,7 @@ async function sendTelegramAlert(item) {
 🏆 Giải đấu: ${item.league}
 ⚔️ Trận đấu: ${item.homeName} ${item.homeScore}–${item.awayScore} ${item.awayName}
 ⏱️ Thời gian: ${timeDisplay}
-⚽️ DIỄN BIẾN TỶ SỐ THEO PHÚT: ${item.goalTimeline}
+⚽️ Diễn biến: ${item.goalTimeline}
 🎯 Nhận định: Trận đấu có xác suất cao xuất hiện THÊM BÀN THẮNG
 📈 Hiệu suất Rule: ${item.ruleEfficiency}%${item.ftPrediction ? `
 🔮 DỰ ĐOÁN TỶ SỐ FT: ${item.ftPrediction.ftScore}
@@ -2083,11 +2120,18 @@ async function scanLiveMatches() {
                 continue;
             }
 
-            // AI V2 cần momentum gần nhất trước khi chấm Rule. Snapshot thô không phụ thuộc Rule.
+            // V17.4.6: 60-69' chỉ thu Stats + lưu snapshot. Snapshot này được dùng cho Momentum/Attack Surge khi bước sang 70+.
+            // Từ 70-92' mới bắt đầu chấm AI Rule và xét Telegram; Attack Surge chỉ nhận delta 5-10 phút gần nhất.
             const momentumKey = `${itemSource}:${matchId}`;
             const previousMomentumSnapshot = momentumStates.get(momentumKey) || null;
             const rawCurrentSnapshot = makeMatchSnapshot(metrics, 0, numericElapsed, homeScore, actualAwayScore);
             const internalMomentum = detectInternalMomentum(previousMomentumSnapshot, rawCurrentSnapshot);
+
+            if (numericElapsed < 70) {
+                momentumStates.set(momentumKey, rawCurrentSnapshot);
+                console.log(`    🟦 [CACHE MOMENTUM] ${homeName} vs ${awayName} | Phút ${numericElapsed}' | Stats ${statCount}/5 | chưa chấm AI trước phút 70`);
+                continue;
+            }
 
             const aiAnalysis = evaluateMatchDynamicAI(
                 metrics, oddsAnalysis, numericElapsed, internalMomentum, homeScore, actualAwayScore
