@@ -19,6 +19,8 @@ console.log = (...args) => {
         '[DATA MISSING',
         '[ĐÃ GỬI TELEGRAM]',
         '[AI CHỌN NỔ BÀN]',
+        '[AI CHƯA ĐẠT]',
+        '[AI ĐẠT RULE]',
         '[MOMENTUM ALERT QUALIFIED]',
         '[API Fetch Error]',
         '[LIVEFOOTBALL LIVE ERROR]',
@@ -142,6 +144,17 @@ function makeMatchSnapshot(metrics, rule, minute, homeScore, awayScore) {
         redCards: Number(s.redCards || 0),
         shotsRate: (Number(s.totalShots || 0) / Math.max(1, Number(minute || 1))) * 100,
         sotRate: (Number(s.shotsOnTarget || 0) / Math.max(1, Number(minute || 1))) * 100,
+        effectiveSot: (() => {
+            const shots = Math.max(0, Number(s.totalShots || 0));
+            const sot = Math.max(0, Number(s.shotsOnTarget || 0));
+            if (sot <= 0) return 0;
+            const raw = (sot / Math.max(1, Number(minute || 1))) * 100;
+            if (shots <= 0) return raw;
+            const ratio = sot / shots;
+            const mult = ratio < 0.15 ? 0.5 : ratio < 0.25 ? 0.8 : ratio < 0.35 ? 1.0 : ratio < 0.45 ? 1.3 : 1.5;
+            return raw * mult;
+        })(),
+        sotShotRatio: Number(s.totalShots || 0) > 0 ? Number(s.shotsOnTarget || 0) / Number(s.totalShots || 0) : null,
         cornerRate: (Number(s.corners || 0) / Math.max(1, Number(minute || 1))) * 100,
         xg: Number(metrics?.advancedStats?.xg || 0),
         bigChances: Number(metrics?.advancedStats?.bigChances || 0),
@@ -158,13 +171,18 @@ function detectTenMinuteSpike(previous, current) {
     const reasons = [];
     const dRule = current.rule - previous.rule;
     const dSot = current.shotsOnTarget - previous.shotsOnTarget;
+    const dEffectiveSot = Number(current.effectiveSot || 0) - Number(previous.effectiveSot || 0);
+    const dSotQuality = (current.sotShotRatio == null || previous.sotShotRatio == null) ? null : (current.sotShotRatio - previous.sotShotRatio) * 100;
     const dShots = current.totalShots - previous.totalShots;
     const dCorners = current.corners - previous.corners;
     const dRed = current.redCards - previous.redCards;
     const dGoals = (current.homeScore + current.awayScore) - (previous.homeScore + previous.awayScore);
 
     if (dRule >= 8) reasons.push(`Rule +${dRule.toFixed(1)}%`);
-    if (dSot >= 2) reasons.push(`Sút trúng đích +${dSot}`);
+    // V17.4.1: BIGGGG LẦN 2 dùng Effective SOT thay cho SOT thô.
+    // SOT tăng chỉ được coi là spike khi chất lượng SOT/Total Shots đủ kéo Effective SOT tăng.
+    if (dEffectiveSot >= 1.5) reasons.push(`Effective SOT +${dEffectiveSot.toFixed(2)} điểm`);
+    if (dSotQuality !== null && dSotQuality >= 5 && dSot >= 1) reasons.push(`Chất lượng SOT +${dSotQuality.toFixed(1)} điểm %`);
     if (dShots >= 4) reasons.push(`Tổng sút +${dShots}`);
     if (dCorners >= 2) reasons.push(`Phạt góc +${dCorners}`);
     if (dRed >= 1) reasons.push(`Thẻ đỏ mới +${dRed}`);
@@ -175,7 +193,6 @@ function detectTenMinuteSpike(previous, current) {
     const dSotRate = current.sotRate - previous.sotRate;
     const dCornerRate = current.cornerRate - previous.cornerRate;
     if (dShotsRate >= 3) reasons.push(`Mật độ tổng sút +${dShotsRate.toFixed(1)} điểm`);
-    if (dSotRate >= 1.5) reasons.push(`Mật độ SOT +${dSotRate.toFixed(1)} điểm`);
     if (dCornerRate >= 1.5) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
 
     return { isSpike: current.rule >= 58 && reasons.length > 0, reasons, deltaMinute: dm };
@@ -194,6 +211,8 @@ function detectExtremeSpike(previous, current) {
     const reasons = [];
     const dRule = current.rule - previous.rule;
     const dSot = current.shotsOnTarget - previous.shotsOnTarget;
+    const dEffectiveSot = Number(current.effectiveSot || 0) - Number(previous.effectiveSot || 0);
+    const dSotQuality = (current.sotShotRatio == null || previous.sotShotRatio == null) ? null : (current.sotShotRatio - previous.sotShotRatio) * 100;
     const dShots = current.totalShots - previous.totalShots;
     const dCorners = current.corners - previous.corners;
     const dRed = current.redCards - previous.redCards;
@@ -203,7 +222,9 @@ function detectExtremeSpike(previous, current) {
     const dCornerRate = current.cornerRate - previous.cornerRate;
 
     if (dRule >= 10) reasons.push(`Rule +${dRule.toFixed(1)}%`);
-    if (dSot >= 3) reasons.push(`Sút trúng đích +${dSot}`);
+    // V17.4.1: LẦN 3 cũng dùng Effective SOT, ngưỡng mạnh hơn LẦN 2.
+    if (dEffectiveSot >= 2.0) reasons.push(`Effective SOT +${dEffectiveSot.toFixed(2)} điểm`);
+    if (dSotQuality !== null && dSotQuality >= 7.5 && dSot >= 1) reasons.push(`Chất lượng SOT +${dSotQuality.toFixed(1)} điểm %`);
     if (dShots >= 5) reasons.push(`Tổng sút +${dShots}`);
     if (dCorners >= 3) reasons.push(`Phạt góc +${dCorners}`);
     if (dRed >= 1) reasons.push(`Thẻ đỏ mới +${dRed}`);
@@ -211,7 +232,6 @@ function detectExtremeSpike(previous, current) {
         reasons.push(`Bàn thắng mới +${dGoals} kèm áp lực tiếp tục tăng`);
     }
     if (dShotsRate >= 4) reasons.push(`Mật độ tổng sút +${dShotsRate.toFixed(1)} điểm`);
-    if (dSotRate >= 2) reasons.push(`Mật độ SOT +${dSotRate.toFixed(1)} điểm`);
     if (dCornerRate >= 2) reasons.push(`Mật độ góc +${dCornerRate.toFixed(1)} điểm`);
 
     return { isSpike: current.rule >= 60 && reasons.length > 0, reasons, deltaMinute: dm };
@@ -1671,7 +1691,7 @@ function analyzeOddsGoalProbability(allOdds, homeName, awayName, currentTotalGoa
 // ==========================================
 function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumContext = null, homeScore = 0, awayScore = 0) {
     let matchAnalysis = [];
-    let aiPercentage = 25.0; // V17.2: Base hạ từ 28% xuống 25%.
+    let aiPercentage = 15.0; // V17.4: Base 15%.
     const stats = metrics.sofaStats || {};
     const minute = Math.max(1, Number(elapsedMinute) || 1);
     let hasTacticalData = false;
@@ -1685,9 +1705,23 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
     const corners = Math.max(0, Number(stats.corners) || 0);
     const redCards = Math.max(0, Number(stats.redCards) || 0);
 
+    // V17.4 - TOTAL SHOTS + EFFECTIVE SOT đi kèm nhau.
+    // Total Shots vẫn đo cường độ tấn công theo phút thực tế.
+    // SOT không còn cộng cố định 50%; chất lượng SOT phụ thuộc SOT/Total Shots.
     const shotsRate = (totalShots / minute) * 100;
     const sotRateRaw = (shotsOnTarget / minute) * 100;
-    const sotContribution = sotRateRaw * 0.50;
+    const sotShotRatio = totalShots > 0 ? shotsOnTarget / totalShots : null;
+
+    let effectiveSotMultiplier = 0;
+    if (shotsOnTarget > 0) {
+        if (sotShotRatio === null) effectiveSotMultiplier = 1.0; // partial stats: có SOT nhưng thiếu Total Shots
+        else if (sotShotRatio < 0.15) effectiveSotMultiplier = 0.5;
+        else if (sotShotRatio < 0.25) effectiveSotMultiplier = 0.8;
+        else if (sotShotRatio < 0.35) effectiveSotMultiplier = 1.0;
+        else if (sotShotRatio < 0.45) effectiveSotMultiplier = 1.3;
+        else effectiveSotMultiplier = 1.5;
+    }
+    const effectiveSot = sotRateRaw * effectiveSotMultiplier;
     const cornerRate = (corners / minute) * 100;
 
     if (totalShots > 0) {
@@ -1696,8 +1730,9 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         hasTacticalData = true;
     }
     if (shotsOnTarget > 0) {
-        aiPercentage += sotContribution;
-        matchAnalysis.push(`🎯 SOT: +${sotContribution.toFixed(2)}%`);
+        aiPercentage += effectiveSot;
+        const ratioText = sotShotRatio === null ? 'N/A' : `${(sotShotRatio * 100).toFixed(1)}%`;
+        matchAnalysis.push(`🎯 Effective SOT: +${effectiveSot.toFixed(2)}% | SOT/Shots ${ratioText} | x${effectiveSotMultiplier.toFixed(1)}`);
         hasTacticalData = true;
     }
     if (corners > 0) {
@@ -1706,21 +1741,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         hasTacticalData = true;
     }
 
-    // AI V2 - CHANCE QUALITY: phân biệt ép sân nguy hiểm và ép sân vô hại.
-    let chanceQualityAdjustment = 0;
-    const sotShotRatio = totalShots > 0 ? shotsOnTarget / totalShots : null;
-    if (totalShots >= 6 && sotShotRatio !== null) {
-        if (sotShotRatio >= 0.40) chanceQualityAdjustment += 8;
-        else if (sotShotRatio >= 0.30) chanceQualityAdjustment += 5;
-        else if (sotShotRatio < 0.15) chanceQualityAdjustment -= 8;
-        else if (sotShotRatio < 0.22) chanceQualityAdjustment -= 4;
-        if (chanceQualityAdjustment !== 0) {
-            aiPercentage += chanceQualityAdjustment;
-            matchAnalysis.push(`🎯 Chance Quality ${(sotShotRatio * 100).toFixed(0)}%: ${chanceQualityAdjustment > 0 ? '+' : ''}${chanceQualityAdjustment}%`);
-        }
-    }
-
-    // Possession chỉ mạnh khi đi cùng chất lượng cơ hội; cầm bóng nhiều nhưng ít SOT không còn được cộng lớn.
+    // Possession chỉ được cộng mạnh khi có bằng chứng dứt điểm tốt.
     let possessionAdjustment = 0;
     let maxPoss = 50;
     if (stats.possession) {
@@ -1740,7 +1761,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         }
     }
 
-    // Sterile pressure: nhiều sút/góc/cầm bóng nhưng chất lượng dứt điểm thấp.
+    // Sterile pressure: sút/góc/cầm bóng nhiều nhưng rất ít SOT.
     let sterilePenalty = 0;
     if (totalShots >= 12 && shotsOnTarget <= 2) sterilePenalty -= 8;
     else if (totalShots >= 9 && shotsOnTarget <= 1) sterilePenalty -= 6;
@@ -1751,7 +1772,7 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         matchAnalysis.push(`🧊 Sterile Pressure: ${sterilePenalty}%`);
     }
 
-    // Recent momentum 5-10 phút: ưu tiên SOT; shots/corners đơn thuần chỉ có trọng số nhỏ.
+    // Recent momentum 5-10 phút: có thì cộng/trừ Rule; KHÔNG còn là gate bắt buộc.
     let momentumAdjustment = 0;
     if (momentumContext && Number(momentumContext.deltaMinute) > 0 && Number(momentumContext.deltaMinute) <= 10) {
         const d = momentumContext.deltas || {};
@@ -1759,7 +1780,6 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         else if ((d.sot || 0) >= 1) momentumAdjustment += 4;
         if ((d.shots || 0) >= 4) momentumAdjustment += (d.sot || 0) > 0 ? 3 : 1;
         if ((d.corners || 0) >= 2) momentumAdjustment += (d.sot || 0) > 0 ? 2 : 1;
-        // 5-10 phút có áp lực nhưng không tạo thêm SOT => attack decay/stale pressure.
         if ((d.sot || 0) <= 0 && ((d.shots || 0) >= 4 || (d.corners || 0) >= 3)) momentumAdjustment -= 6;
         if (momentumAdjustment !== 0) {
             aiPercentage += momentumAdjustment;
@@ -1767,19 +1787,17 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         }
     }
 
-    // Game state/time state: đội/trận cần bàn ở giai đoạn cuối được cộng nhẹ; 89-92 giảm vì thời gian còn rất ít.
     let gameStateAdjustment = 0;
     const totalGoals = (Number(homeScore) || 0) + (Number(awayScore) || 0);
     if (minute >= 70 && minute <= 85 && Number(homeScore) !== Number(awayScore)) gameStateAdjustment += 3;
     if (minute >= 75 && minute <= 87 && Number(homeScore) === Number(awayScore)) gameStateAdjustment += 2;
     if (minute >= 89) gameStateAdjustment -= 5;
-    if (totalGoals >= 5) gameStateAdjustment -= 2; // tránh quá tin vào trận đã có quá nhiều bàn.
+    if (totalGoals >= 5) gameStateAdjustment -= 2;
     if (gameStateAdjustment !== 0) {
         aiPercentage += gameStateAdjustment;
         matchAnalysis.push(`⏱️ Game State: ${gameStateAdjustment > 0 ? '+' : ''}${gameStateAdjustment}%`);
     }
 
-    // Red card context: vẫn dùng dữ liệu thật nhưng giảm cộng mù từ +10 xuống tác động có kiểm soát.
     let redCardAdjustment = 0;
     if (redCards > 0) {
         redCardAdjustment = shotsOnTarget >= 2 ? 7 : 3;
@@ -1788,72 +1806,32 @@ function evaluateMatchDynamicAI(metrics, oddsAnalysis, elapsedMinute, momentumCo
         hasTacticalData = true;
     }
 
-    // Odds chỉ context, +0 Rule.
-    if (oddsAnalysis) {
-        matchAnalysis.push(`💰 Odds ${oddsAnalysis.odds}: tham khảo, +0 Rule`);
-    }
+    if (oddsAnalysis) matchAnalysis.push(`💰 Odds ${oddsAnalysis.odds}: tham khảo, +0 Rule`);
 
     const finalNumber = Math.max(0, Math.min(aiPercentage, 98.0));
     const finalPercentage = finalNumber.toFixed(1);
     const MIN_SEND_PERCENTAGE = 60.0;
 
-    // V17.2 - QUALITY GATE: Rule >60 chưa đủ. Cần bằng chứng cơ hội thật.
-    // Ưu tiên SOT quality + SOT mới 5-10 phút; chặn sterile pressure.
-    const md = momentumContext?.deltas || {};
-    const recentSot = Math.max(0, Number(md.sot) || 0);
-    const recentShots = Math.max(0, Number(md.shots) || 0);
-    const recentCorners = Math.max(0, Number(md.corners) || 0);
-
-    // V17.3 STRICT QUALITY CONFIRMATION:
-    // Không dùng stats tổng trận để tự mở gate. Phải có snapshot 5-10 phút và SOT MỚI.
-    // Nhờ vậy bot vừa deploy / vừa thấy trận sẽ không bắn hàng loạt chỉ vì stats tích lũy đẹp.
-    const momentumAge = Number(momentumContext?.deltaMinute) || 0;
-    const historyReady = momentumAge >= 3 && momentumAge <= 10;
-    const ratioQuality = sotShotRatio !== null && totalShots >= 6 && shotsOnTarget >= 3 && sotShotRatio >= 0.25;
-    const strongRecentSot = historyReady && recentSot >= 2;
-    const confirmedRecentAttack = historyReady && recentSot >= 1 && ratioQuality && (recentShots >= 2 || recentCorners >= 1);
-    // Partial data không có Total Shots: chỉ xác nhận khi thật sự xuất hiện >=2 SOT mới trong cửa sổ theo dõi.
-    const partialSotQuality = totalShots <= 0 && historyReady && recentSot >= 2;
-    const sustainedSotThreat = false; // V17.3: stats tích lũy không còn được bypass recent-momentum gate.
-
-    const sterileHardFail = historyReady && recentSot === 0 && (
-        sterilePenalty <= -6 || recentShots >= 4 || recentCorners >= 3
-    );
-    const lowShotQualityFail = sotShotRatio !== null && totalShots >= 10 && sotShotRatio < 0.15;
-    const qualityGatePass = historyReady && !sterileHardFail && !lowShotQualityFail && (
-        strongRecentSot || confirmedRecentAttack || partialSotQuality
-    );
-
-    const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData && qualityGatePass;
-
-    if (finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData && !qualityGatePass) {
-        matchAnalysis.push(`🚫 Quality Gate FAIL: Rule ${finalPercentage}% nhưng SOT quality/momentum chưa xác nhận`);
-    } else if (shouldSend) {
-        matchAnalysis.push(`✅ Quality Gate PASS`);
-    }
+    // V17.4: BỎ HOÀN TOÀN QUALITY GATE. Rule >60 + có tactical data => đủ điều kiện gửi.
+    const shouldSend = finalNumber > MIN_SEND_PERCENTAGE && hasTacticalData;
 
     return {
         efficiency: finalPercentage,
         detailText: matchAnalysis.map(t => `• ${t}`).join('\n'),
         shouldSend,
         components: {
-            base: 25.0,
+            base: 15.0,
             shotsRate: Number(shotsRate.toFixed(2)),
             sotRateRaw: Number(sotRateRaw.toFixed(2)),
-            sotContribution: Number(sotContribution.toFixed(2)),
-            cornerRate: Number(cornerRate.toFixed(2)),
+            effectiveSot: Number(effectiveSot.toFixed(2)),
+            effectiveSotMultiplier,
             sotShotRatio: sotShotRatio === null ? null : Number((sotShotRatio * 100).toFixed(1)),
-            chanceQualityAdjustment,
+            cornerRate: Number(cornerRate.toFixed(2)),
             possessionAdjustment,
             sterilePenalty,
             momentumAdjustment,
             gameStateAdjustment,
-            redCardAdjustment,
-            qualityGatePass,
-            qualityGate: {
-                ratioQuality, strongRecentSot, confirmedRecentAttack, partialSotQuality, sustainedSotThreat,
-                historyReady, momentumAge, sterileHardFail, lowShotQualityFail, recentSot, recentShots, recentCorners
-            }
+            redCardAdjustment
         }
     };
 }
@@ -2111,20 +2089,13 @@ async function scanLiveMatches() {
                 metrics, oddsAnalysis, numericElapsed, internalMomentum, homeScore, actualAwayScore
             );
 
-            // V17.3.1: mọi trận >=3/5 PHẢI có một dòng kết quả AI trên Render.
-            // Log này đặt ngay sau evaluate để không bị mất bởi các gate cảnh báo phía sau.
+            // V17.4: mọi trận >=3/5 đều log kết quả AI. Không còn Quality Gate.
             {
                 const ruleNow = Number(aiAnalysis.efficiency);
-                const qg = aiAnalysis.components?.qualityGate || {};
-                if (ruleNow < 60) {
-                    console.log(`    🧠 [AI CHƯA ĐẠT] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <60% KHÔNG GỬI`);
-                } else if (!aiAnalysis.shouldSend) {
-                    const reason = !qg.historyReady
-                        ? `QUALITY UNKNOWN - chờ snapshot 5-10 phút`
-                        : `QUALITY FAIL - SOT quality/momentum chưa xác nhận`;
-                    console.log(`    🛑 [AI ĐẠT RULE NHƯNG CHẶN] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | ${reason} | KHÔNG GỬI`);
+                if (ruleNow <= 60 || !aiAnalysis.shouldSend) {
+                    console.log(`    🧠 [AI CHƯA ĐẠT] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | <=60% KHÔNG GỬI`);
                 } else {
-                    console.log(`    ✅ [AI ĐẠT + QUALITY PASS] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | đủ điều kiện xét cảnh báo`);
+                    console.log(`    ✅ [AI ĐẠT RULE] ${homeName} vs ${awayName} | Stats ${statCount}/5 | AI ${aiAnalysis.efficiency}% | đủ điều kiện xét cảnh báo`);
                 }
             }
 
@@ -2141,12 +2112,11 @@ async function scanLiveMatches() {
             const oddsOK = isBiggggOddsOK(oddsAnalysis);
 
             if (!existingAlertState) {
-                // V17.2: Cảnh báo 1 chỉ gửi khi Rule >60 VÀ Quality Gate PASS.
-                // Momentum dùng để xác nhận chất lượng, không còn mở đường gửi Telegram dưới 60%.
+                // V17.4.1: Cảnh báo 1 gửi theo AI Rule >60; không còn Quality Gate.
                 shouldAlertNow = aiAnalysis.shouldSend;
             } else if (existingAlertState.sendCount === 1) {
                 spikeInfo = detectTenMinuteSpike(existingAlertState.firstSnapshot, currentSnapshot);
-                // V17.3: BIGGGG cũng phải qua Quality Gate hiện tại; không được bypass bằng spike/odds.
+                // V17.4.1: BIGGGG LẦN 2 = Rule >60 + Effective-SOT/pressure spike + Odds 1.50-2.00.
                 shouldAlertNow = aiAnalysis.shouldSend && spikeInfo.isSpike && oddsOK;
                 if (!shouldAlertNow) {
                     const oddsText = oddsAnalysis?.odds ?? 'N/A';
@@ -2154,7 +2124,7 @@ async function scanLiveMatches() {
                 }
             } else if (existingAlertState.sendCount === 2) {
                 spikeInfo = detectExtremeSpike(existingAlertState.secondSnapshot, currentSnapshot);
-                // V17.3: BIGGGG cũng phải qua Quality Gate hiện tại; không được bypass bằng spike/odds.
+                // V17.4.1: BIGGGG LẦN 3 dùng Effective-SOT spike mạnh hơn + Odds 1.50-2.00.
                 shouldAlertNow = aiAnalysis.shouldSend && spikeInfo.isSpike && oddsOK;
                 if (!shouldAlertNow) {
                     const oddsText = oddsAnalysis?.odds ?? 'N/A';
@@ -2203,7 +2173,7 @@ async function scanLiveMatches() {
                     }
                 }
             } else if (!existingAlertState) {
-                console.log(`    └─> [Bỏ qua]: Rule ${aiAnalysis.efficiency}% | QualityGate=${aiAnalysis.components?.qualityGatePass ? 'PASS' : 'FAIL'} | yêu cầu Rule >60 + Quality Gate PASS`);
+                console.log(`    └─> [Bỏ qua]: Rule ${aiAnalysis.efficiency}% | yêu cầu Rule >60`);
             }
         }
     } catch (err) {
@@ -2220,7 +2190,7 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`==> Server running on port ${PORT}`);
-    console.log(`🛟 BUILD V17.3.1: STRICT SOT/MOMENTUM GATE | AI RESULT LOG >=3/5 | BASE25`);
+    console.log(`🛟 BUILD V17.4.1: BASE15 | EFFECTIVE SOT | BIGGGG EFFECTIVE-SOT SPIKE | NO QUALITY GATE`);
     scanLiveMatches();
     // Chu kỳ quét 7 phút/lần hoặc điều chỉnh theo ý muốn
     setInterval(scanLiveMatches, 7 * 60 * 1000);
