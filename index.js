@@ -1148,7 +1148,15 @@ function parseFotMobTeamStats(data) {
   };
   for (const section of sections) {
     for (const item of section.stats || []) {
-      const keys = names[item.key];
+      const normalizedKey = String(item.key || item.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const aliases = {
+        ballpossession: 'BallPossesion', ballpossesion: 'BallPossesion', possession: 'BallPossesion',
+        totalshots: 'total_shots', shots: 'total_shots', shotsontarget: 'ShotsOnTarget',
+        shotsongoal: 'ShotsOnTarget', shotsofftarget: 'ShotsOffTarget', blockedshots: 'blocked_shots',
+        corners: 'corners', cornerkicks: 'corners', bigchances: 'big_chance',
+        yellowcards: 'yellow_cards', redcards: 'red_cards'
+      };
+      const keys = names[item.key] || names[aliases[normalizedKey]];
       if (!keys || !Array.isArray(item.stats)) continue;
       for (let i = 0; i < 2; i++) {
         const raw = item.rawStats?.[i]?.value ?? item.stats[i];
@@ -5924,6 +5932,7 @@ function extractGoalTimeline(
 ) {
 
   const goals = [];
+  const unscoredGoals = [];
 
   const possibleArrays = [
 
@@ -5937,7 +5946,14 @@ function extractGoalTimeline(
 
     raw?.matchEvents,
 
-    raw?.match_events
+    raw?.match_events,
+    raw?.data?.incidents,
+    raw?.data?.events,
+    raw?.data?.data?.incidents,
+    raw?.result?.incidents,
+    raw?.content?.matchFacts?.events?.events,
+    raw?.data?.content?.matchFacts?.events?.events,
+    raw?.matchFacts?.events?.events
 
   ];
 
@@ -5964,6 +5980,8 @@ function extractGoalTimeline(
           event?.eventType ??
           event?.event_type ??
           event?.name ??
+          event?.eventName ??
+          event?.type?.name ??
           ''
         ).toLowerCase();
 
@@ -5973,7 +5991,7 @@ function extractGoalTimeline(
         type === 'goal' ||
 
         type.includes('goal') ||
-
+        type === '36' ||
         event?.isGoal === true;
 
 
@@ -5986,7 +6004,9 @@ function extractGoalTimeline(
         event?.time ??
         event?.minute ??
         event?.elapsed ??
-        event?.matchTime;
+        event?.matchTime ??
+        event?.timeStr ??
+        event?.time?.elapsed;
 
 
       let minuteText =
@@ -6030,20 +6050,24 @@ function extractGoalTimeline(
 
         event?.homeScore ??
 
-        event?.score?.home;
+        event?.score?.home ??
+        event?.home_score ??
+        event?.score?.homeScore;
 
 
       const awayScore =
 
         event?.awayScore ??
 
-        event?.score?.away;
+        event?.score?.away ??
+        event?.away_score ??
+        event?.score?.awayScore;
 
 
-      if (
-        homeScore === undefined ||
-        awayScore === undefined
-      ) {
+      if (homeScore === undefined || awayScore === undefined) {
+        // Keep event minute only when the scoring side is explicitly identified.
+        const side = String(event?.team || event?.teamSide || event?.side || '').toLowerCase();
+        if (side === 'home' || side === 'away') unscoredGoals.push({minuteText, side});
         continue;
       }
 
@@ -6055,14 +6079,16 @@ function extractGoalTimeline(
   }
 
 
-  if (
-    !goals.length
-  ) {
-
-    return (
-      'Chưa lấy được dữ liệu'
-    );
+  if (!goals.length && unscoredGoals.length) {
+    // Only reconstruct from provider-confirmed goal events with explicit home/away side.
+    const minuteNum = t => { const m = String(t).match(/^(\d+)(?:\+(\d+))?/); return m ? +m[1] * 100 + +(m[2] || 0) : Infinity; };
+    let h = 0, a = 0;
+    for (const e of unscoredGoals.sort((x,y) => minuteNum(x.minuteText)-minuteNum(y.minuteText))) {
+      if (e.side === 'home') h++; else a++;
+      goals.push(`P${e.minuteText}: ${h}-${a}`);
+    }
   }
+  if (!goals.length) return 'Chưa lấy được dữ liệu';
 
 
   return [...new Set(goals)].sort((a, b) => {
@@ -6154,6 +6180,24 @@ async function resolveVerifiedGoalHistory(match) {
       console.warn(`[GOAL HISTORY] SofaScore incidents error | eventId=${id} | ${err.response?.status || err.message}`);
     }
   }
+  const fotmobIds = [...new Set(candidates.filter(c => c.source === 'fotmob').map(c => c.id).filter(Boolean))];
+  for (const id of fotmobIds) {
+    if (!FOTMOB_KEY) break;
+    try {
+      const response = await axios.get(`https://${FOTMOB_HOST}/api/v1/matches/${encodeURIComponent(id)}`, {
+        headers: { 'x-rapidapi-key': FOTMOB_KEY.trim(), 'x-rapidapi-host': FOTMOB_HOST }, timeout: 7000
+      });
+      const timeline = extractGoalTimeline(response.data?.data || response.data);
+      if (goalHistoryMatches(timeline, home, away)) {
+        console.log(`⚽ [GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | FotMob matchId=${id}`);
+        return timeline;
+      }
+      console.log(`[GOAL HISTORY] FotMob incidents incomplete | matchId=${id}`);
+    } catch (err) {
+      console.warn(`[GOAL HISTORY] FotMob error | matchId=${id} | HTTP ${err.response?.status || err.message}`);
+    }
+  }
+  console.log(`[GOAL HISTORY MISSING] ${match.homeName} vs ${match.awayName} | score=${home}-${away} | linked=${candidates.map(c=>`${c.source}:${c.id}`).join(',')}`);
   return `Chưa có lịch sử bàn thắng xác thực (hiện tại ${home}-${away})`;
 }
 
@@ -6225,7 +6269,7 @@ async function sendTelegramAlert(
   // Tiêu đề Telegram: số lần rung và BIG BET là hai trạng thái riêng.
   // Không thay đổi điều kiện xác định isBigBet hoặc số lần gửi.
   let title = alertNumber === 1
-    ? '🔔 TÀI LỘC ĐẾNNN NHÀ'
+    ? '🔔 TÀI LỘC ĐẾN NHÀAA 🔔'
     : `🔔 LỘC ĐẾN LẦN ${alertNumber}`;
 
   if (isBigBet) {
@@ -6559,10 +6603,15 @@ function deduplicateMatches(matches) {
     const primary = group[0];
     primary.crossSourceMatches = group;
     primary.sourceIds = Object.fromEntries(group.map(m => [m.source, String(m.id)]));
-    if (group.length > 1) joined++;
+    if (group.length > 1) {
+      joined++;
+      console.log(`[Cross-Source LINK] ${primary.homeName} vs ${primary.awayName} | ${group.map(m => `${m.source}:${m.id}`).join(' | ')}`);
+    }
     return primary;
   });
-  console.log(`[Cross-Source Resolver] ${matches.length} records -> ${result.length} unique matches | linked ${joined} matches | native IDs preserved`);
+  const duplicates = matches.length - result.length;
+  console.log(`[Cross-Source Resolver] ${matches.length} records -> ${result.length} unique matches | linked ${joined} cross-provider matches | removed ${duplicates} duplicate records | native IDs preserved`);
+  if (duplicates && !joined) console.log('[Cross-Source Resolver] NOTE: duplicates may be same-source records; no cross-provider native IDs linked');
   return result;
 }
 
@@ -6851,6 +6900,8 @@ async function analyzeOneMatch(
 
   if (alertDecision.send && minute >= MIN_TELEGRAM_MINUTE) {
     // Query detailed incidents only for an eligible alert, avoiding extra API calls on every scan.
+    if (!odds.found) console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | ${allOdds?.length || 0} events | ${odds.text || 'NO_LINE'} | no verified Over line`);
+    else console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | Over ${odds.point} @ ${odds.price}`);
     result.goalTimeline = await resolveVerifiedGoalHistory(match);
 
     const sent = await sendTelegramAlert(
