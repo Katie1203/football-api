@@ -34,12 +34,12 @@ function ftRoutes(id){
   const configured=process.env.SOFASCORE_FT_URL_TEMPLATE;
   const candidates=[];
   if(configured && configured.includes('{id}')) candidates.push(configured.replaceAll('{id}',encoded));
-  candidates.push(`https://sofascore.p.rapidapi.com/matches/get-event?eventId=${encoded}`);
-  candidates.push(`https://sofascore.p.rapidapi.com/events/get-event?eventId=${encoded}`);
+  // Verified against RapidAPI SofaScore matches/detail (matchId parameter).
+  candidates.push(`https://sofascore.p.rapidapi.com/matches/detail?matchId=${encoded}`);
   return [...new Set(candidates)];
 }
 function extractFinalScore(data){
-  const event=data?.event||data?.data?.event||data?.data||data;
+  const event=data?.event||data?.data?.event||data?.data?.match||data?.match||data?.data||data;
   const status=String(event?.status?.type||event?.status?.description||event?.status?.name||event?.match_status||'').toLowerCase().replace(/[\s_-]+/g,'');
   const finalStatuses=new Set(['finished','ended','ft','fulltime','afterpenalties','afterextratime','aet']);
   if(!finalStatuses.has(status))return null;
@@ -64,7 +64,7 @@ async function reconcile(){
       checked++;
       let found=false;
       for(const url of ftRoutes(r.sourceId)){
-        const route=url.replace(/([?&]eventId=)[^&]+/,'$1{id}');
+        const route=url.replace(/([?&](?:eventId|matchId)=)[^&]+/,'$1{id}');
         if(unavailableRoutes.has(route))continue;
         try{
           const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':'sofascore.p.rapidapi.com'},timeout:7000});
