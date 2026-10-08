@@ -1,6 +1,7 @@
 
 const express = require('express');
 const axios = require('axios');
+const audit = require('./audit');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -6260,6 +6261,7 @@ ${scorePrediction.confidence}
       return false;
     }
     console.log(`[Telegram SENT] message_id=${response.data.result.message_id} | alert #${alertNumber}`);
+    try { await audit.addAlert({...item,alertDecision},alertNumber,response.data.result.message_id); } catch (auditErr) { console.error('[AUDIT SAVE ERROR]',auditErr.message); }
 
     alertState.set(
       item.alertKey,
@@ -7160,6 +7162,11 @@ app.get(
 // ==========================================================
 // 50. START SERVER
 // ==========================================================
+
+audit.setup(app);
+audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
+setInterval(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 5 * 60 * 1000);
+setTimeout(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 30 * 1000);
 
 app.listen(
   PORT,
