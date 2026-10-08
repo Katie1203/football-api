@@ -956,6 +956,12 @@ function calculateExactMinute(item) {
 }
 
 
+function logSourceError(source, stage, error) {
+  const status = error?.response?.status || 'NETWORK';
+  const msg = String(error?.response?.data?.message || error?.message || 'Unknown error').slice(0, 160);
+  console.warn(`[Source ${source}] ${stage} ERROR | HTTP ${status} | ${msg}`);
+}
+
 // ==========================================================
 // 6. FETCH LIVE MATCHES
 // ==========================================================
@@ -997,10 +1003,7 @@ async function fetchLiveMatchesFromSofaScore() {
 
   } catch (e) {
 
-    console.error(
-      '[Sofa Live]',
-      e.message
-    );
+    logSourceError('SofaScore', 'LIVE', e);
 
     return [];
   }
@@ -1053,6 +1056,7 @@ async function fetchLiveMatchesFromFlashScore() {
 
   } catch (e) {
 
+    logSourceError('FlashScore', 'LIVE', e);
     return [];
   }
 }
@@ -1103,6 +1107,7 @@ async function fetchLiveMatchesFromLiveFootball() {
 
   } catch (e) {
 
+    logSourceError('LiveFootball', 'LIVE', e);
     return [];
   }
 }
@@ -2252,6 +2257,8 @@ async function fetchSofaScoreStats(
   ];
 
 
+  let lastError = null;
+
   for (
     const url of urls
   ) {
@@ -2306,12 +2313,15 @@ async function fetchSofaScoreStats(
       }
 
     } catch (e) {
+      lastError = e;
 
       // Thử endpoint tiếp theo
     }
   }
 
 
+  if (lastError) logSourceError('SofaScore', `STATS matchId=${matchId}`, lastError);
+  else console.log(`[Source SofaScore] STATS matchId=${matchId} | Không có chỉ số`);
   return stats;
 }
 
@@ -2346,6 +2356,8 @@ async function fetchFlashScoreStats(
 
   ];
 
+
+  let lastError = null;
 
   for (
     const url of urls
@@ -2401,12 +2413,15 @@ async function fetchFlashScoreStats(
       }
 
     } catch (e) {
+      lastError = e;
 
       // thử endpoint tiếp
     }
   }
 
 
+  if (lastError) logSourceError('FlashScore', `STATS matchId=${matchId}`, lastError);
+  else console.log(`[Source FlashScore] STATS matchId=${matchId} | Không có chỉ số`);
   return stats;
 }
 
@@ -2690,6 +2705,8 @@ async function fetchMatchDetailStats(
     );
   }
 
+
+  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | ATT=${stats.homeAttacks}-${stats.awayAttacks} DA=${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners}`);
 
   stats.source =
     `cross-source-${getCoreStatsCoverage(stats)}/5`;
@@ -6327,6 +6344,13 @@ async function fetchAllLiveMatches() {
 
 
   const all = [];
+  for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football]]) {
+    if (result.status === 'fulfilled') {
+      console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
+    } else {
+      logSourceError(name, 'LIVE', result.reason);
+    }
+  }
 
 
   if (
