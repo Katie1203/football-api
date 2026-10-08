@@ -25,10 +25,16 @@ const FLASHSCORE_LIVE_URL =
   `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/live?sport_id=1`;
 
 const LIVE_FOOTBALL_HOST =
-  'football-live-stream-api.p.rapidapi.com';
+  'free-api-live-football-data.p.rapidapi.com';
 
 const LIVE_FOOTBALL_URL =
-  `https://${LIVE_FOOTBALL_HOST}/matches`;
+  `https://${LIVE_FOOTBALL_HOST}${process.env.LIVE_FOOTBALL_LIVE_PATH || '/matches'}`;
+const LIVE_FOOTBALL_LIVE_ENABLED = Boolean(process.env.LIVE_FOOTBALL_LIVE_PATH);
+const FOTMOB_HOST = 'fotmob-api.p.rapidapi.com';
+const FOTMOB_KEY = process.env.FOTMOB_RAPIDAPI_KEY || PAID_RAPIDAPI_KEY;
+const FOTMOB_CACHE_MS = 60000;
+const fotmobDetailCache = new Map();
+let flashscoreDisabledUntil = 0;
 
 const ODDS_API_URL = ODDS_API_KEY
   ? `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
@@ -990,7 +996,7 @@ async function fetchLiveMatchesFromSofaScore() {
 
   try {
 
-    if (!PAID_RAPIDAPI_KEY) {
+    if (!PAID_RAPIDAPI_KEY || !LIVE_FOOTBALL_LIVE_ENABLED) {
       return [];
     }
 
@@ -1076,6 +1082,7 @@ async function fetchLiveMatchesFromFlashScore() {
 
   } catch (e) {
 
+    if (e?.response?.status === 429) flashscoreDisabledUntil = Date.now() + 24 * 60 * 60 * 1000;
     logSourceError('FlashScore', 'LIVE', e);
     return [];
   }
@@ -1131,6 +1138,126 @@ async function fetchLiveMatchesFromLiveFootball() {
     return [];
   }
 }
+
+// ==========================================================
+// FOTMOB: live discovery + detail stats (actual response schema)
+// ==========================================================
+function fotmobMinute(status) {
+  const live = status?.liveTime || {};
+  const value = String(live.short || '').replace(/[\u200e\u200f\u2066-\u2069]/g, '').trim();
+  if (/^(HT|FT|AET|PEN)$/i.test(value)) return null;
+  const m = value.match(/^(\d{1,3})/);
+  return m ? Number(m[1]) : null;
+}
+
+function formatFotMobLiveMatch(raw) {
+  const minute = fotmobMinute(raw.status);
+  return {
+    id: String(raw.id), source: 'fotmob',
+    homeName: raw.home?.name || '', awayName: raw.away?.name || '',
+    homeScore: Number(raw.home?.score || 0), awayScore: Number(raw.away?.score || 0),
+    league: raw._fotmobLeagueName || '',
+    minute, raw: {
+      ...raw, minute, elapsed: minute,
+      league: { name: raw._fotmobLeagueName, country: raw._fotmobCountry },
+      status: { ...raw.status, ongoing: raw.status?.ongoing, liveTime: raw.status?.liveTime }
+    }
+  };
+}
+
+async function fetchLiveMatchesFromFotMob() {
+  if (!FOTMOB_KEY) return [];
+  try {
+    const response = await axios.get(`https://${FOTMOB_HOST}/api/v1/matches/live`, {
+      params: { ccode3: 'USA', timezone: 'UTC' },
+      headers: { 'x-rapidapi-key': FOTMOB_KEY.trim(), 'x-rapidapi-host': FOTMOB_HOST },
+      timeout: 10000
+    });
+    const leagues = response.data?.leagues || response.data?.data?.leagues || [];
+    const matches = [];
+    for (const league of leagues) {
+      for (const raw of league.matches || []) {
+        if (!raw.status?.ongoing || raw.status?.finished || raw.status?.cancelled) continue;
+        const minute = fotmobMinute(raw.status);
+        if (minute === null || minute < 46 || minute > 92) continue;
+        matches.push({ ...raw, _fotmobLeagueName: league.name, _fotmobCountry: league.ccode });
+      }
+    }
+    return matches;
+  } catch (error) {
+    logSourceError('FotMob', 'LIVE', error);
+    return [];
+  }
+}
+
+function parseFotMobTeamStats(data) {
+  const result = createEmptyStats();
+  const sections = data?.content?.stats?.Periods?.All?.stats || [];
+  const names = {
+    'BallPossesion': ['homePossession', 'awayPossession'],
+    'total_shots': ['homeTotalShots', 'awayTotalShots'],
+    'ShotsOnTarget': ['homeShotsOnTarget', 'awayShotsOnTarget'],
+    'ShotsOffTarget': ['homeShotsOffTarget', 'awayShotsOffTarget'],
+    'blocked_shots': ['homeBlockedShots', 'awayBlockedShots'],
+    'corners': ['homeCorners', 'awayCorners'],
+    'big_chance': ['homeBigChances', 'awayBigChances'],
+    'yellow_cards': ['homeYellowCards', 'awayYellowCards'],
+    'red_cards': ['homeRedCards', 'awayRedCards']
+  };
+  for (const section of sections) {
+    for (const item of section.stats || []) {
+      const keys = names[item.key];
+      if (!keys || !Array.isArray(item.stats)) continue;
+      for (let i = 0; i < 2; i++) {
+        const raw = item.rawStats?.[i]?.value ?? item.stats[i];
+        if (raw !== null && raw !== undefined && raw !== '') {
+          const value = safeNumber(raw);
+          if (Number.isFinite(value)) result[keys[i]] = value;
+        }
+      }
+    }
+  }
+  result.hasData = getCoreStatsCoverage(result) > 0;
+  result.source = 'fotmob';
+  return result;
+}
+
+async function fetchFotMobStats(id) {
+  if (!FOTMOB_KEY || !id) return createEmptyStats();
+  const cacheKey = String(id);
+  const cached = fotmobDetailCache.get(cacheKey);
+  if (cached && Date.now() - cached.time < FOTMOB_CACHE_MS) return cached.stats;
+  try {
+    const response = await axios.get(`https://${FOTMOB_HOST}/api/v1/matches/${encodeURIComponent(id)}`, {
+      headers: { 'x-rapidapi-key': FOTMOB_KEY.trim(), 'x-rapidapi-host': FOTMOB_HOST },
+      timeout: 10000
+    });
+    const data = response.data?.data || response.data;
+    if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
+    const stats = parseFotMobTeamStats(data);
+    fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
+    return stats;
+  } catch (error) {
+    logSourceError('FotMob', 'DETAIL', error);
+    return createEmptyStats();
+  }
+}
+
+async function fetchLiveFootballDetailStats(eventId) {
+  if (!PAID_RAPIDAPI_KEY || !eventId) return createEmptyStats();
+  try {
+    const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}/football-get-match-event-all-stats`, {
+      params: { eventid: eventId },
+      headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVE_FOOTBALL_HOST },
+      timeout: 10000
+    });
+    return parseStatsFromRawMatch(response.data?.data || response.data?.result || response.data);
+  } catch (error) {
+    logSourceError('LiveFootball', 'DETAIL', error);
+    return createEmptyStats();
+  }
+}
+
 // ==========================================================
 // 7. STATISTICS HELPERS
 // ==========================================================
@@ -2605,7 +2732,10 @@ async function fetchStatsForSourceMatch(sourceMatch) {
   // Live Football hiện không có detail-stat endpoint riêng trong bản này.
   // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
   if (sourceMatch.source === 'live-football') {
-    return parseStatsFromRawMatch(sourceMatch.raw);
+    return fetchLiveFootballDetailStats(sourceMatch.id);
+  }
+  if (sourceMatch.source === 'fotmob') {
+    return fetchFotMobStats(sourceMatch.id);
   }
 
   return createEmptyStats();
@@ -2662,8 +2792,9 @@ async function fetchMatchDetailStats(
   // Ưu tiên SofaScore -> FlashScore -> Live Football.
   const sourcePriority = {
     sofascore: 3,
-    flashscore: 2,
-    'live-football': 1
+    'live-football': 2,
+    fotmob: 1,
+    flashscore: 0
   };
 
   const orderedSources = [...sourceMatches].sort(
@@ -6342,20 +6473,22 @@ async function fetchAllLiveMatches() {
   const [
     sofa,
     flash,
-    football
+    football,
+    fotmob
   ] = await Promise.allSettled([
 
     fetchLiveMatchesFromSofaScore(),
 
-    fetchLiveMatchesFromFlashScore(),
+    (Date.now() < flashscoreDisabledUntil ? Promise.resolve([]) : fetchLiveMatchesFromFlashScore()),
 
-    fetchLiveMatchesFromLiveFootball()
+    fetchLiveMatchesFromLiveFootball(),
+    fetchLiveMatchesFromFotMob()
 
   ]);
 
 
   const all = [];
-  for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football]]) {
+  for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football], ['FotMob', fotmob]]) {
     if (result.status === 'fulfilled') {
       console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
     } else {
@@ -6424,6 +6557,13 @@ async function fetchAllLiveMatches() {
   }
 
 
+  if (fotmob.status === 'fulfilled') {
+    for (const raw of fotmob.value) {
+      all.push(formatFotMobLiveMatch(raw));
+    }
+  }
+
+
   return all;
 }
 
@@ -6442,8 +6582,9 @@ function deduplicateMatches(
 
   const SOURCE_PRIORITY = {
     sofascore: 3,
-    flashscore: 2,
-    'live-football': 1
+    'live-football': 2,
+    fotmob: 1,
+    flashscore: 0
   };
 
   // Gom cùng một trận theo tên đội, nhưng KHÔNG vứt các nguồn phụ.
