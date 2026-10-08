@@ -21,7 +21,7 @@ const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
 const SOFASCORE_LIVE_URL =
   `https://${SOFASCORE_HOST}/tournaments/get-live-events?sport=football`;
 
-const FLASHSCORE_HOST = 'flashscore-api1.p.rapidapi.com';
+const FLASHSCORE_HOST = 'flashscore4.p.rapidapi.com';
 const FLASHSCORE_LIVE_URL =
   `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/live?sport_id=1`;
 
@@ -6222,24 +6222,16 @@ async function sendTelegramAlert(
   const isBigBet = alertNumber >= 2 && percentage >= BIG_BET_PERCENTAGE && alertDecision?.bigBet === true;
 
 
-  let title =
-    '🔔 TÀI LỌC ĐẾNNN 🔔';
+  // Tiêu đề Telegram: số lần rung và BIG BET là hai trạng thái riêng.
+  // Không thay đổi điều kiện xác định isBigBet hoặc số lần gửi.
+  let title = alertNumber === 1
+    ? '🔔 TÀI LỘC ĐẾNNN NHÀ'
+    : `🔔 LỘC ĐẾN LẦN ${alertNumber}`;
 
-
-  if (
-    isBigBet &&
-    percentage >= 85
-  ) {
-
-    title =
-      '🔥🔥🔥 BIG BET RẤT MẠNH 🔥🔥🔥';
-
-  } else if (
-    isBigBet
-  ) {
-
-    title =
-      '🔥🔥 BIG BET 🔥🔥';
+  if (isBigBet) {
+    title = percentage >= 85
+      ? `🔥🔥🔥 BIG BET RẤT MẠNH — RUNG LẦN ${alertNumber}`
+      : `🔥 BIG BET — RUNG LẦN ${alertNumber}`;
   }
 
 
@@ -6303,7 +6295,7 @@ async function sendTelegramAlert(
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
   const messageLines = [
-    `${title} | #${alertNumber}`,
+    title,
     `🏆 Giải đấu: ${cleanTelegramText(item.league)}`,
     `⚽ Trận: ${cleanTelegramText(item.homeName)} vs ${cleanTelegramText(item.awayName)}`,
     `⏱ Phút: ${item.minute}' | Tỷ số: ${item.homeScore}-${item.awayScore}`,
