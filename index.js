@@ -98,7 +98,7 @@ async function fetchApiSportsStats(id) {
         const suffix=fieldMap[row.type];
         if (!suffix || row.value === null || row.value === undefined || row.value === '') continue;
         const n=Number(String(row.value).replace('%','').trim());
-        if (Number.isFinite(n) && n>=0) result[`${side===0?'home':'away'}${suffix}`]=n;
+        if (Number.isFinite(n) && n>=0) { const field = `${side===0?'home':'away'}${suffix}`; result[field]=n; result._present[field]=true; }
       }
     }
     result.hasData=Array.isArray(teams[0].statistics) && teams[0].statistics.length>0;
@@ -137,9 +137,9 @@ const ALERT_STATE_TTL =
 const STATS_CACHE_TTL =
   90 * 1000;
 
-// Quét 7 phút / lần
+// Quét 5 phút / lần
 const SCAN_INTERVAL_MS =
-  7 * 60 * 1000;
+  5 * 60 * 1000;
 
 
 const alertState = new Map();
@@ -1247,7 +1247,7 @@ function parseFotMobTeamStats(data) {
         const raw = item.rawStats?.[i]?.value ?? item.stats[i];
         if (raw !== null && raw !== undefined && raw !== '') {
           const value = safeNumber(raw);
-          if (Number.isFinite(value)) result[keys[i]] = value;
+          if (Number.isFinite(value)) { result[keys[i]] = value; result._present[keys[i]] = true; }
         }
       }
     }
@@ -1422,7 +1422,9 @@ function createEmptyStats() {
     // Có lấy được dữ liệu hay không
     hasData: false,
 
-    source: null
+    source: null,
+    // Explicit presence metadata; zero can be a real provider value.
+    _present: {}
   };
 }
 
@@ -1446,7 +1448,7 @@ function mergeStats(target, source) {
 
     if (
       key === 'hasData' ||
-      key === 'source'
+      key === 'source' || key === '_present'
     ) {
       continue;
     }
@@ -1454,8 +1456,9 @@ function mergeStats(target, source) {
     const value =
       safeNumber(source[key]);
 
-    if (value > 0) {
+    if (source._present?.[key] || value > 0) {
       target[key] = value;
+      target._present[key] = true;
     }
   }
 
@@ -1678,6 +1681,11 @@ function applyStat(
     safeNumber(awayValue);
 
 
+  const statKey = {attacks:'Attacks',dangerousAttacks:'DangerousAttacks',shotsOnTarget:'ShotsOnTarget',blockedShots:'BlockedShots',shotsOffTarget:'ShotsOffTarget',totalShots:'TotalShots',possession:'Possession',corners:'Corners',yellowCards:'YellowCards',redCards:'RedCards',bigChances:'BigChances',goalkeeperSaves:'GoalkeeperSaves',fouls:'Fouls'}[type];
+  if (statKey) {
+    if (homeValue !== null && homeValue !== undefined && homeValue !== '') stats._present['home'+statKey] = true;
+    if (awayValue !== null && awayValue !== undefined && awayValue !== '') stats._present['away'+statKey] = true;
+  }
   switch (type) {
 
     case 'attacks':
@@ -2702,50 +2710,28 @@ function parseStatsFromRawMatch(
 // ==========================================================
 
 function getCoreStatsCoverage(stats) {
-
-  if (!stats) {
-    return 0;
-  }
-
-  const checks = [
-    safeNumber(stats.homeAttacks) + safeNumber(stats.awayAttacks) > 0,
-    safeNumber(stats.homeDangerousAttacks) + safeNumber(stats.awayDangerousAttacks) > 0,
-    safeNumber(stats.homeTotalShots) + safeNumber(stats.awayTotalShots) > 0,
-    safeNumber(stats.homeShotsOnTarget) + safeNumber(stats.awayShotsOnTarget) > 0,
-    safeNumber(stats.homeCorners) + safeNumber(stats.awayCorners) > 0
-  ];
-
-  return checks.filter(Boolean).length;
+  if (!stats) return 0;
+  const fields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  return fields.filter(field => ['home','away'].every(side =>
+    stats._present?.[side+field] === true ||
+    // Legacy parsers without presence metadata can still confirm positive values.
+    (Number(stats[side+field]) > 0)
+  )).length;
 }
 
-
 function mergeMissingStats(target, source) {
-
-  if (!target || !source) {
-    return target;
-  }
-
-  const keys = Object.keys(createEmptyStats());
-
-  for (const key of keys) {
-
-    if (key === 'hasData' || key === 'source') {
-      continue;
-    }
-
-    const oldValue = safeNumber(target[key]);
-    const newValue = safeNumber(source[key]);
-
-    // Chỉ bổ sung ô còn thiếu; không ghi đè dữ liệu nguồn ưu tiên.
-    if (oldValue <= 0 && newValue > 0) {
-      target[key] = newValue;
+  if (!target || !source) return target;
+  target._present ||= {};
+  for (const key of Object.keys(createEmptyStats())) {
+    if (['hasData','source','_present'].includes(key)) continue;
+    const present = source._present?.[key] === true || Number(source[key]) > 0;
+    const oldPresent = target._present[key] === true || Number(target[key]) > 0;
+    if (!oldPresent && present) {
+      target[key] = Number(source[key]);
+      target._present[key] = true;
     }
   }
-
-  if (source.hasData) {
-    target.hasData = true;
-  }
-
+  if (source.hasData) target.hasData = true;
   return target;
 }
 
@@ -2839,11 +2825,11 @@ async function fetchMatchDetailStats(
       (sourcePriority[a.source] || 0)
   );
 
-  if (getCoreStatsCoverage(stats) < 4) {
+  if (getCoreStatsCoverage(stats) < 5) {
 
     for (const sourceMatch of orderedSources) {
 
-      if (getCoreStatsCoverage(stats) >= 4) {
+      if (getCoreStatsCoverage(stats) >= 5) {
         break;
       }
 
@@ -2862,14 +2848,14 @@ async function fetchMatchDetailStats(
   }
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
-  if (stats.homeTotalShots <= 0) {
+  if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
     stats.homeTotalShots =
       stats.homeShotsOnTarget +
       stats.homeShotsOffTarget +
       stats.homeBlockedShots;
   }
 
-  if (stats.awayTotalShots <= 0) {
+  if (!stats._present?.awayTotalShots && stats.awayTotalShots <= 0) {
     stats.awayTotalShots =
       stats.awayShotsOnTarget +
       stats.awayShotsOffTarget +
@@ -6421,7 +6407,7 @@ async function sendTelegramAlert(
   const odd = item.odds || {};
   const bookmaker = odd.bookmaker || odd.bookmakerName || 'Nguồn tổng hợp';
   const oddLine = odd.found && Number(odd.price) > 1
-    ? `💰 Kèo nhà cái (${cleanTelegramText(bookmaker)}): Odds Over ${Number(odd.price).toFixed(2)} — chỉ tham khảo, KHÔNG cộng Rule`
+    ? `💰 Kèo nhà cái (${cleanTelegramText(bookmaker)}): Over ${odd.point ?? "?"} @ ${Number(odd.price).toFixed(2)} — chỉ tham khảo, KHÔNG cộng Rule`
     : null;
   const oddNote = oddLine ? ` └─> Odds Over ${Number(odd.price) <= 1.85 ? 'ổn định' : 'tham khảo'} (${Number(odd.price).toFixed(2)})` : null;
   const compactStats = [
@@ -6431,6 +6417,7 @@ async function sendTelegramAlert(
       ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')} | Blocked ${pair('homeBlockedShots','awayBlockedShots')}` : null,
     `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
+    `🔎 Rule Confidence: ${item.ruleConfidence?.label || "Chưa xác định"} (tham khảo)`,
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
   const messageLines = [
@@ -6971,9 +6958,12 @@ async function analyzeOneMatch(
   );
 
 
+  const ruleConfidence = {coverage: getCoreStatsCoverage(stats), total: 5, percent: getCoreStatsCoverage(stats)*20, label: `${getCoreStatsCoverage(stats)}/5 chỉ số`};
   const result = {
 
     ...match,
+
+    ruleConfidence,
 
     alertKey,
 
@@ -7491,7 +7481,7 @@ app.listen(
     );
 
 
-   // Sau đó 7 phút / lần
+   // Sau đó 5 phút / lần
 setInterval(
   () => {
     scanLiveMatches()
