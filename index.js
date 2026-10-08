@@ -260,8 +260,11 @@ const LEAGUE_NAME_MAP = {
   'Club Friendly':
     'Giao Hữu CLB',
 
-  'Premier League':
+  'English Premier League':
     'Ngoại Hạng Anh',
+
+  'Tanzanian Premier League':
+    'VĐQG Tanzania (Tanzanian Premier League)',
 
   Championship:
     'Hạng Nhất Anh',
@@ -376,6 +379,22 @@ function parseLeagueName(item) {
 
     '';
 
+
+  // Resolve country before league translation. 'Premier League' alone is ambiguous.
+  const countryRaw = String(category || item.country?.name || '').trim();
+  const leagueRaw = String(tournament || '').trim();
+  const countryKey = countryRaw.toLowerCase();
+  const leagueKey = leagueRaw.toLowerCase();
+  if (countryKey.includes('tanzania') || countryKey.includes('tanzanian') || leagueKey.includes('tanzanian')) {
+    if (/^(tanzanian\s+)?premier league$/i.test(leagueRaw)) {
+      return 'VĐQG Tanzania (Tanzanian Premier League)';
+    }
+  }
+  if (/^premier league$/i.test(leagueRaw)) {
+    if (/^(england|english|anh)$/i.test(countryRaw)) return 'Ngoại Hạng Anh';
+    const countryDisplay = COUNTRY_MAP[countryRaw] || countryRaw;
+    return countryDisplay ? `Premier League (${countryDisplay})` : 'Premier League (chưa rõ quốc gia)';
+  }
 
   if (
     LEAGUE_NAME_MAP[tournament]
@@ -5992,6 +6011,38 @@ function extractGoalTimeline(
   }).join(' | ');
 }
 
+// Verified score progression: use goal incidents, never infer minute from a score snapshot.
+async function resolveVerifiedGoalHistory(match) {
+  const expectedHome = Number(match.homeScore);
+  const expectedAway = Number(match.awayScore);
+  const total = expectedHome + expectedAway;
+  if (total === 0) return 'Chưa có bàn thắng (0-0)';
+  const candidates = [match, ...(match.crossSourceMatches || [])];
+  for (const candidate of candidates) {
+    let raw = candidate.raw;
+    let timeline = extractGoalTimeline(raw);
+    if (candidate.source === 'sofascore' && candidate.id && PAID_RAPIDAPI_KEY) {
+      try {
+        const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-incidents`, {
+          params: { eventId: candidate.id },
+          headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
+          timeout: 6000
+        });
+        timeline = extractGoalTimeline(response.data);
+      } catch (err) {
+        // Keep the event timeline already present in the live match payload.
+      }
+    }
+    if (!timeline || timeline === 'Chưa lấy được dữ liệu') continue;
+    const entries = timeline.split(' | ');
+    const final = entries[entries.length - 1].match(/:\s*(\d+)-(\d+)$/);
+    // Reject partial, mismatched or duplicated histories: no invented score progression.
+    if (entries.length !== total || !final || Number(final[1]) !== expectedHome || Number(final[2]) !== expectedAway) continue;
+    return timeline;
+  }
+  return `Chưa có lịch sử bàn thắng xác thực (hiện tại ${expectedHome}-${expectedAway})`;
+}
+
 // ==========================================================
 // 42. TELEGRAM ESCAPE
 //
@@ -6142,8 +6193,7 @@ async function sendTelegramAlert(
     `🏆 Giải đấu: ${cleanTelegramText(item.league)}`,
     `⚽ Trận: ${cleanTelegramText(item.homeName)} vs ${cleanTelegramText(item.awayName)}`,
     `⏱ Phút: ${item.minute}' | Tỷ số: ${item.homeScore}-${item.awayScore}`,
-    item.goalTimeline && item.goalTimeline !== 'Không có dữ liệu' && item.goalTimeline !== 'Chưa lấy được dữ liệu'
-      ? `⚽ BÀN THẮNG: ${item.goalTimeline}` : null,
+    `⚽ DIỄN BIẾN TỶ SỐ: ${item.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
     '',
     ...compactStats,
     ...(changes.length ? [`⚡ Biến động ${momentum.minuteGap || 7}p: ${changes.join(' | ')}`] : []),
@@ -6673,6 +6723,8 @@ async function analyzeOneMatch(
   // ======================================================
 
   if (alertDecision.send && minute >= MIN_TELEGRAM_MINUTE) {
+    // Query detailed incidents only for an eligible alert, avoiding extra API calls on every scan.
+    result.goalTimeline = await resolveVerifiedGoalHistory(match);
 
     const sent = await sendTelegramAlert(
       result,
