@@ -6226,13 +6226,62 @@ async function resolveSofaGoalEventIdByName(match) {
     return null;
   }
 }
+// Verified multi-provider goal event parser. Missing scores are reconstructed only
+// from explicit goal events with a verified home/away team identity.
+function extractGoalTimelineV2(payload, match) {
+  const root = payload?.data || payload?.result || payload;
+  const arrays = [root?.incidents,root?.events,root?.response,root?.goals,
+    root?.data?.incidents,root?.data?.events,root?.content?.matchFacts?.events?.events,
+    root?.content?.matchFacts?.events,root?.matchFacts?.events?.events,
+    root?.header?.events,root?.timeline];
+  const events = arrays.find(Array.isArray);
+  if (!events) return 'Chưa lấy được dữ liệu';
+  const homeId = String(match?.raw?.teams?.home?.id ?? match?.raw?.homeTeam?.id ?? '');
+  const awayId = String(match?.raw?.teams?.away?.id ?? match?.raw?.awayTeam?.id ?? '');
+  const parsed=[];
+  for (const e of events) {
+    const type = String(e?.incidentType?.name ?? e?.incidentType ?? e?.type?.name ?? e?.type ?? e?.eventType?.name ?? e?.eventType ?? e?.event_type ?? e?.name ?? '').toLowerCase();
+    const detail=String(e?.detail ?? e?.subType ?? e?.subtype ?? '').toLowerCase();
+    if (!(type==='goal'||type==='36'||type.includes('goal')||e?.isGoal===true)) continue;
+    if (type.includes('disallow')||type.includes('cancel')||detail.includes('missed penalty')||e?.isCancelled===true||e?.isDisallowed===true) continue;
+    const minute=e?.time?.elapsed ?? e?.time ?? e?.minute ?? e?.elapsed ?? e?.matchTime ?? e?.timeStr;
+    const extra=e?.time?.extra ?? e?.addedTime ?? e?.added_time;
+    const minuteString=typeof minute==='number' && Number(extra)>0 ? `${minute}+${extra}` : String(minute??'').replace(/[’']/g,'');
+    if (!/^\d{1,3}(?:\+\d{1,2})?$/.test(minuteString)) continue;
+    const explicitHome=e?.homeScore ?? e?.home_score ?? e?.score?.home ?? e?.score?.homeScore;
+    const explicitAway=e?.awayScore ?? e?.away_score ?? e?.score?.away ?? e?.score?.awayScore;
+    let side=typeof e?.isHome==='boolean' ? (e.isHome?'home':'away') : String(e?.teamSide ?? e?.side ?? '').toLowerCase();
+    const teamId=String(e?.team?.id ?? e?.teamId ?? '');
+    if (!['home','away'].includes(side) && teamId && homeId && awayId) side=teamId===homeId?'home':teamId===awayId?'away':'';
+    if (!['home','away'].includes(side) && typeof e?.team?.name==='string') {
+      if (goalTeamMatches(e.team.name,match.homeName)) side='home';
+      else if (goalTeamMatches(e.team.name,match.awayName)) side='away';
+    }
+    const hs=explicitHome==null?null:Number(explicitHome),as=explicitAway==null?null:Number(explicitAway);
+    if ((!Number.isInteger(hs)||!Number.isInteger(as)) && !['home','away'].includes(side)) continue;
+    parsed.push({minute:minuteString,side,hs,as});
+  }
+  const unique=[...new Map(parsed.map(x=>[`${x.minute}:${x.side}:${x.hs}:${x.as}`,x])).values()];
+  unique.sort((a,b)=>{const n=x=>{const [m,e='0']=x.minute.split('+');return +m*100+ +e;};return n(a)-n(b)});
+  let h=0,a=0;const output=[];
+  for (const e of unique) {
+    if (Number.isInteger(e.hs)&&Number.isInteger(e.as)) {h=e.hs;a=e.as;}
+    else if (e.side==='home') h++; else if (e.side==='away') a++; else continue;
+    output.push(`P${e.minute}: ${h}-${a}`);
+  }
+  return output.length?output.join(' | '):'Chưa lấy được dữ liệu';
+}
+async function fetchApiSportsGoalEvents(fixtureId) {
+  if (!APISPORTS_KEY || !fixtureId) return null;
+  return apiSportsGet('/fixtures/events',{fixture:fixtureId});
+}
 async function resolveVerifiedGoalHistory(match) {
   const home = Number(match.homeScore), away = Number(match.awayScore);
   if (!Number.isFinite(home) || !Number.isFinite(away)) return 'Chưa xác thực được tỷ số';
   if (home + away === 0) return 'Chưa có bàn thắng (0-0)';
   const candidates = [match, ...(match.crossSourceMatches || [])];
   for (const candidate of candidates) {
-    const fromLive = extractGoalTimeline(candidate.raw);
+    const fromLive = extractGoalTimelineV2(candidate.raw, match);
     if (goalHistoryMatches(fromLive, home, away)) return fromLive;
   }
   const ids = [...new Set(candidates.filter(c => c.source === 'sofascore')
@@ -6249,7 +6298,7 @@ async function resolveVerifiedGoalHistory(match) {
   }
   for (const id of ids) {
     try {
-      const timeline = extractGoalTimeline(await fetchSofaGoalIncidents(id));
+      const timeline = extractGoalTimelineV2(await fetchSofaGoalIncidents(id), match);
       if (goalHistoryMatches(timeline, home, away)) {
         console.log(`⚽ [GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | SofaScore eventId=${id}`);
         return timeline;
@@ -6266,7 +6315,7 @@ async function resolveVerifiedGoalHistory(match) {
       const response = await axios.get(`https://${FOTMOB_HOST}/api/v1/matches/${encodeURIComponent(id)}`, {
         headers: { 'x-rapidapi-key': FOTMOB_KEY.trim(), 'x-rapidapi-host': FOTMOB_HOST }, timeout: 7000
       });
-      const timeline = extractGoalTimeline(response.data?.data || response.data);
+      const timeline = extractGoalTimelineV2(response.data?.data || response.data, match);
       if (goalHistoryMatches(timeline, home, away)) {
         console.log(`⚽ [GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | FotMob matchId=${id}`);
         return timeline;
@@ -6275,6 +6324,19 @@ async function resolveVerifiedGoalHistory(match) {
     } catch (err) {
       console.warn(`[GOAL HISTORY] FotMob error | matchId=${id} | HTTP ${err.response?.status || err.message}`);
     }
+  }
+  const apiIds = [...new Set(candidates.filter(c => c.source === 'apisports').map(c => c.id).filter(Boolean))];
+  for (const id of apiIds) {
+    try {
+      const payload=await fetchApiSportsGoalEvents(id);
+      const fixtureMatch=candidates.find(c=>c.source==='apisports' && String(c.id)===String(id)) || match;
+      const timeline=extractGoalTimelineV2(payload,fixtureMatch);
+      if (goalHistoryMatches(timeline,home,away)) {
+        console.log(`[GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | API-Football fixture=${id}`);
+        return timeline;
+      }
+      console.warn(`[GOAL HISTORY] API-Football events incomplete | fixture=${id}`);
+    } catch(err) { console.warn(`[GOAL HISTORY] API-Football events error | fixture=${id} | ${err.response?.status||err.message}`); }
   }
   console.log(`[GOAL HISTORY MISSING] ${match.homeName} vs ${match.awayName} | score=${home}-${away} | linked=${candidates.map(c=>`${c.source}:${c.id}`).join(',')}`);
   return `Chưa có lịch sử bàn thắng xác thực (hiện tại ${home}-${away})`;
@@ -6640,6 +6702,7 @@ async function fetchAllLiveMatches() {
 function resolverTokens(name) {
   const value = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
     .replace(/\b(football club|futbol club|soccer club|fc|cf|sc|afc|fk|sk|ac|club)\b/g, ' ')
+    .replace(/\b1907\b/g, ' ')
     .replace(/[^a-z0-9]+/g, ' ').trim();
   return value.split(/\s+/).filter(Boolean);
 }
@@ -6668,7 +6731,7 @@ function resolverSameMatch(a, b) {
   const away = resolverTeamScore(a.awayName, b.awayName);
   if (home < .78 || away < .78 || (home + away) / 2 < .86) return false;
   const ac = resolverLeagueCountry(a), bc = resolverLeagueCountry(b);
-  if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2) return false;
+  if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2 && !([ac,bc].includes('rou') && [ac,bc].some(x => x.includes('romania')))) return false;
   const am = Number(a.minute), bm = Number(b.minute);
   if (Number.isFinite(am) && Number.isFinite(bm) && am > 0 && bm > 0 && Math.abs(am - bm) > 12) return false;
   const as = Number(a.homeScore), bs = Number(b.homeScore);
@@ -6833,11 +6896,10 @@ async function analyzeOneMatch(
 
   // Alert key dùng tên đội để giữ chung
   // trạng thái nếu API nguồn thay đổi.
-  const alertKey =
-    createMatchKey(
-      match.homeName,
-      match.awayName
-    );
+  const alertKey = createMatchKey(
+    resolverTokens(match.homeName).join(' '),
+    resolverTokens(match.awayName).join(' ')
+  );
 
 
   const momentum =
