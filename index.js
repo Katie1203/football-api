@@ -28,13 +28,13 @@ const LIVE_FOOTBALL_HOST =
   'free-api-live-football-data.p.rapidapi.com';
 
 const LIVE_FOOTBALL_URL =
-  `https://${LIVE_FOOTBALL_HOST}${process.env.LIVE_FOOTBALL_LIVE_PATH || '/matches'}`;
+  `https://${LIVE_FOOTBALL_HOST}${process.env.LIVE_FOOTBALL_LIVE_PATH || ''}`;
 const LIVE_FOOTBALL_LIVE_ENABLED = Boolean(process.env.LIVE_FOOTBALL_LIVE_PATH);
 const FOTMOB_HOST = 'fotmob-api.p.rapidapi.com';
 const FOTMOB_KEY = process.env.FOTMOB_RAPIDAPI_KEY || PAID_RAPIDAPI_KEY;
 const FOTMOB_CACHE_MS = 60000;
 const fotmobDetailCache = new Map();
-let flashscoreDisabledUntil = 0;
+// FlashScore: always enabled. HTTP errors are logged; no cooldown or retry gate.
 
 const ODDS_API_URL = ODDS_API_KEY
   ? `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
@@ -992,49 +992,46 @@ function logSourceError(source, stage, error) {
 // 6. FETCH LIVE MATCHES
 // ==========================================================
 
+// SofaScore independent of all fallback switches. Do not confuse empty results
+// with unknown payload structures or request errors.
+function unpackSofaLiveEvents(payload) {
+  const roots = [payload, payload?.data, payload?.result, payload?.response];
+  for (const root of roots) {
+    if (Array.isArray(root)) return root;
+    for (const key of ['events', 'liveEvents', 'matches', 'live_matches', 'results']) {
+      if (Array.isArray(root?.[key])) return root[key];
+      if (Array.isArray(root?.[key]?.events)) return root[key].events;
+    }
+  }
+  return null;
+}
 async function fetchLiveMatchesFromSofaScore() {
-
+  if (!PAID_RAPIDAPI_KEY) {
+    console.warn('[Source SofaScore] SKIP | RAPIDAPI_KEY is missing');
+    return [];
+  }
   try {
-
-    if (!PAID_RAPIDAPI_KEY || !LIVE_FOOTBALL_LIVE_ENABLED) {
+    const r = await axios.get(SOFASCORE_LIVE_URL, {
+      headers: {
+        'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(),
+        'x-rapidapi-host': SOFASCORE_HOST
+      },
+      timeout: 10000
+    });
+    const events = unpackSofaLiveEvents(r.data);
+    if (events === null) {
+      const root = r.data && typeof r.data === 'object' ? Object.keys(r.data).slice(0, 12).join(',') : typeof r.data;
+      console.warn(`[Source SofaScore] JSON UNRECOGNIZED | HTTP ${r.status} | keys: ${root}`);
       return [];
     }
-
-
-    const r =
-      await axios.get(
-        SOFASCORE_LIVE_URL,
-        {
-          headers: {
-
-            'x-rapidapi-key':
-              PAID_RAPIDAPI_KEY
-                .trim(),
-
-            'x-rapidapi-host':
-              SOFASCORE_HOST
-
-          },
-
-          timeout: 10000
-        }
-      );
-
-
-    return (
-      r.data?.events ||
-      r.data?.liveEvents ||
-      []
-    );
-
+    if (!events.length) console.warn('[Source SofaScore] API OK | returned 0 raw live events');
+    else console.log(`[Source SofaScore] API OK | ${events.length} raw live events`);
+    return events;
   } catch (e) {
-
     logSourceError('SofaScore', 'LIVE', e);
-
     return [];
   }
 }
-
 
 // ==========================================================
 // FLASHSCORE LIVE
@@ -1082,7 +1079,6 @@ async function fetchLiveMatchesFromFlashScore() {
 
   } catch (e) {
 
-    if (e?.response?.status === 429) flashscoreDisabledUntil = Date.now() + 24 * 60 * 60 * 1000;
     logSourceError('FlashScore', 'LIVE', e);
     return [];
   }
@@ -1097,7 +1093,7 @@ async function fetchLiveMatchesFromLiveFootball() {
 
   try {
 
-    if (!PAID_RAPIDAPI_KEY) {
+    if (!PAID_RAPIDAPI_KEY || !LIVE_FOOTBALL_LIVE_ENABLED) {
       return [];
     }
 
@@ -6479,7 +6475,7 @@ async function fetchAllLiveMatches() {
 
     fetchLiveMatchesFromSofaScore(),
 
-    (Date.now() < flashscoreDisabledUntil ? Promise.resolve([]) : fetchLiveMatchesFromFlashScore()),
+    fetchLiveMatchesFromFlashScore(),
 
     fetchLiveMatchesFromLiveFootball(),
     fetchLiveMatchesFromFotMob()
@@ -6490,7 +6486,9 @@ async function fetchAllLiveMatches() {
   const all = [];
   for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football], ['FotMob', fotmob]]) {
     if (result.status === 'fulfilled') {
-      console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
+      if (!(name === 'LiveFootball' && !LIVE_FOOTBALL_LIVE_ENABLED)) {
+        console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
+      }
     } else {
       logSourceError(name, 'LIVE', result.reason);
     }
@@ -6564,6 +6562,8 @@ async function fetchAllLiveMatches() {
   }
 
 
+  if (!all.length) console.warn('[Live Discovery] ALL SOURCES EMPTY | check API subscription, JSON structure, and match time');
+  else console.log(`[Live Discovery] ${all.length} source records before dedup | SofaScore ${sofa.status === 'fulfilled' ? sofa.value.length : 0} | FotMob ${fotmob.status === 'fulfilled' ? fotmob.value.length : 0}`);
   return all;
 }
 
