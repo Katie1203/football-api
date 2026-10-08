@@ -5429,7 +5429,13 @@ function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, st
   const spike = detectTenMinuteSpike(previous.alertSnapshot, snapshot);
   if (!spike.confirmed)
     return { send: false, bigBet: false, reason: `NO_NEW_SPIKE ${spike.reason}` };
-  return { send: true, bigBet: current >= BIG_BET_PERCENTAGE, reason: `Đột biến mới | ${spike.reason}` };
+  const previousRule = Number(previous.lastPercentage);
+  if (!Number.isFinite(previousRule))
+    return { send: false, bigBet: false, reason: 'PREVIOUS_RULE_UNAVAILABLE' };
+  const ruleIncrease = current - previousRule;
+  if (ruleIncrease < ALERT_INCREASE_THRESHOLD)
+    return { send: false, bigBet: false, reason: `RULE_INCREASE_LOW +${ruleIncrease.toFixed(2)}% / required +${ALERT_INCREASE_THRESHOLD}% | ${spike.reason}` };
+  return { send: true, bigBet: current >= BIG_BET_PERCENTAGE, reason: `SPIKE_CONFIRMED RULE +${ruleIncrease.toFixed(2)}% | ${spike.reason}` };
 }
 // ==========================================================
 // 36. SCORE HELPERS
@@ -6479,7 +6485,7 @@ async function sendTelegramAlert(
       ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')} | Blocked ${pair('homeBlockedShots','awayBlockedShots')}` : null,
     `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
-    `🔎 Rule Confidence: ${item.ruleConfidence?.label || "Chưa xác định"} (tham khảo)`,
+    `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
   const messageLines = [
@@ -7020,7 +7026,50 @@ async function analyzeOneMatch(
   );
 
 
-  const ruleConfidence = {coverage: getCoreStatsCoverage(stats), total: 5, percent: getCoreStatsCoverage(stats)*20, label: `${getCoreStatsCoverage(stats)}/5 chỉ số`};
+function calculateRuleConfidence(stats, match, minute) {
+  // Independent data-quality score, never used in Rule or Telegram gating.
+  const fields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  const available = field => ['home','away'].every(side =>
+    stats?._present?.[side+field] === true || Number(stats?.[side+field]) > 0);
+  const coverage = fields.filter(available).length;
+  if (!coverage) return {coverage:0,total:5,percent:0,label:'0/5 chỉ số',method:'data-quality-v2'};
+  const valid = key => Number.isFinite(Number(stats?.[key])) && Number(stats[key]) >= 0;
+  const pair = name => ['home','away'].map(side => Number(stats?.[side+name]));
+  let consistency = 100;
+  if (available('TotalShots') && available('ShotsOnTarget')) {
+    const sh = pair('TotalShots'), sot = pair('ShotsOnTarget');
+    if (sot.some((v,i) => v > sh[i])) consistency -= 35;
+  }
+  if (available('Attacks') && available('DangerousAttacks')) {
+    const a = pair('Attacks'), d = pair('DangerousAttacks');
+    if (d.some((v,i) => v > a[i])) consistency -= 25;
+  }
+  if (available('TotalShots') && pair('TotalShots').some(v => v > Math.max(45,Number(minute||90)*0.65))) consistency -= 12;
+  for (const field of fields.filter(available)) {
+    if (['home','away'].some(side => !valid(side+field))) consistency -= 15;
+  }
+  consistency = Math.max(0, consistency);
+  // More distinct matched providers increases evidence strength; never assume that
+  // they agree numerically without field-level provenance.
+  const sources = new Set((match?.crossSourceMatches || [match]).map(m => m?.source).filter(Boolean));
+  const corroboration = sources.size >= 3 ? 100 : sources.size === 2 ? 80 : 55;
+  const shotQuality = available('TotalShots') && available('ShotsOnTarget') ? 100 :
+    available('TotalShots') || available('ShotsOnTarget') ? 60 : 25;
+  const percent = Math.max(0,Math.min(100,Math.round(
+    (coverage/5*100)*0.45 + consistency*0.25 + corroboration*0.15 + shotQuality*0.15
+  )));
+  return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,method:'data-quality-v2'};
+}
+
+  const ruleConfidence = calculateRuleConfidence(stats, match, minute);
+  // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
+  const followupState = alertState.get(alertKey);
+  const decisionReason = String(alertDecision.reason || 'UNKNOWN');
+  const monitoring = !alertDecision.send && followupState &&
+    (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
+     decisionReason.startsWith('RULE_INCREASE_LOW'));
+  const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
+  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | Rule ${ai.efficiency}% | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
   const result = {
 
     ...match,
