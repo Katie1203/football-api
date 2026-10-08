@@ -4871,13 +4871,14 @@ function evaluateMatchDynamicAI(
 
     cornerScore * 0.06 +
 
-    oddsScore * 0.07 +
-
     cardScore * 0.02 +
 
     scoreState * 0.01 +
 
     timeScore * 0.01;
+
+  // Odds chi de tham khao; chuan hoa 93% trong so con lai ve 100%.
+  finalScore /= 0.93;
 
 
   // ======================================================
@@ -4986,8 +4987,7 @@ function evaluateMatchDynamicAI(
     oddsAnalysis.score >= 85
   ) {
 
-    finalScore += 2;
-
+    // Odds chỉ tham khảo; không cộng điểm Rule.
     notes.push(
       '💰 Kèo Over đang mạnh'
     );
@@ -5206,140 +5206,61 @@ function hasStrongLiveMovement(momentum) {
 }
 
 
-function shouldSendAlert(
-  matchId,
-  currentPercentage,
-  currentMinute,
-  momentum
-) {
-
-  const current =
-    safeNumber(
-      currentPercentage
-    );
-
-  if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE) {
-    return { send: false, bigBet: false, reason: `BEFORE_65 (${currentMinute}')` };
-  }
-
-
-  if (
-    current <
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Rule ${current}% < ${MIN_SEND_PERCENTAGE}%`
-    };
-  }
-
-
-  const previous =
-    alertState.get(
-      matchId
-    );
-
-
-  const strongMovement =
-    hasStrongLiveMovement(
-      momentum
-    );
-
-
-  const bigBetConfirmed =
-    current >= BIG_BET_PERCENTAGE &&
-    strongMovement;
-
-
-  // Lần 1: Rule >= 60% là được nhận định/cảnh báo.
-  // BIG BET chỉ bật khi Rule >= 75% + biến động live đủ mạnh.
-  if (!previous) {
-
-    return {
-      send: true,
-      bigBet: bigBetConfirmed,
-      reason:
-        bigBetConfirmed
-          ? `Rule ${current}% + biến động live mạnh`
-          : 'Cảnh báo đầu tiên'
-    };
-  }
-
-
-  // Tối đa 3 cảnh báo / trận.
-  if (
-    previous.alertCount >=
-    MAX_ALERTS_PER_MATCH
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Đã đạt tối đa ${MAX_ALERTS_PER_MATCH} cảnh báo`
-    };
-  }
-
-
-  const minuteGap =
-    currentMinute -
-    previous.lastMinute;
-
-
-  if (
-    minuteGap <
-    MIN_ALERT_GAP_MINUTES
-  ) {
-
-    return {
-      send: false,
-      bigBet: false,
-      reason:
-        `Mới cảnh báo ${minuteGap} phút trước`
-    };
-  }
-
-
-  if (minuteGap > FOLLOWUP_WINDOW_MINUTES) {
-    return { send: false, bigBet: false, reason: `WINDOW_EXPIRED (${minuteGap} phút)` };
-  }
-
-  const increase =
-    current -
-    previous.lastPercentage;
-
-
-  // Lần 2 / 3: gửi lại khi Rule tăng mạnh HOẶC live có biến động mạnh.
-  // Nếu Rule >=75% nhưng không có biến động => tuyệt đối KHÔNG gắn BIG BET.
-  if (
-    increase >= ALERT_INCREASE_THRESHOLD ||
-    strongMovement
-  ) {
-
-    return {
-      send: true,
-      bigBet: bigBetConfirmed,
-      reason:
-        bigBetConfirmed
-          ? `BIG BET xác nhận: Rule ${current}% + biến động live mạnh`
-          : strongMovement
-            ? `Biến động live mạnh | Rule ${current}%`
-            : `Rule tăng +${increase.toFixed(1)}%`
-    };
-  }
-
-
+// Snapshot mốc chỉ được ghi sau khi Telegram xác nhận gửi thành công.
+function makeMatchSnapshot(stats, minute, homeScore, awayScore) {
   return {
-    send: false,
-    bigBet: false,
-    reason:
-      current >= BIG_BET_PERCENTAGE
-        ? `Rule ${current}% nhưng chưa có biến động live xác nhận BIG BET`
-        : `Rule chỉ tăng ${increase >= 0 ? '+' : ''}${increase.toFixed(1)}%, chưa có biến động mạnh`
+    ...createSnapshot(stats || createEmptyStats(), minute),
+    homeTotalShots: safeNumber(stats?.homeTotalShots),
+    awayTotalShots: safeNumber(stats?.awayTotalShots),
+    homeScore: safeNumber(homeScore),
+    awayScore: safeNumber(awayScore)
   };
+}
+
+// Kiểm tra biến động MỚI kể từ cảnh báo gần nhất, không dùng momentum cũ.
+function detectTenMinuteSpike(previous, current) {
+  if (!previous || !current) return { confirmed: false, reason: 'NO_SNAPSHOT' };
+  const delta = (home, away) => {
+    const h = safeNumber(current[home]) - safeNumber(previous[home]);
+    const a = safeNumber(current[away]) - safeNumber(previous[away]);
+    // Dữ liệu bị reset/thiếu: không xem như một đột biến.
+    return h < 0 || a < 0 ? null : h + a;
+  };
+  const sot = delta('homeShotsOnTarget', 'awayShotsOnTarget');
+  const shots = delta('homeTotalShots', 'awayTotalShots');
+  const dangerous = delta('homeDangerousAttacks', 'awayDangerousAttacks');
+  const attacks = delta('homeAttacks', 'awayAttacks');
+  const blocked = delta('homeBlockedShots', 'awayBlockedShots');
+  const corners = delta('homeCorners', 'awayCorners');
+  const confirmed = (sot !== null && sot >= 2) ||
+    (dangerous !== null && dangerous >= 9) ||
+    (attacks !== null && attacks >= 25) ||
+    (blocked !== null && blocked >= 2) ||
+    (corners !== null && corners >= 2) ||
+    (shots !== null && shots >= 4 && sot !== null && sot >= 1);
+  return { confirmed, reason: `NEW_SOT=${sot ?? 'NA'} SH=${shots ?? 'NA'} DA=${dangerous ?? 'NA'} ATT=${attacks ?? 'NA'} BLK=${blocked ?? 'NA'} COR=${corners ?? 'NA'}` };
+}
+
+function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
+  const current = safeNumber(currentPercentage);
+  if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute > 92)
+    return { send: false, bigBet: false, reason: 'OUTSIDE_ALERT_MINUTES' };
+  if (current < MIN_SEND_PERCENTAGE)
+    return { send: false, bigBet: false, reason: `Rule ${current}% < ${MIN_SEND_PERCENTAGE}%` };
+  const previous = alertState.get(matchId);
+  if (!previous) return { send: true, bigBet: false, reason: 'Cảnh báo đầu tiên' };
+  if (previous.alertCount >= MAX_ALERTS_PER_MATCH)
+    return { send: false, bigBet: false, reason: 'MAX_3_ALERTS' };
+  const minuteGap = currentMinute - previous.lastMinute;
+  if (minuteGap < MIN_ALERT_GAP_MINUTES)
+    return { send: false, bigBet: false, reason: `WAIT_${minuteGap}_MIN` };
+  if (minuteGap > FOLLOWUP_WINDOW_MINUTES)
+    return { send: false, bigBet: false, reason: `WINDOW_EXPIRED_${minuteGap}_MIN` };
+  const snapshot = makeMatchSnapshot(stats, currentMinute, homeScore, awayScore);
+  const spike = detectTenMinuteSpike(previous.alertSnapshot, snapshot);
+  if (!spike.confirmed)
+    return { send: false, bigBet: false, reason: `NO_NEW_SPIKE ${spike.reason}` };
+  return { send: true, bigBet: current >= BIG_BET_PERCENTAGE, reason: `Đột biến mới | ${spike.reason}` };
 }
 // ==========================================================
 // 36. SCORE HELPERS
@@ -6062,9 +5983,13 @@ function extractGoalTimeline(
   }
 
 
-  return [
-    ...new Set(goals)
-  ].join(' | ');
+  return [...new Set(goals)].sort((a, b) => {
+    const minute = text => {
+      const m = text.match(/^P(\d+)(?:\+(\d+))?/);
+      return m ? Number(m[1]) + Number(m[2] || 0) / 100 : Infinity;
+    };
+    return minute(a) - minute(b);
+  }).join(' | ');
 }
 
 // ==========================================================
@@ -6129,8 +6054,7 @@ async function sendTelegramAlert(
       : 1;
 
 
-  const isBigBet =
-    alertDecision?.bigBet === true;
+  const isBigBet = alertNumber >= 2 && percentage >= BIG_BET_PERCENTAGE && alertDecision?.bigBet === true;
 
 
   let title =
@@ -6197,25 +6121,33 @@ async function sendTelegramAlert(
     Number.isFinite(Number(prediction.homeShare)) && Number.isFinite(Number(prediction.awayShare))
       ? `📊 Sức ép ${prediction.homeShare}%–${prediction.awayShare}%`
       : null;
+  // CLEAN L18: hiển thị Odds tham khảo, không ảnh hưởng Rule.
+  const odd = item.odds || {};
+  const bookmaker = odd.bookmaker || odd.bookmakerName || 'Nguồn tổng hợp';
+  const oddLine = odd.found && Number(odd.price) > 1
+    ? `💰 Kèo nhà cái (${cleanTelegramText(bookmaker)}): Odds Over ${Number(odd.price).toFixed(2)} — chỉ tham khảo, KHÔNG cộng Rule`
+    : null;
+  const oddNote = oddLine ? ` └─> Odds Over ${Number(odd.price) <= 1.85 ? 'ổn định' : 'tham khảo'} (${Number(odd.price).toFixed(2)})` : null;
+  const compactStats = [
+    (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
+      ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
+    (hasPair('homeTotalShots','awayTotalShots') || hasPair('homeShotsOnTarget','awayShotsOnTarget'))
+      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')} | Blocked ${pair('homeBlockedShots','awayBlockedShots')}` : null,
+    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
+    `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
+    `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
+  ];
   const messageLines = [
     `${title} | #${alertNumber}`,
-    `🏆 ${cleanTelegramText(item.league)}`,
-    `⚔️ ${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)} | ${item.minute}'`,
-    '',
-    '📊 LIVE',
-    ...(statLines.length ? statLines : ['Chưa có thống kê xác nhận']),
-    pressureText,
-    ...(changes.length ? ['', `⚡ ${momentum.minuteGap || 7} phút: ${changes.join(' | ')}`] : []),
-    momentum?.available && momentum.text ? `📈 ${momentum.text} (${momentum.score}%)` : null,
-    '',
-    `📈 AI RULE: ${percentage.toFixed(1)}%${item.ai.level ? ` | ${item.ai.level}` : ''}`,
-    prediction.text ? `🔮 FT: ${prediction.text}` : null,
-    prediction.expectedExtraGoals !== undefined ? `⚽ Bàn còn lại: +${prediction.expectedExtraGoals}` : null,
-    prediction.likelyScorer ? `🎯 Có thể ghi bàn: ${prediction.likelyScorer}` : null,
-    prediction.confidence ? `💡 Độ mạnh: ${prediction.confidence}` : null,
+    `🏆 Giải đấu: ${cleanTelegramText(item.league)}`,
+    `⚽ Trận: ${cleanTelegramText(item.homeName)} vs ${cleanTelegramText(item.awayName)}`,
+    `⏱ Phút: ${item.minute}' | Tỷ số: ${item.homeScore}-${item.awayScore}`,
     item.goalTimeline && item.goalTimeline !== 'Không có dữ liệu' && item.goalTimeline !== 'Chưa lấy được dữ liệu'
-      ? `⚽ Bàn thắng: ${item.goalTimeline}` : null,
-    alertDecision?.reason ? `📌 ${alertDecision.reason}` : null
+      ? `⚽ BÀN THẮNG: ${item.goalTimeline}` : null,
+    '',
+    ...compactStats,
+    ...(changes.length ? [`⚡ Biến động ${momentum.minuteGap || 7}p: ${changes.join(' | ')}`] : []),
+    '', oddLine, oddNote
   ];
   const message = messageLines.filter(line => line !== null && line !== undefined).join('\n').trim();
 
@@ -6263,6 +6195,7 @@ async function sendTelegramAlert(
           (previous?.bigBetSent || false) ||
           isBigBet,
 
+        alertSnapshot: makeMatchSnapshot(item.stats, item.minute, item.homeScore, item.awayScore),
         updatedAt:
           Date.now()
       }
@@ -6271,6 +6204,16 @@ async function sendTelegramAlert(
 
     console.log(
       `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}%`
+    );
+
+    // Log xác nhận chỉ xuất hiện SAU KHI Telegram trả về ok/message_id
+    // và snapshot cảnh báo đã được lưu thành công.
+    console.log(
+      `🟢 [ĐÃ BÁO TELEGRAM] ${isBigBet ? '🔥 BIG BET' : '🔔 CẢNH BÁO'} LẦN ${alertNumber}/${MAX_ALERTS_PER_MATCH}` +
+      ` | ${item.homeName} vs ${item.awayName}` +
+      ` | Phút ${item.minute}' | Tỷ số ${item.homeScore}-${item.awayScore}` +
+      ` | Rule ${percentage.toFixed(1)}%` +
+      ` | message_id=${response.data.result.message_id}`
     );
 
 
@@ -6589,6 +6532,12 @@ async function analyzeOneMatch(
       minute
     );
 
+  // Giai đoạn 46–64: chỉ thu thập dữ liệu và cập nhật Momentum.
+  // Quyết định gửi Telegram chỉ được thực hiện từ phút 65.
+  if (minute < MIN_TELEGRAM_MINUTE) {
+    console.log(`[COLLECT 46-64] ${match.homeName} vs ${match.awayName} | ${minute}' | Momentum=${momentum?.available ? momentum.score : 'N/A'} | NO TELEGRAM`);
+  }
+
 
   // ======================================================
   // ODDS
@@ -6662,7 +6611,10 @@ async function analyzeOneMatch(
       alertKey,
       ai.efficiency,
       minute,
-      momentum
+      momentum,
+      stats,
+      match.homeScore,
+      match.awayScore
     );
 
 
