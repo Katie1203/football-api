@@ -22,7 +22,71 @@ function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
 function setup(app){app.get('/dashboard',requireAuth,(req,res)=>res.sendFile(path.join(__dirname,'dashboard.html')));app.get('/api/audit',requireAuth,async(req,res)=>{try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);res.json({ok:true,summary:total,byAlert:[1,2,3].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data.slice(0,500)});}catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/settle',requireAuth,async(req,res)=>{try{const {matchKey,ftHome,ftAway}=req.body||{};if(typeof matchKey!=='string'||!matchKey)return res.status(400).json({error:'matchKey required'});const count=await settleMatch(matchKey,Number(ftHome),Number(ftAway));res.json({ok:true,updated:count});}catch(e){res.status(400).json({ok:false,error:e.message});}});}
-// Reconcile pending SofaScore matches using authoritative finished status and final scores.
+// FT reconciliation: retry a small set of provider routes; never settle unless FT is confirmed.
+// Optional: set SOFASCORE_FT_URL_TEMPLATE to the exact endpoint documented by your RapidAPI provider.
+// Use {id} as the event ID placeholder. Do not put API keys in this variable.
 let checking=false;
-async function reconcile(){if(checking)return;checking=true;try{await init();const pending=[...new Map(records.filter(r=>r.ftHome==null&&r.source==='sofascore'&&/^\d+$/.test(r.sourceId)).map(r=>[r.matchKey,r])).values()].slice(0,25);for(const r of pending){try{const host='sofascore.p.rapidapi.com',key=process.env.RAPIDAPI_KEY;if(!key)break;const {data}=await axios.get(`https://${host}/events/get-event?eventId=${encodeURIComponent(r.sourceId)}`,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':host},timeout:7000});const event=data?.event||data;const status=String(event?.status?.type||event?.status?.description||'').toLowerCase();if(!['finished','ended','ft','afterpenalties'].includes(status))continue;const h=safeNum(event?.homeScore?.current),a=safeNum(event?.awayScore?.current);if(Number.isInteger(h)&&Number.isInteger(a)){await settleMatch(r.matchKey,h,a);console.log(`[AUDIT FT] ${r.home} ${h}-${a} ${r.away}`);}}catch(e){console.warn('[AUDIT FT] provider:',e.response?.status||e.message);}}}catch(e){console.error('[AUDIT]',e.message);}finally{checking=false;}}
+const unavailableRoutes=new Set();
+const nextCheckAt=new Map();
+const FT_RETRY_MS=15*60*1000;
+function ftRoutes(id){
+  const encoded=encodeURIComponent(id);
+  const configured=process.env.SOFASCORE_FT_URL_TEMPLATE;
+  const candidates=[];
+  if(configured && configured.includes('{id}')) candidates.push(configured.replaceAll('{id}',encoded));
+  candidates.push(`https://sofascore.p.rapidapi.com/matches/get-event?eventId=${encoded}`);
+  candidates.push(`https://sofascore.p.rapidapi.com/events/get-event?eventId=${encoded}`);
+  return [...new Set(candidates)];
+}
+function extractFinalScore(data){
+  const event=data?.event||data?.data?.event||data?.data||data;
+  const status=String(event?.status?.type||event?.status?.description||event?.status?.name||event?.match_status||'').toLowerCase().replace(/[\s_-]+/g,'');
+  const finalStatuses=new Set(['finished','ended','ft','fulltime','afterpenalties','afterextratime','aet']);
+  if(!finalStatuses.has(status))return null;
+  const home=event?.homeScore?.current??event?.homeScore?.display??event?.home_score??event?.scores?.home;
+  const away=event?.awayScore?.current??event?.awayScore?.display??event?.away_score??event?.scores?.away;
+  if(home==null||away==null)return null;
+  const h=Number(home),a=Number(away);
+  return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
+}
+async function reconcile(){
+  if(checking)return;
+  checking=true;
+  try{
+    await init();
+    const key=process.env.RAPIDAPI_KEY?.trim();
+    if(!key){console.warn('[AUDIT FT] RAPIDAPI_KEY missing');return;}
+    const pending=[...new Map(records.filter(r=>r.ftHome==null&&r.source==='sofascore'&&/^\d+$/.test(String(r.sourceId))).map(r=>[r.matchKey,r])).values()].slice(0,25);
+    let checked=0, settled=0, failures=0;
+    for(const r of pending){
+      if((nextCheckAt.get(r.matchKey)||0)>Date.now())continue;
+      nextCheckAt.set(r.matchKey,Date.now()+FT_RETRY_MS);
+      checked++;
+      let found=false;
+      for(const url of ftRoutes(r.sourceId)){
+        const route=url.replace(/([?&]eventId=)[^&]+/,'$1{id}');
+        if(unavailableRoutes.has(route))continue;
+        try{
+          const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':'sofascore.p.rapidapi.com'},timeout:7000});
+          const score=extractFinalScore(data);
+          if(score){const n=await settleMatch(r.matchKey,score.h,score.a);settled+=n;console.log(`[AUDIT FT] SETTLED ${r.home} ${score.h}-${score.a} ${r.away} | records=${n}`);found=true;break;}
+          // A successful response without FT is not an endpoint failure.
+          found=true;break;
+        }catch(e){
+          const status=e.response?.status;
+          if(status===404){unavailableRoutes.add(route);console.warn(`[AUDIT FT] endpoint 404: ${route}`);continue;}
+          failures++;
+          console.warn(`[AUDIT FT] provider HTTP ${status||'NETWORK'} | ${r.home} vs ${r.away} | ${String(e.message).slice(0,90)}`);
+          if(status===401||status===403||status===429)break;
+        }
+      }
+      if(!found && unavailableRoutes.size>=ftRoutes(r.sourceId).length){
+        console.warn('[AUDIT FT] All configured SofaScore FT endpoints returned 404; verify route in RapidAPI documentation.');
+        break;
+      }
+    }
+    if(checked)console.log(`[AUDIT FT] checked=${checked} settled_records=${settled} failures=${failures}`);
+  }catch(e){console.error('[AUDIT FT]',e.message);}
+  finally{checking=false;}
+}
 module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults};
