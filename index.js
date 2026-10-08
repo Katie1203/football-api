@@ -6158,100 +6158,66 @@ async function sendTelegramAlert(
     item.scorePrediction;
 
 
-  const statsText =
-    formatStatsText(
-      item.stats
-    );
-
-
-  const momentumText =
-    formatMomentumText(
-      item.momentum
-    );
-
-
-  const oddsText =
-    item.odds?.text ||
-    '💰 Không có dữ liệu kèo';
-
-
-  const goalTimeline =
-    item.goalTimeline ||
-    'Không có dữ liệu';
-
-
-  const message = `
-${title}
-
-🏆 GIẢI ĐẤU:
-${cleanTelegramText(item.league)}
-
-⚔️ TRẬN ĐẤU:
-${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)}
-
-⏱ PHÚT:
-${item.minute}'
-
-━━━━━━━━━━━━━━━━━━
-
-📊 THỐNG KÊ LIVE
-
-${statsText}
-
-━━━━━━━━━━━━━━━━━━
-
-${momentumText}
-
-━━━━━━━━━━━━━━━━━━
-
-💰 KÈO NHÀ CÁI
-
-${oddsText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 PHÂN TÍCH RULE
-
-${item.ai.detailText}
-
-━━━━━━━━━━━━━━━━━━
-
-📈 AI GOAL SCORE:
-${percentage.toFixed(1)}%
-
-${item.ai.level}
-
-🎯 NHẬN ĐỊNH:
-Khả năng xuất hiện THÊM BÀN THẮNG
-
-━━━━━━━━━━━━━━━━━━
-
-🔮 DỰ ĐOÁN TỶ SỐ FT:
-${scorePrediction.text}
-
-⚽ Dự kiến bàn còn lại:
-+${scorePrediction.expectedExtraGoals}
-
-🎯 Đội có khả năng ghi bàn:
-${scorePrediction.likelyScorer}
-
-📊 Sức ép:
-Chủ nhà ${scorePrediction.homeShare}% - ${scorePrediction.awayShare}% Đội khách
-
-🔮 Độ mạnh dự đoán:
-${scorePrediction.confidence}
-
-━━━━━━━━━━━━━━━━━━
-
-⚽ DIỄN BIẾN BÀN THẮNG: ${goalTimeline}
-
-━━━━━━━━━━━━━━━━━━
-
-🚨 CẢNH BÁO #${alertNumber}
-
-📌 ${alertDecision.reason}
-`.trim();
-
+  // Telegram COMPACT: chỉ thay đổi phần hiển thị, không đổi AI/điều kiện gửi.
+  const st = item.stats || {};
+  const pair = (home, away) => `${safeNumber(st[home])}-${safeNumber(st[away])}`;
+  const hasPair = (home, away) =>
+    safeNumber(st[home]) > 0 || safeNumber(st[away]) > 0;
+  const statLines = [];
+  if (hasPair('homeTotalShots', 'awayTotalShots') || hasPair('homeShotsOnTarget', 'awayShotsOnTarget')) {
+    const parts = [];
+    if (hasPair('homeTotalShots', 'awayTotalShots')) parts.push(`Sút ${pair('homeTotalShots', 'awayTotalShots')}`);
+    if (hasPair('homeShotsOnTarget', 'awayShotsOnTarget')) parts.push(`SOT ${pair('homeShotsOnTarget', 'awayShotsOnTarget')}`);
+    statLines.push(`🎯 ${parts.join(' | ')}`);
+  }
+  if (hasPair('homeAttacks', 'awayAttacks') || hasPair('homeDangerousAttacks', 'awayDangerousAttacks')) {
+    const parts = [];
+    if (hasPair('homeAttacks', 'awayAttacks')) parts.push(`ATT ${pair('homeAttacks', 'awayAttacks')}`);
+    if (hasPair('homeDangerousAttacks', 'awayDangerousAttacks')) parts.push(`DA ${pair('homeDangerousAttacks', 'awayDangerousAttacks')}`);
+    statLines.push(`🔥 ${parts.join(' | ')}`);
+  }
+  if (hasPair('homeCorners', 'awayCorners')) statLines.push(`🚩 Góc ${pair('homeCorners', 'awayCorners')}`);
+  if (hasPair('homePossession', 'awayPossession')) statLines.push(`📊 Kiểm soát ${pair('homePossession', 'awayPossession')}%`);
+  if (hasPair('homeRedCards', 'awayRedCards')) statLines.push(`🟥 Thẻ đỏ ${pair('homeRedCards', 'awayRedCards')}`);
+  const momentum = item.momentum;
+  const changes = [];
+  if (momentum?.available) {
+    const addChange = (label, home, away) => {
+      const h = safeNumber(momentum[home]);
+      const a = safeNumber(momentum[away]);
+      if (h > 0 || a > 0) changes.push(`${label} +${h}/+${a}`);
+    };
+    addChange('ATT', 'homeAttack', 'awayAttack');
+    addChange('DA', 'homeDangerous', 'awayDangerous');
+    addChange('SOT', 'homeSOT', 'awaySOT');
+    addChange('Góc', 'homeCorners', 'awayCorners');
+  }
+  const prediction = item.scorePrediction || {};
+  const pressureText =
+    Number.isFinite(Number(prediction.homeShare)) && Number.isFinite(Number(prediction.awayShare))
+      ? `📊 Sức ép ${prediction.homeShare}%–${prediction.awayShare}%`
+      : null;
+  const messageLines = [
+    `${title} | #${alertNumber}`,
+    `🏆 ${cleanTelegramText(item.league)}`,
+    `⚔️ ${cleanTelegramText(item.homeName)} ${item.homeScore}-${item.awayScore} ${cleanTelegramText(item.awayName)} | ${item.minute}'`,
+    '',
+    '📊 LIVE',
+    ...(statLines.length ? statLines : ['Chưa có thống kê xác nhận']),
+    pressureText,
+    ...(changes.length ? ['', `⚡ ${momentum.minuteGap || 7} phút: ${changes.join(' | ')}`] : []),
+    momentum?.available && momentum.text ? `📈 ${momentum.text} (${momentum.score}%)` : null,
+    '',
+    `📈 AI RULE: ${percentage.toFixed(1)}%${item.ai.level ? ` | ${item.ai.level}` : ''}`,
+    prediction.text ? `🔮 FT: ${prediction.text}` : null,
+    prediction.expectedExtraGoals !== undefined ? `⚽ Bàn còn lại: +${prediction.expectedExtraGoals}` : null,
+    prediction.likelyScorer ? `🎯 Có thể ghi bàn: ${prediction.likelyScorer}` : null,
+    prediction.confidence ? `💡 Độ mạnh: ${prediction.confidence}` : null,
+    item.goalTimeline && item.goalTimeline !== 'Không có dữ liệu' && item.goalTimeline !== 'Chưa lấy được dữ liệu'
+      ? `⚽ Bàn thắng: ${item.goalTimeline}` : null,
+    alertDecision?.reason ? `📌 ${alertDecision.reason}` : null
+  ];
+  const message = messageLines.filter(line => line !== null && line !== undefined).join('\n').trim();
 
   try {
 
