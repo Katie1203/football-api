@@ -44,6 +44,69 @@ const ODDS_MAX_SPORTS = Math.max(1, Math.min(40, Number(process.env.ODDS_MAX_SPO
 const ODDS_SPORT_KEYS = (process.env.ODDS_SPORT_KEYS || '').split(',').map(x => x.trim()).filter(Boolean);
 let oddsSportsCache = {time: 0, keys: []};
 
+// API-Football direct provider (not RapidAPI). Set APISPORTS_KEY in Render.
+const APISPORTS_KEY = (process.env.APISPORTS_KEY || '').trim();
+const APISPORTS_URL = 'https://v3.football.api-sports.io';
+async function apiSportsGet(path, params) {
+  if (!APISPORTS_KEY) return null;
+  const {data} = await axios.get(`${APISPORTS_URL}${path}`, {
+    params, headers: {'x-apisports-key': APISPORTS_KEY}, timeout: 11000
+  });
+  if (data?.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length))
+    throw new Error(`API-Sports error: ${JSON.stringify(data.errors).slice(0,180)}`);
+  return data;
+}
+async function fetchApiSportsLive() {
+  if (!APISPORTS_KEY) return [];
+  try {
+    const data = await apiSportsGet('/fixtures', {live:'all'});
+    const rows = Array.isArray(data?.response) ? data.response : [];
+    console.log(`[Source API-Football] LIVE ${rows.length} trận`);
+    return rows.filter(x => x?.fixture?.id && x?.teams?.home?.name && x?.teams?.away?.name);
+  } catch(e) { logSourceError('API-Football','LIVE',e); return []; }
+}
+function formatApiSportsMatch(raw) {
+  return {
+    id:String(raw.fixture.id), source:'apisports',
+    homeName:raw.teams.home.name, awayName:raw.teams.away.name,
+    homeScore:raw.goals?.home ?? 0, awayScore:raw.goals?.away ?? 0,
+    league:parseLeagueName({league:raw.league}),
+    minute:raw.fixture.status?.elapsed,
+    raw:{...raw, minute:raw.fixture.status?.elapsed,
+      status:{type:raw.fixture.status?.short, minute:raw.fixture.status?.elapsed},
+      _apiSportsStatus:raw.fixture.status?.short,
+      _apiSportsEvents:raw.events, events:raw.events}
+  };
+}
+const apiSportsStatsCache = new Map();
+async function fetchApiSportsStats(id) {
+  const result = createEmptyStats();
+  if (!APISPORTS_KEY || !id) return result;
+  const cached = apiSportsStatsCache.get(String(id));
+  if (cached && Date.now()-cached.time < 90000) return cached.data;
+  try {
+    const data = await apiSportsGet('/fixtures/statistics',{fixture:id});
+    const teams = data?.response;
+    if (!Array.isArray(teams) || teams.length !== 2) return result;
+    const fieldMap = {'Shots on Goal':'ShotsOnTarget','Total Shots':'TotalShots',
+      'Corner Kicks':'Corners','Ball Possession':'Possession',
+      'Red Cards':'RedCards','Yellow Cards':'YellowCards',
+      'Shots off Goal':'ShotsOffTarget','Blocked Shots':'BlockedShots',
+      'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves'};
+    for (let side=0;side<2;side++) {
+      for (const row of teams[side].statistics || []) {
+        const suffix=fieldMap[row.type];
+        if (!suffix || row.value === null || row.value === undefined || row.value === '') continue;
+        const n=Number(String(row.value).replace('%','').trim());
+        if (Number.isFinite(n) && n>=0) result[`${side===0?'home':'away'}${suffix}`]=n;
+      }
+    }
+    result.hasData=Array.isArray(teams[0].statistics) && teams[0].statistics.length>0;
+    result.source='apisports';
+    apiSportsStatsCache.set(String(id),{time:Date.now(),data:result});
+    return result;
+  } catch(e) { logSourceError('API-Football','STATS',e); return result; }
+}
 // ==========================================================
 // 2. ALERT / CACHE CONFIG
 // ==========================================================
@@ -80,6 +143,23 @@ const SCAN_INTERVAL_MS =
 
 
 const alertState = new Map();
+const sendingKeys = new Set();
+let auditHydrated = false;
+async function hydrateAlertState() {
+  if (auditHydrated) return;
+  const rows = await audit.getAlertStates();
+  for (const r of rows) {
+    if (alertState.has(r.matchKey)) continue;
+    alertState.set(r.matchKey, {
+      alertCount:Number(r.alertNumber), lastPercentage:Number(r.rule)||0,
+      lastMinute:Number(r.minute)||0, bigBetSent:r.alertType==='BIG BET',
+      alertSnapshot:null, updatedAt:Date.now()
+    });
+  }
+  auditHydrated = true;
+  console.log(`[Telegram] Restored ${rows.length} prior match alert states from audit`);
+}
+
 
 const statsCache = new Map();
 
@@ -649,6 +729,11 @@ function calculateExactMinute(item) {
 
   if (!item) {
     return 0;
+  }
+  if (item._apiSportsStatus) {
+    if (['FT','AET','PEN','CANC','PST','ABD'].includes(item._apiSportsStatus)) return 999;
+    if (item._apiSportsStatus === 'HT') return 'HT';
+    return parseMinuteValue(item.minute) || 0;
   }
 
 
@@ -2687,6 +2772,7 @@ async function fetchStatsForSourceMatch(sourceMatch) {
   if (sourceMatch.source === 'fotmob') {
     return fetchFotMobStats(sourceMatch.id);
   }
+  if (sourceMatch.source === 'apisports') return fetchApiSportsStats(sourceMatch.id);
 
   return createEmptyStats();
 }
@@ -2744,7 +2830,7 @@ async function fetchMatchDetailStats(
     sofascore: 3,
     'live-football': 2,
     fotmob: 1,
-    flashscore: 0
+    flashscore: 0, apisports: -1
   };
 
   const orderedSources = [...sourceMatches].sort(
@@ -2768,6 +2854,12 @@ async function fetchMatchDetailStats(
     }
   }
 
+
+  // API-Football is final fallback when fewer than 5 core indicators are available.
+  if (getCoreStatsCoverage(stats) < 5) {
+    const apiMatch = sourceMatches.find(x => x.source === 'apisports');
+    if (apiMatch) mergeMissingStats(stats, await fetchApiSportsStats(apiMatch.id));
+  }
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
   if (stats.homeTotalShots <= 0) {
@@ -5346,6 +5438,7 @@ function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, st
     return { send: false, bigBet: false, reason: `WAIT_${minuteGap}_MIN` };
   if (minuteGap > FOLLOWUP_WINDOW_MINUTES)
     return { send: false, bigBet: false, reason: `WINDOW_EXPIRED_${minuteGap}_MIN` };
+  if (!previous.alertSnapshot) return {send:false,bigBet:false,reason:'RESTART_SNAPSHOT_UNAVAILABLE'};
   const snapshot = makeMatchSnapshot(stats, currentMinute, homeScore, awayScore);
   const spike = detectTenMinuteSpike(previous.alertSnapshot, snapshot);
   if (!spike.confirmed)
@@ -6245,6 +6338,8 @@ async function sendTelegramAlert(
   }
 
 
+  if (sendingKeys.has(item.alertKey)) return false;
+  sendingKeys.add(item.alertKey);
   const percentage =
     safeNumber(
       item.ai.efficiency
@@ -6428,6 +6523,8 @@ async function sendTelegramAlert(
     );
 
     return false;
+  } finally {
+    sendingKeys.delete(item.alertKey);
   }
 }
 
@@ -6442,7 +6539,8 @@ async function fetchAllLiveMatches() {
     sofa,
     flash,
     football,
-    fotmob
+    fotmob,
+    apisports
   ] = await Promise.allSettled([
 
     fetchLiveMatchesFromSofaScore(),
@@ -6450,7 +6548,8 @@ async function fetchAllLiveMatches() {
     fetchLiveMatchesFromFlashScore(),
 
     fetchLiveMatchesFromLiveFootball(),
-    fetchLiveMatchesFromFotMob()
+    fetchLiveMatchesFromFotMob(),
+    fetchApiSportsLive()
 
   ]);
 
@@ -6532,6 +6631,9 @@ async function fetchAllLiveMatches() {
       all.push(formatFotMobLiveMatch(raw));
     }
   }
+  if (apisports.status === 'fulfilled') {
+    for (const raw of apisports.value) all.push(formatApiSportsMatch(raw));
+  } else logSourceError('API-Football','LIVE',apisports.reason);
 
 
   if (!all.length) console.warn('[Live Discovery] ALL SOURCES EMPTY | check API subscription, JSON structure, and match time');
@@ -6588,7 +6690,7 @@ function resolverSameMatch(a, b) {
   return true;
 }
 function deduplicateMatches(matches) {
-  const SOURCE_PRIORITY = { sofascore: 3, 'live-football': 2, fotmob: 1, flashscore: 0 };
+  const SOURCE_PRIORITY = { sofascore: 4, 'live-football': 3, fotmob: 2, flashscore: 1, apisports: 0 };
   const groups = [];
   for (const match of matches) {
     if (!match || !match.homeName || !match.awayName) continue;
@@ -6943,6 +7045,7 @@ async function scanLiveMatches() {
 
   try {
 
+    await hydrateAlertState();
     cleanupState();
 
 

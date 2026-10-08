@@ -62,20 +62,45 @@ async function fetchFotmobFT(id,key){
   return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
  }catch(e){console.warn(`[AUDIT FT] FotMob id=${id} HTTP ${e.response?.status||e.message}`);return null;}
 }
+async function getAlertStates(){
+ await init();
+ const byMatch=new Map();
+ for(const r of records){
+  if(!r.matchKey || !Number.isInteger(Number(r.alertNumber))) continue;
+  const prev=byMatch.get(r.matchKey);
+  if(!prev || Number(r.alertNumber)>Number(prev.alertNumber)) byMatch.set(r.matchKey,r);
+ }
+ return [...byMatch.values()];
+}
+async function fetchApiSportsFT(id){
+ const key=(process.env.APISPORTS_KEY||'').trim();
+ if(!key || !/^\d+$/.test(String(id||'')))return null;
+ try{
+  const {data}=await axios.get('https://v3.football.api-sports.io/fixtures',{
+   params:{id},headers:{'x-apisports-key':key},timeout:9000
+  });
+  const row=data?.response?.[0];
+  if(!row || !['FT','AET','PEN'].includes(row.fixture?.status?.short))return null;
+  // Football 90-minute markets should settle at regulation score when available.
+  const score=row.score?.fulltime;
+  const h=safeNum(score?.home),a=safeNum(score?.away);
+  return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
+ }catch(e){console.warn(`[AUDIT FT] API-Football id=${id} HTTP ${e.response?.status||e.message}`);return null;}
+}
 async function reconcile(){
  if(checking)return;checking=true;
- try{await init();const key=process.env.RAPIDAPI_KEY;if(!key)return;
+ try{await init();const key=process.env.RAPIDAPI_KEY;if(!key && !process.env.APISPORTS_KEY)return;
   const now=Date.now();const pending=[...new Map(records.filter(r=>r.ftHome==null).map(r=>[r.matchKey,r])).values()]
    .filter(r=>now-(lastFTCheck.get(r.matchKey)||0)>=FT_RETRY_MS).slice(0,FT_MAX_PER_CYCLE);
   for(const r of pending){lastFTCheck.set(r.matchKey,Date.now());
    const ids=r.sourceIds||{};const sofa=ids.sofascore||(r.source==='sofascore'?r.sourceId:null);
    const fotmob=ids.fotmob||(r.source==='fotmob'?r.sourceId:null);
    let ft=null;
-   if(sofa&&/^\d+$/.test(String(sofa)))ft=await fetchSofaFT(sofa,key);
+   if(sofa&&key&&/^\d+$/.test(String(sofa)))ft=await fetchSofaFT(sofa,key);
    if(!ft&&fotmob&&/^\d+$/.test(String(fotmob)))ft=await fetchFotmobFT(fotmob,key);
    if(ft){const n=await settleMatch(r.matchKey,ft.h,ft.a);console.log(`[AUDIT FT] ${r.home} ${ft.h}-${ft.a} ${r.away} | updated ${n}`);}
    else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | not confirmed finished`);
   }
  }catch(e){console.error('[AUDIT FT]',e.message);}finally{checking=false;}
 }
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates};
