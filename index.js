@@ -12,8 +12,9 @@ app.use(express.json());
 // ==========================================================
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-const FLASHSCORE_API_KEY = process.env.FLASHSCORE_API_KEY || process.env.RAPIDAPI_KEY;
+// Shared RapidAPI credential for all four providers.
+const PAID_RAPIDAPI_KEY = (process.env.RAPIDAPI_KEY || '').trim();
+const FLASHSCORE_API_KEY = PAID_RAPIDAPI_KEY;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
@@ -31,15 +32,17 @@ const LIVE_FOOTBALL_URL =
   `https://${LIVE_FOOTBALL_HOST}${process.env.LIVE_FOOTBALL_LIVE_PATH || ''}`;
 const LIVE_FOOTBALL_LIVE_ENABLED = Boolean(process.env.LIVE_FOOTBALL_LIVE_PATH);
 const FOTMOB_HOST = 'fotmob-api.p.rapidapi.com';
-const FOTMOB_KEY = process.env.FOTMOB_RAPIDAPI_KEY || PAID_RAPIDAPI_KEY;
+const FOTMOB_KEY = PAID_RAPIDAPI_KEY;
 const FOTMOB_CACHE_MS = 60000;
 const fotmobDetailCache = new Map();
 // FlashScore: always enabled. HTTP errors are logged; no cooldown or retry gate.
 
-const ODDS_API_URL = ODDS_API_KEY
-  ? `https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey=${ODDS_API_KEY}&regions=eu&markets=totals&oddsFormat=decimal`
-  : '';
-
+// The Odds API v4 requires a sport key (e.g. soccer_epl), not /sports/soccer/odds.
+const ODDS_BASE_URL = 'https://api.the-odds-api.com/v4';
+const ODDS_REGION = process.env.ODDS_REGION || 'eu';
+const ODDS_MAX_SPORTS = Math.max(1, Math.min(40, Number(process.env.ODDS_MAX_SPORTS || 16)));
+const ODDS_SPORT_KEYS = (process.env.ODDS_SPORT_KEYS || '').split(',').map(x => x.trim()).filter(Boolean);
+let oddsSportsCache = {time: 0, keys: []};
 
 // ==========================================================
 // 2. ALERT / CACHE CONFIG
@@ -353,131 +356,74 @@ const LEAGUE_NAME_MAP = {
 // PARSE LEAGUE
 // ==========================================================
 
+// Country-aware league display: never infer a country from an ambiguous league name.
+const LEAGUE_COUNTRY_CODES = {
+  ENG:'Anh', GBR:'Anh', ESP:'Tây Ban Nha', ITA:'Ý', GER:'Đức', DEU:'Đức',
+  FRA:'Pháp', VIE:'Việt Nam', VNM:'Việt Nam', TAN:'Tanzania', TZA:'Tanzania',
+  GHA:'Ghana', NGA:'Nigeria', EGY:'Ai Cập', NOR:'Na Uy', UAE:'UAE',
+  IRN:'Iran', KOR:'Hàn Quốc', JPN:'Nhật Bản', THA:'Thái Lan',
+  CHN:'Trung Quốc', USA:'Mỹ', BRA:'Brazil', ARG:'Argentina',
+  POR:'Bồ Đào Nha', NED:'Hà Lan', NLD:'Hà Lan', SCO:'Scotland',
+  AUS:'Úc', SAU:'Ả Rập Xê Út', TUR:'Thổ Nhĩ Kỳ', INT:'Quốc tế'
+};
+const COUNTRY_LEAGUE_TRANSLATIONS = {
+  'anh': {'premier league':'Ngoại Hạng Anh','championship':'Hạng Nhất Anh',
+    'league one':'Hạng Hai Anh','league two':'Hạng Ba Anh','fa cup':'Cúp FA Anh',
+    'efl cup':'Cúp Liên Đoàn Anh'},
+  'tanzania': {'premier league':'VĐQG Tanzania (Tanzanian Premier League)'},
+  'ý': {'serie a':'VĐQG Ý','serie b':'Hạng 2 Ý','coppa italia':'Cúp Quốc Gia Ý'},
+  'tây ban nha': {'laliga':'VĐQG Tây Ban Nha','la liga':'VĐQG Tây Ban Nha',
+    'laliga 2':'Hạng 2 Tây Ban Nha','copa del rey':'Cúp Nhà Vua Tây Ban Nha'},
+  'đức': {'bundesliga':'VĐQG Đức','2. bundesliga':'Hạng 2 Đức','dfb pokal':'Cúp Quốc Gia Đức'},
+  'pháp': {'ligue 1':'VĐQG Pháp','ligue 2':'Hạng 2 Pháp','coupe de france':'Cúp Quốc Gia Pháp'},
+  'việt nam': {'v-league':'V-League Việt Nam','v-league 1':'V-League Việt Nam'},
+  'nhật bản': {'j1 league':'VĐQG Nhật Bản','j2 league':'Hạng 2 Nhật Bản','j3 league':'Hạng 3 Nhật Bản'},
+  'hàn quốc': {'k league 1':'VĐQG Hàn Quốc','k league 2':'Hạng 2 Hàn Quốc'},
+  'thái lan': {'thai league 1':'VĐQG Thái Lan'},
+  'trung quốc': {'super league':'VĐQG Trung Quốc'}
+};
+const UNAMBIGUOUS_LEAGUES = {
+  'uefa champions league':'Cúp C1 Châu Âu', 'champions league':'UEFA Champions League',
+  'uefa europa league':'Cúp C2 Châu Âu', 'uefa conference league':'Cúp C3 Châu Âu',
+  'uefa nations league':'UEFA Nations League',
+  'afc champions league elite':'Cúp C1 Châu Á',
+  'afc champions league two':'Cúp C2 Châu Á',
+  'afc asian cup':'Asian Cup',
+  'conmebol libertadores':'Copa Libertadores',
+  'conmebol sudamericana':'Copa Sudamericana',
+  'fifa club world cup':'FIFA Club World Cup'
+};
+function leagueCountryName(value) {
+  if (!value) return '';
+  const raw = String(typeof value === 'object' ? (value.name || value.ccode || value.code || '') : value).trim();
+  if (!raw) return '';
+  return LEAGUE_COUNTRY_CODES[raw.toUpperCase()] || COUNTRY_MAP[raw] || raw;
+}
 function parseLeagueName(item) {
-
-  if (!item) {
-    return 'Bóng Đá Quốc Tế';
+  if (!item) return 'Bóng Đá Quốc Tế';
+  const leagueRaw = String(
+    item.tournament?.name || item.competitionName || item.league?.name ||
+    (typeof item.league === 'string' ? item.league : '') ||
+    item.competition?.name || item.competition || item._fotmobLeagueName || ''
+  ).trim();
+  const countryRaw = item.tournament?.category?.name || item.tournament?.category?.country?.name ||
+    item.category?.name || item.league?.country || item.country?.name ||
+    item.country || item._fotmobCountry || item.ccode || '';
+  const country = leagueCountryName(countryRaw);
+  const key = leagueRaw.toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim();
+  const countryKey = country.toLocaleLowerCase('en-US');
+  if (!leagueRaw) return country || 'Bóng Đá Quốc Tế';
+  if (UNAMBIGUOUS_LEAGUES[key]) return UNAMBIGUOUS_LEAGUES[key];
+  if (key === 'tanzanian premier league') return 'VĐQG Tanzania (Tanzanian Premier League)';
+  if (key === 'english premier league') return 'Ngoại Hạng Anh';
+  const countryMap = COUNTRY_LEAGUE_TRANSLATIONS[countryKey];
+  if (countryMap && countryMap[key]) return countryMap[key];
+  // A generic league name can belong to many countries. Keep original English + country.
+  if (country && !['world','europe','asia','international','quốc tế'].includes(countryKey)) {
+    if (leagueRaw.toLocaleLowerCase('en-US').includes(countryKey)) return leagueRaw;
+    return `${leagueRaw} (${country})`;
   }
-
-
-  const category =
-
-    item.tournament?.category?.name ||
-
-    item.category?.name ||
-
-    item.country?.name ||
-
-    '';
-
-
-  const tournament =
-
-    item.tournament?.name ||
-
-    item.competitionName ||
-
-    item.league?.name ||
-
-    item.league ||
-
-    item.competition ||
-
-    '';
-
-
-  // Resolve country before league translation. 'Premier League' alone is ambiguous.
-  const countryRaw = String(category || item.country?.name || '').trim();
-  const leagueRaw = String(tournament || '').trim();
-  const countryKey = countryRaw.toLowerCase();
-  const leagueKey = leagueRaw.toLowerCase();
-  if (countryKey.includes('tanzania') || countryKey.includes('tanzanian') || leagueKey.includes('tanzanian')) {
-    if (/^(tanzanian\s+)?premier league$/i.test(leagueRaw)) {
-      return 'VĐQG Tanzania (Tanzanian Premier League)';
-    }
-  }
-  if (/^premier league$/i.test(leagueRaw)) {
-    if (/^(england|english|anh)$/i.test(countryRaw)) return 'Ngoại Hạng Anh';
-    const countryDisplay = COUNTRY_MAP[countryRaw] || countryRaw;
-    return countryDisplay ? `Premier League (${countryDisplay})` : 'Premier League (chưa rõ quốc gia)';
-  }
-
-  if (
-    LEAGUE_NAME_MAP[tournament]
-  ) {
-
-    return (
-      LEAGUE_NAME_MAP[tournament]
-    );
-  }
-
-
-  const translatedCategory =
-
-    COUNTRY_MAP[category] ||
-
-    category;
-
-
-  let translatedTournament =
-
-    String(tournament)
-
-      .replace(
-        /\bPremier League\b/gi,
-        'Giải VĐQG'
-      )
-
-      .replace(
-        /\bDivision 1\b/gi,
-        'Hạng 1'
-      )
-
-      .replace(
-        /\bDivision 2\b/gi,
-        'Hạng 2'
-      )
-
-      .replace(
-        /\bSuper League\b/gi,
-        'VĐQG'
-      )
-
-      .replace(
-        /\bCup\b/gi,
-        'Cúp'
-      );
-
-
-  if (
-    translatedCategory &&
-    translatedTournament
-  ) {
-
-    if (
-      translatedTournament
-        .toLowerCase()
-        .includes(
-          translatedCategory
-            .toLowerCase()
-        )
-    ) {
-
-      return translatedTournament;
-    }
-
-
-    return (
-      `${translatedTournament} (${translatedCategory})`
-    );
-  }
-
-
-  return (
-    translatedTournament ||
-    translatedCategory ||
-    'Bóng Đá Quốc Tế'
-  );
+  return leagueRaw;
 }
 
 
@@ -1152,7 +1098,7 @@ function formatFotMobLiveMatch(raw) {
     id: String(raw.id), source: 'fotmob',
     homeName: raw.home?.name || '', awayName: raw.away?.name || '',
     homeScore: Number(raw.home?.score || 0), awayScore: Number(raw.away?.score || 0),
-    league: raw._fotmobLeagueName || '',
+    league: parseLeagueName({ league: { name: raw._fotmobLeagueName, country: raw._fotmobCountry } }),
     minute, raw: {
       ...raw, minute, elapsed: minute,
       league: { name: raw._fotmobLeagueName, country: raw._fotmobCountry },
@@ -2755,7 +2701,7 @@ async function fetchMatchDetailStats(
 
   if (
     cached &&
-    Date.now() - cached.time < STATS_CACHE_TTL
+    Date.now() - cached.time < (getCoreStatsCoverage(cached.data) === 0 ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
   ) {
     return cached.data;
   }
@@ -3918,64 +3864,54 @@ function teamNamesSimilar(
 // ==========================================================
 
 async function fetchAllLiveOdds() {
-
-  if (
-    !ODDS_API_KEY ||
-    !ODDS_API_URL
-  ) {
+  if (!ODDS_API_KEY) {
+    console.log('[Odds API] ODDS_API_KEY missing; odds unavailable');
     return [];
   }
-
-
-  if (
-    oddsCache.data.length &&
-    Date.now() -
-      oddsCache.time <
-      ODDS_CACHE_TTL
-  ) {
-
-    return oddsCache.data;
+  if (Date.now() - oddsCache.time < ODDS_CACHE_TTL) return oddsCache.data;
+  const config = { timeout: 12000, params: { apiKey: ODDS_API_KEY } };
+  let keys = ODDS_SPORT_KEYS;
+  if (!keys.length) {
+    if (Date.now() - oddsSportsCache.time < 6 * 60 * 60 * 1000) {
+      keys = oddsSportsCache.keys;
+    } else {
+      try {
+        const r = await axios.get(`${ODDS_BASE_URL}/sports/`, { ...config, params: { ...config.params, all: false } });
+        keys = (Array.isArray(r.data) ? r.data : [])
+          .filter(x => x.active && String(x.key || '').startsWith('soccer_'))
+          .map(x => x.key);
+        oddsSportsCache = {time: Date.now(), keys};
+        console.log(`[Odds API] Active soccer sport keys: ${keys.length}`);
+      } catch (e) {
+        console.log(`[Odds API] Sports discovery error HTTP ${e.response?.status || 'network'}: ${String(e.response?.data?.message || e.message).slice(0, 180)}`);
+        return [];
+      }
+    }
   }
-
-
-  try {
-
-    const r =
-      await axios.get(
-        ODDS_API_URL,
-        {
-          timeout: 10000
-        }
-      );
-
-
-    const data =
-      Array.isArray(r.data)
-        ? r.data
-        : [];
-
-
-    oddsCache = {
-      time:
-        Date.now(),
-
-      data
-    };
-
-
-    return data;
-
-  } catch (e) {
-
-    console.error(
-      '[Odds API]',
-      e.message
-    );
-
-    return [];
-  }
+  // Keep the request budget bounded. Set ODDS_SPORT_KEYS for leagues you need.
+  const selected = keys.slice(0, ODDS_MAX_SPORTS);
+  const results = await Promise.allSettled(selected.map(async key => {
+    const r = await axios.get(`${ODDS_BASE_URL}/sports/${encodeURIComponent(key)}/odds/`, {
+      timeout: 12000,
+      params: {apiKey: ODDS_API_KEY, regions: ODDS_REGION, markets: 'totals', oddsFormat: 'decimal'}
+    });
+    return {key, events: Array.isArray(r.data) ? r.data : []};
+  }));
+  const data = [];
+  let ok = 0, failed = 0;
+  results.forEach((r, i) => {
+    if (r.status === 'fulfilled') {ok++; data.push(...r.value.events);}
+    else {
+      failed++;
+      const e = r.reason;
+      console.log(`[Odds API] ${selected[i]} HTTP ${e.response?.status || 'network'}: ${String(e.response?.data?.message || e.message).slice(0, 140)}`);
+    }
+  });
+  console.log(`[Odds API] ${ok}/${selected.length} sports OK | ${data.length} odds events | ${failed} errors`);
+  // Don't hammer the service if the response is empty or unsupported.
+  oddsCache = {time: Date.now(), data};
+  return data;
 }
-
 
 // ==========================================================
 // 23. FIND ODDS FOR MATCH
@@ -6574,62 +6510,69 @@ async function fetchAllLiveMatches() {
 // SofaScore ưu tiên cao nhất.
 // ==========================================================
 
-function deduplicateMatches(
-  matches
-) {
-
-  const grouped = new Map();
-
-  const SOURCE_PRIORITY = {
-    sofascore: 3,
-    'live-football': 2,
-    fotmob: 1,
-    flashscore: 0
-  };
-
-  // Gom cùng một trận theo tên đội, nhưng KHÔNG vứt các nguồn phụ.
+// Cross-source resolver: source IDs are NEVER interchangeable.
+// Keep the existing source-priority order and retain each source's native ID.
+function resolverTokens(name) {
+  const value = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/\b(football club|futbol club|soccer club|fc|cf|sc|afc|fk|sk|ac|club)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+  return value.split(/\s+/).filter(Boolean);
+}
+function resolverTeamScore(a, b) {
+  const x = resolverTokens(a), y = resolverTokens(b);
+  if (!x.length || !y.length) return 0;
+  const left = x.join(''), right = y.join('');
+  if (left === right) return 1;
+  // Reject different age groups and women's/reserve variants.
+  const tags = /^(u\d{2}|women|woman|w|reserves|reserve|ii|iii|b)$/;
+  const xt = x.filter(t => tags.test(t)).sort().join('|');
+  const yt = y.filter(t => tags.test(t)).sort().join('|');
+  if (xt !== yt) return 0;
+  const overlap = x.filter(t => y.includes(t)).length;
+  const dice = 2 * overlap / (x.length + y.length);
+  if (left.length >= 6 && right.length >= 6 && (left.includes(right) || right.includes(left))) return Math.max(dice, .89);
+  return dice;
+}
+function resolverLeagueCountry(m) {
+  const raw = m.raw || {};
+  return String(raw._fotmobCountry || raw.league?.country?.name || raw.league?.country || raw.tournament?.category?.country?.name || raw.country || '').toLowerCase().trim();
+}
+function resolverSameMatch(a, b) {
+  if (a.source === b.source) return String(a.id) === String(b.id);
+  const home = resolverTeamScore(a.homeName, b.homeName);
+  const away = resolverTeamScore(a.awayName, b.awayName);
+  if (home < .78 || away < .78 || (home + away) / 2 < .86) return false;
+  const ac = resolverLeagueCountry(a), bc = resolverLeagueCountry(b);
+  if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2) return false;
+  const am = Number(a.minute), bm = Number(b.minute);
+  if (Number.isFinite(am) && Number.isFinite(bm) && am > 0 && bm > 0 && Math.abs(am - bm) > 12) return false;
+  const as = Number(a.homeScore), bs = Number(b.homeScore);
+  const at = Number(a.awayScore), bt = Number(b.awayScore);
+  if ([as, bs, at, bt].every(Number.isFinite) && (as !== bs || at !== bt)) return false;
+  return true;
+}
+function deduplicateMatches(matches) {
+  const SOURCE_PRIORITY = { sofascore: 3, 'live-football': 2, fotmob: 1, flashscore: 0 };
+  const groups = [];
   for (const match of matches) {
-
-    const key = createMatchKey(
-      match.homeName,
-      match.awayName
-    );
-
-    if (!key || key === '_') {
-      continue;
-    }
-
-    if (!grouped.has(key)) {
-      grouped.set(key, []);
-    }
-
-    grouped.get(key).push(match);
+    if (!match || !match.homeName || !match.awayName) continue;
+    let group = groups.find(g => g.some(other => resolverSameMatch(other, match)));
+    if (!group) { group = []; groups.push(group); }
+    // Each source's matchId/eventId is preserved for its OWN detail endpoint.
+    if (!group.some(x => x.source === match.source && String(x.id) === String(match.id))) group.push(match);
   }
-
-
-  const result = [];
-
-  for (const sourceMatches of grouped.values()) {
-
-    sourceMatches.sort(
-      (a, b) =>
-        (SOURCE_PRIORITY[b.source] || 0) -
-        (SOURCE_PRIORITY[a.source] || 0)
-    );
-
-    // Vẫn giữ SofaScore làm match chính như logic cũ,
-    // nhưng gắn các bản cùng trận từ FlashScore/Live Football
-    // để fetchMatchDetailStats bổ sung chỉ số còn thiếu.
-    const primary = sourceMatches[0];
-
-    primary.crossSourceMatches = sourceMatches;
-
-    result.push(primary);
-  }
-
+  let joined = 0;
+  const result = groups.map(group => {
+    group.sort((a,b) => (SOURCE_PRIORITY[b.source] ?? -1) - (SOURCE_PRIORITY[a.source] ?? -1));
+    const primary = group[0];
+    primary.crossSourceMatches = group;
+    primary.sourceIds = Object.fromEntries(group.map(m => [m.source, String(m.id)]));
+    if (group.length > 1) joined++;
+    return primary;
+  });
+  console.log(`[Cross-Source Resolver] ${matches.length} records -> ${result.length} unique matches | linked ${joined} matches | native IDs preserved`);
   return result;
 }
-
 
 // ==========================================================
 // 46. CHECK MATCH HAS USEFUL STATS
