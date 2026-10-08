@@ -13,6 +13,7 @@ app.use(express.json());
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const PAID_RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+const FLASHSCORE_API_KEY = process.env.FLASHSCORE_API_KEY || process.env.RAPIDAPI_KEY;
 const ODDS_API_KEY = process.env.ODDS_API_KEY;
 
 const SOFASCORE_HOST = 'sofascore.p.rapidapi.com';
@@ -1018,7 +1019,7 @@ async function fetchLiveMatchesFromFlashScore() {
 
   try {
 
-    if (!PAID_RAPIDAPI_KEY) {
+    if (!FLASHSCORE_API_KEY) {
       return [];
     }
 
@@ -1030,7 +1031,7 @@ async function fetchLiveMatchesFromFlashScore() {
           headers: {
 
             'x-rapidapi-key':
-              PAID_RAPIDAPI_KEY
+              FLASHSCORE_API_KEY
                 .trim(),
 
             'x-rapidapi-host':
@@ -2339,7 +2340,7 @@ async function fetchFlashScoreStats(
 
 
   if (
-    !PAID_RAPIDAPI_KEY ||
+    !FLASHSCORE_API_KEY ||
     !matchId
   ) {
     return stats;
@@ -2372,7 +2373,7 @@ async function fetchFlashScoreStats(
             headers: {
 
               'x-rapidapi-key':
-                PAID_RAPIDAPI_KEY
+                FLASHSCORE_API_KEY
                   .trim(),
 
               'x-rapidapi-host':
