@@ -6011,36 +6011,87 @@ function extractGoalTimeline(
   }).join(' | ');
 }
 
-// Verified score progression: use goal incidents, never infer minute from a score snapshot.
+// Goal history: verify incident events against current score, never infer minutes.
+function goalHistoryMatches(timeline, home, away) {
+  if (!timeline || timeline === 'Chưa lấy được dữ liệu') return false;
+  const entries = timeline.split(' | ');
+  const last = entries.at(-1)?.match(/:\s*(\d+)-(\d+)$/);
+  return entries.length === home + away && !!last &&
+    Number(last[1]) === home && Number(last[2]) === away;
+}
+function goalNameKey(value) {
+  return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/\b(fc|cf|sc|afc|club|football)\b/g, '')
+    .replace(/[^a-z0-9]/g, ' ').trim().replace(/\s+/g, ' ');
+}
+function goalTeamMatches(a, b) {
+  const x = goalNameKey(a), y = goalNameKey(b);
+  if (!x || !y) return false;
+  return x === y || (Math.min(x.length, y.length) >= 6 &&
+    (x.includes(y) || y.includes(x)));
+}
+async function fetchSofaGoalIncidents(eventId) {
+  if (!PAID_RAPIDAPI_KEY || !eventId) return null;
+  const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-incidents`, {
+    params: { eventId },
+    headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
+    timeout: 6000
+  });
+  return response.data;
+}
+async function resolveSofaGoalEventIdByName(match) {
+  if (!PAID_RAPIDAPI_KEY) return null;
+  try {
+    const response = await axios.get(SOFASCORE_LIVE_URL, {
+      headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
+      timeout: 8000
+    });
+    const events = response.data?.events || response.data?.liveEvents || [];
+    const candidates = Array.isArray(events) ? events : [];
+    const found = candidates.find(ev =>
+      goalTeamMatches(match.homeName, ev.homeTeam?.name || ev.home?.name || ev.homeName) &&
+      goalTeamMatches(match.awayName, ev.awayTeam?.name || ev.away?.name || ev.awayName)
+    );
+    return found?.id || found?.eventId || null;
+  } catch (err) {
+    console.warn(`[GOAL HISTORY] SofaScore live lookup failed: ${err.message}`);
+    return null;
+  }
+}
 async function resolveVerifiedGoalHistory(match) {
-  const expectedHome = Number(match.homeScore);
-  const expectedAway = Number(match.awayScore);
-  const total = expectedHome + expectedAway;
-  if (total === 0) return 'Chưa có bàn thắng (0-0)';
+  const home = Number(match.homeScore), away = Number(match.awayScore);
+  if (!Number.isFinite(home) || !Number.isFinite(away)) return 'Chưa xác thực được tỷ số';
+  if (home + away === 0) return 'Chưa có bàn thắng (0-0)';
   const candidates = [match, ...(match.crossSourceMatches || [])];
   for (const candidate of candidates) {
-    let raw = candidate.raw;
-    let timeline = extractGoalTimeline(raw);
-    if (candidate.source === 'sofascore' && candidate.id && PAID_RAPIDAPI_KEY) {
-      try {
-        const response = await axios.get(`https://${SOFASCORE_HOST}/events/get-incidents`, {
-          params: { eventId: candidate.id },
-          headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': SOFASCORE_HOST },
-          timeout: 6000
-        });
-        timeline = extractGoalTimeline(response.data);
-      } catch (err) {
-        // Keep the event timeline already present in the live match payload.
-      }
-    }
-    if (!timeline || timeline === 'Chưa lấy được dữ liệu') continue;
-    const entries = timeline.split(' | ');
-    const final = entries[entries.length - 1].match(/:\s*(\d+)-(\d+)$/);
-    // Reject partial, mismatched or duplicated histories: no invented score progression.
-    if (entries.length !== total || !final || Number(final[1]) !== expectedHome || Number(final[2]) !== expectedAway) continue;
-    return timeline;
+    const fromLive = extractGoalTimeline(candidate.raw);
+    if (goalHistoryMatches(fromLive, home, away)) return fromLive;
   }
-  return `Chưa có lịch sử bàn thắng xác thực (hiện tại ${expectedHome}-${expectedAway})`;
+  const ids = [...new Set(candidates.filter(c => c.source === 'sofascore')
+    .map(c => c.id).filter(Boolean).map(String))];
+  // Other providers may use different IDs. Resolve by team names only when needed.
+  if (!ids.length) {
+    const resolved = await resolveSofaGoalEventIdByName(match);
+    if (resolved) ids.push(String(resolved));
+  }
+  if (ids.length) {
+    // Resolve alternate SofaScore ID if a cross-source ID cannot supply verified incidents.
+    const resolved = await resolveSofaGoalEventIdByName(match);
+    if (resolved && !ids.includes(String(resolved))) ids.push(String(resolved));
+  }
+  for (const id of ids) {
+    try {
+      const timeline = extractGoalTimeline(await fetchSofaGoalIncidents(id));
+      if (goalHistoryMatches(timeline, home, away)) {
+        console.log(`⚽ [GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | SofaScore eventId=${id}`);
+        return timeline;
+      }
+      console.warn(`[GOAL HISTORY] Incomplete or mismatched incidents | eventId=${id}`);
+    } catch (err) {
+      console.warn(`[GOAL HISTORY] SofaScore incidents error | eventId=${id} | ${err.response?.status || err.message}`);
+    }
+  }
+  return `Chưa có lịch sử bàn thắng xác thực (hiện tại ${home}-${away})`;
 }
 
 // ==========================================================
@@ -6109,7 +6160,7 @@ async function sendTelegramAlert(
 
 
   let title =
-    '🔔 RUNG CHUÔNG VÀNG';
+    '🔔 TÀI LỌC ĐẾNNN 🔔';
 
 
   if (
