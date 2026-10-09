@@ -119,13 +119,14 @@ const BIG_BET_PERCENTAGE = 75.0;
 
 // Sau cảnh báo đầu tiên:
 // AI phải tăng ít nhất +10% mới cảnh báo lại
+// Retired: BIG BET follow-up uses verified Spike Score instead of Rule +10.
 const ALERT_INCREASE_THRESHOLD = 10.0;
 
 // Tối đa 3 cảnh báo / trận
-const MAX_ALERTS_PER_MATCH = 3;
+const MAX_ALERTS_PER_MATCH = 2;
 
 // Khoảng cách tối thiểu giữa 2 cảnh báo
-const MIN_ALERT_GAP_MINUTES = 5;
+const MIN_ALERT_GAP_MINUTES = 1;
 const MIN_TELEGRAM_MINUTE = 65;
 const FOLLOWUP_WINDOW_MINUTES = 10;
 
@@ -3364,7 +3365,10 @@ function createSnapshot(stats, minute) {
       stats.homeCorners,
 
     awayCorners:
-      stats.awayCorners
+      stats.awayCorners,
+    homeTotalShots: stats.homeTotalShots, awayTotalShots: stats.awayTotalShots,
+    homeRedCards: stats.homeRedCards, awayRedCards: stats.awayRedCards,
+    _present: {...(stats._present || {})}
   };
 }
 
@@ -3392,13 +3396,19 @@ function calculateMomentum(
     );
 
 
-  snapshotState.set(
-    matchId,
-    {
-      ...current,
-      updatedAt: Date.now()
-    }
-  );
+  // Keep the last valid snapshot if a provider returns partial/reset counters.
+  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','BlockedShots','Corners'];
+  const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
+  const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
+  const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
+    Number(current[side+f]) >= Number(previous[side+f])));
+  if (currentValid && (!previous || (previousValid && monotonic && minute > previous.minute))) {
+    snapshotState.set(matchId,{...current,updatedAt:Date.now()});
+  }
+  if (!currentValid || !previousValid || !monotonic) {
+    return {available:false,minuteGap:0,score:50,text:'Momentum thiếu dữ liệu hợp lệ',
+      totalAttack:0,totalDangerous:0,totalSOT:0,totalBlocked:0,totalCorners:0};
+  }
 
 
   // Chưa có snapshot trước
@@ -5021,33 +5031,44 @@ function evaluateMatchDynamicAI(
   // WEIGHTED SCORE
   // ======================================================
 
-  let finalScore =
-
-    dangerousScore * 0.18 +
-
-    momentumScore * 0.16 +
-
-    sotScore * 0.14 +
-
-    style.score * 0.11 +
-
-    attackScore * 0.10 +
-
-    possessionScore * 0.08 +
-
-    blockedScore * 0.06 +
-
-    cornerScore * 0.06 +
-
-    cardScore * 0.02 +
-
-    scoreState * 0.01 +
-
-    timeScore * 0.01;
-
-  // Odds chi de tham khao; chuan hoa 93% trong so con lai ve 100%.
-  finalScore /= 0.93;
-
+  // LIVE-only 0..100 metric normalization; reference rates are configurable heuristics,
+  // NOT empirical goal probabilities. Missing values do not become observed zero.
+  const normRate = (field, reference) => {
+    const hk='home'+field, ak='away'+field;
+    if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
+  };
+  const normRatio = (numerator, denominator, reference) => {
+    if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
+    const n=Number(stats['home'+numerator])+Number(stats['away'+numerator]);
+    const d=Number(stats['home'+denominator])+Number(stats['away'+denominator]);
+    return d > 0 ? clamp((n/d)/reference*100,0,100) : null;
+  };
+  const weighted = parts => {
+    const valid=parts.filter(([v])=>v !== null && Number.isFinite(v));
+    const w=valid.reduce((sum,[,weight])=>sum+weight,0);
+    return w ? valid.reduce((sum,[v,weight])=>sum+v*weight,0)/w : null;
+  };
+  const finishing = weighted([
+    [normRate('TotalShots',30),0.35], [normRate('ShotsOnTarget',12),0.35],
+    [normRate('ShotsOffTarget',16),0.08], [normRate('BlockedShots',10),0.07],
+    [normRatio('ShotsOnTarget','TotalShots',0.5),0.15]
+  ]);
+  const attacksGroup = weighted([
+    [normRate('Attacks',160),0.35],[normRate('DangerousAttacks',100),0.45],
+    [normRatio('DangerousAttacks','Attacks',0.6),0.20]
+  ]);
+  const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
+  const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
+  const gameState = weighted([[cardScore,0.50],[scoreState,0.50]]);
+  const groups = [
+    [finishing,0.30],[attacksGroup,0.20],
+    [momentum?.available ? momentumScore : null,0.20],
+    [opportunities,0.10],[control,0.10],[gameState,0.05],[timeScore,0.05]
+  ];
+  // Reweight only observed groups; never silently assume absent statistics = 0.
+  let finalScore = weighted(groups);
+  if (finalScore === null) finalScore = 0;
 
   // ======================================================
   // EXTRA LOGIC / PENALTIES
@@ -5380,62 +5401,76 @@ function makeMatchSnapshot(stats, minute, homeScore, awayScore) {
     ...createSnapshot(stats || createEmptyStats(), minute),
     homeTotalShots: safeNumber(stats?.homeTotalShots),
     awayTotalShots: safeNumber(stats?.awayTotalShots),
+    _present: {...(stats?._present || {})},
     homeScore: safeNumber(homeScore),
     awayScore: safeNumber(awayScore)
   };
 }
 
 // Kiểm tra biến động MỚI kể từ cảnh báo gần nhất, không dùng momentum cũ.
+// L18 BIG BET: compare confirmed, monotonic, per-team statistics since alert #1.
+const BIG_SPIKE_MIN_SCORE = 60;
 function detectTenMinuteSpike(previous, current) {
-  if (!previous || !current) return { confirmed: false, reason: 'NO_SNAPSHOT' };
-  const delta = (home, away) => {
-    const h = safeNumber(current[home]) - safeNumber(previous[home]);
-    const a = safeNumber(current[away]) - safeNumber(previous[away]);
-    // Dữ liệu bị reset/thiếu: không xem như một đột biến.
-    return h < 0 || a < 0 ? null : h + a;
+  if (!previous || !current) return {confirmed:false, score:0, reason:'NO_SNAPSHOT'};
+  const gap = Number(current.minute) - Number(previous.minute);
+  if (!(gap > 0 && gap <= FOLLOWUP_WINDOW_MINUTES))
+    return {confirmed:false,score:0,reason:'INVALID_TIME_GAP'};
+  const delta = (field) => {
+    const keys = ['home'+field,'away'+field];
+    if (!keys.every(k => previous._present?.[k] === true && current._present?.[k] === true)) return null;
+    const diffs = keys.map(k => Number(current[k]) - Number(previous[k]));
+    if (diffs.some(x => !Number.isFinite(x) || x < 0)) return null;
+    return diffs;
   };
-  const sot = delta('homeShotsOnTarget', 'awayShotsOnTarget');
-  const shots = delta('homeTotalShots', 'awayTotalShots');
-  const dangerous = delta('homeDangerousAttacks', 'awayDangerousAttacks');
-  const attacks = delta('homeAttacks', 'awayAttacks');
-  const blocked = delta('homeBlockedShots', 'awayBlockedShots');
-  const corners = delta('homeCorners', 'awayCorners');
-  const confirmed = (sot !== null && sot >= 2) ||
-    (dangerous !== null && dangerous >= 9) ||
-    (attacks !== null && attacks >= 25) ||
-    (blocked !== null && blocked >= 2) ||
-    (corners !== null && corners >= 2) ||
-    (shots !== null && shots >= 4 && sot !== null && sot >= 1);
-  return { confirmed, reason: `NEW_SOT=${sot ?? 'NA'} SH=${shots ?? 'NA'} DA=${dangerous ?? 'NA'} ATT=${attacks ?? 'NA'} BLK=${blocked ?? 'NA'} COR=${corners ?? 'NA'}` };
+  const shots = delta('TotalShots'), sot = delta('ShotsOnTarget');
+  const corners = delta('Corners'), attacks = delta('Attacks');
+  const dangerous = delta('DangerousAttacks'), red = delta('RedCards');
+  const sum = x => x === null ? null : x[0] + x[1];
+  const sh = sum(shots), so = sum(sot), co = sum(corners);
+  const da = sum(dangerous), at = sum(attacks);
+  const cornerDensity = co === null ? null : co / gap;
+  const pressure = da !== null && at !== null && da >= 9 && at >= 12;
+  // Cards count only when a new red card exists AND the opposing team has attacking momentum.
+  const cardContext = red !== null && red.some((v,i) => v > 0 &&
+    ((shots !== null && shots[1-i] >= 2) || (dangerous !== null && dangerous[1-i] >= 6)));
+  const signals = {
+    finishing: (sh !== null && sh >= 4) || (so !== null && so >= 2),
+    corners: co !== null && co >= 2,
+    pressure: pressure,
+    cards: cardContext
+  };
+  const score = Math.min(100,
+    (sh !== null && sh >= 4 ? 20 : 0) +
+    (so !== null && so >= 2 ? 25 : 0) +
+    (co !== null && co >= 2 ? 15 : 0) +
+    (cornerDensity !== null && cornerDensity >= 0.3 ? 10 : 0) +
+    (pressure ? 20 : 0) + (cardContext ? 10 : 0));
+  const groups = Object.values(signals).filter(Boolean).length;
+  const confirmed = score >= BIG_SPIKE_MIN_SCORE && groups >= 2 &&
+    (signals.finishing || signals.corners || signals.pressure);
+  return {confirmed,score,groups,cornerDensity,signals,
+    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'} RED=${sum(red) ?? 'NA'}`};
 }
 
 function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
-  const current = safeNumber(currentPercentage);
+  const current = Number(currentPercentage);
   if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute > 92)
-    return { send: false, bigBet: false, reason: 'OUTSIDE_ALERT_MINUTES' };
-  if (current < MIN_SEND_PERCENTAGE)
-    return { send: false, bigBet: false, reason: `Rule ${current}% < ${MIN_SEND_PERCENTAGE}%` };
+    return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
+  if (!Number.isFinite(current) || current < MIN_SEND_PERCENTAGE)
+    return {send:false,bigBet:false,reason:`RULE_BELOW_${MIN_SEND_PERCENTAGE}`};
   const previous = alertState.get(matchId);
-  if (!previous) return { send: true, bigBet: false, reason: 'Cảnh báo đầu tiên' };
+  if (!previous) return {send:true,bigBet:false,reason:'FIRST_ALERT'};
   if (previous.alertCount >= MAX_ALERTS_PER_MATCH)
-    return { send: false, bigBet: false, reason: 'MAX_3_ALERTS' };
-  const minuteGap = currentMinute - previous.lastMinute;
-  if (minuteGap < MIN_ALERT_GAP_MINUTES)
-    return { send: false, bigBet: false, reason: `WAIT_${minuteGap}_MIN` };
-  if (minuteGap > FOLLOWUP_WINDOW_MINUTES)
-    return { send: false, bigBet: false, reason: `WINDOW_EXPIRED_${minuteGap}_MIN` };
+    return {send:false,bigBet:false,reason:'MAX_2_ALERTS'};
+  const gap = currentMinute - previous.lastMinute;
+  if (gap <= 0) return {send:false,bigBet:false,reason:'WAIT_NEXT_MINUTE'};
+  if (gap > FOLLOWUP_WINDOW_MINUTES) return {send:false,bigBet:false,reason:'FOLLOWUP_EXPIRED'};
   if (!previous.alertSnapshot) return {send:false,bigBet:false,reason:'RESTART_SNAPSHOT_UNAVAILABLE'};
-  const snapshot = makeMatchSnapshot(stats, currentMinute, homeScore, awayScore);
-  const spike = detectTenMinuteSpike(previous.alertSnapshot, snapshot);
-  if (!spike.confirmed)
-    return { send: false, bigBet: false, reason: `NO_NEW_SPIKE ${spike.reason}` };
-  const previousRule = Number(previous.lastPercentage);
-  if (!Number.isFinite(previousRule))
-    return { send: false, bigBet: false, reason: 'PREVIOUS_RULE_UNAVAILABLE' };
-  const ruleIncrease = current - previousRule;
-  if (ruleIncrease < ALERT_INCREASE_THRESHOLD)
-    return { send: false, bigBet: false, reason: `RULE_INCREASE_LOW +${ruleIncrease.toFixed(2)}% / required +${ALERT_INCREASE_THRESHOLD}% | ${spike.reason}` };
-  return { send: true, bigBet: current >= BIG_BET_PERCENTAGE, reason: `SPIKE_CONFIRMED RULE +${ruleIncrease.toFixed(2)}% | ${spike.reason}` };
+  const spike = detectTenMinuteSpike(previous.alertSnapshot,
+    makeMatchSnapshot(stats,currentMinute,homeScore,awayScore));
+  if (!spike.confirmed) return {send:false,bigBet:false,spike,
+    reason:`MONITORING ${spike.reason}`};
+  return {send:true,bigBet:true,spike,reason:`BIG_BET ${spike.reason}`};
 }
 // ==========================================================
 // 36. SCORE HELPERS
@@ -6412,7 +6447,7 @@ async function sendTelegramAlert(
       : 1;
 
 
-  const isBigBet = alertNumber >= 2 && percentage >= BIG_BET_PERCENTAGE && alertDecision?.bigBet === true;
+  const isBigBet = alertNumber === 2 && alertDecision?.bigBet === true;
 
 
   // Tiêu đề Telegram: số lần rung và BIG BET là hai trạng thái riêng.
@@ -6486,6 +6521,7 @@ async function sendTelegramAlert(
     `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
+    ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
   const messageLines = [
@@ -7026,48 +7062,47 @@ async function analyzeOneMatch(
   );
 
 
-function calculateRuleConfidence(stats, match, minute) {
-  // Independent data-quality score, never used in Rule or Telegram gating.
-  const fields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
-  const available = field => ['home','away'].every(side =>
-    stats?._present?.[side+field] === true || Number(stats?.[side+field]) > 0);
-  const coverage = fields.filter(available).length;
-  if (!coverage) return {coverage:0,total:5,percent:0,label:'0/5 chỉ số',method:'data-quality-v2'};
-  const valid = key => Number.isFinite(Number(stats?.[key])) && Number(stats[key]) >= 0;
-  const pair = name => ['home','away'].map(side => Number(stats?.[side+name]));
+function calculateRuleConfidence(stats, match, minute, momentum, rule) {
+  const core = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  const has = f => ['home','away'].every(side => stats?._present?.[side+f] === true);
+  const coverage = core.filter(has).length;
+  const quality = 100 * coverage / core.length;
   let consistency = 100;
-  if (available('TotalShots') && available('ShotsOnTarget')) {
-    const sh = pair('TotalShots'), sot = pair('ShotsOnTarget');
-    if (sot.some((v,i) => v > sh[i])) consistency -= 35;
+  if (has('TotalShots') && has('ShotsOnTarget')) {
+    for (const side of ['home','away'])
+      if (Number(stats[side+'ShotsOnTarget']) > Number(stats[side+'TotalShots'])) consistency -= 35;
   }
-  if (available('Attacks') && available('DangerousAttacks')) {
-    const a = pair('Attacks'), d = pair('DangerousAttacks');
-    if (d.some((v,i) => v > a[i])) consistency -= 25;
+  if (has('Attacks') && has('DangerousAttacks')) {
+    for (const side of ['home','away'])
+      if (Number(stats[side+'DangerousAttacks']) > Number(stats[side+'Attacks'])) consistency -= 25;
   }
-  if (available('TotalShots') && pair('TotalShots').some(v => v > Math.max(45,Number(minute||90)*0.65))) consistency -= 12;
-  for (const field of fields.filter(available)) {
-    if (['home','away'].some(side => !valid(side+field))) consistency -= 15;
-  }
-  consistency = Math.max(0, consistency);
-  // More distinct matched providers increases evidence strength; never assume that
-  // they agree numerically without field-level provenance.
-  const sources = new Set((match?.crossSourceMatches || [match]).map(m => m?.source).filter(Boolean));
-  const corroboration = sources.size >= 3 ? 100 : sources.size === 2 ? 80 : 55;
-  const shotQuality = available('TotalShots') && available('ShotsOnTarget') ? 100 :
-    available('TotalShots') || available('ShotsOnTarget') ? 60 : 25;
-  const percent = Math.max(0,Math.min(100,Math.round(
-    (coverage/5*100)*0.45 + consistency*0.25 + corroboration*0.15 + shotQuality*0.15
-  )));
-  return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,method:'data-quality-v2'};
+  const shotSupport = has('TotalShots') && has('ShotsOnTarget') &&
+    Number(stats.homeTotalShots)+Number(stats.awayTotalShots) >= 8 &&
+    Number(stats.homeShotsOnTarget)+Number(stats.awayShotsOnTarget) >= 3;
+  const attackSupport = has('DangerousAttacks') &&
+    Number(stats.homeDangerousAttacks)+Number(stats.awayDangerousAttacks) >= 20;
+  const cornerSupport = has('Corners') &&
+    Number(stats.homeCorners)+Number(stats.awayCorners) >= 4;
+  const agreement = Math.max(0,Math.min(100,consistency * 0.55 +
+    (Number(shotSupport)+Number(attackSupport)+Number(cornerSupport))/3*45));
+  const reliableMomentum = momentum?.available && Number.isFinite(Number(momentum.minuteGap)) &&
+    momentum.minuteGap > 0 && momentum.minuteGap <= 20;
+  const momentumReliability = reliableMomentum ? Math.min(100,65 +
+    (Number(momentum.totalSOT)>0 ? 15 : 0) + (Number(momentum.totalDangerous)>0 ? 20 : 0)) : 0;
+  const stability = reliableMomentum ? 75 : 35; // conservative without a verified trend
+  const percent = Math.round(Math.max(0,Math.min(100,
+    quality*0.30 + agreement*0.30 + momentumReliability*0.25 + stability*0.15)) * 100)/100;
+  return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,
+    components:{quality,agreement,momentumReliability,stability},method:'live-confidence-v3'};
 }
 
-  const ruleConfidence = calculateRuleConfidence(stats, match, minute);
+  const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
   // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
   const followupState = alertState.get(alertKey);
   const decisionReason = String(alertDecision.reason || 'UNKNOWN');
   const monitoring = !alertDecision.send && followupState &&
     (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
-     decisionReason.startsWith('RULE_INCREASE_LOW'));
+     decisionReason.startsWith('MONITORING'));
   const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
   console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | Rule ${ai.efficiency}% | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
   const result = {
