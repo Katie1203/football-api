@@ -28,9 +28,8 @@ const FLASHSCORE_LIVE_URL =
 const LIVE_FOOTBALL_HOST =
   'free-api-live-football-data.p.rapidapi.com';
 
-const LIVE_FOOTBALL_URL =
-  `https://${LIVE_FOOTBALL_HOST}${process.env.LIVE_FOOTBALL_LIVE_PATH || ''}`;
-const LIVE_FOOTBALL_LIVE_ENABLED = Boolean(process.env.LIVE_FOOTBALL_LIVE_PATH);
+// LiveFootball discovery uses its fixed /matches route; no Render path variable.
+const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/matches`;
 const FOTMOB_HOST = 'fotmob-api.p.rapidapi.com';
 const FOTMOB_KEY = PAID_RAPIDAPI_KEY;
 const FOTMOB_CACHE_MS = 60000;
@@ -1098,15 +1097,16 @@ async function fetchLiveMatchesFromFlashScore() {
       );
 
 
-    // FlashScore LIVE is grouped by tournament; retain league metadata per fixture.
-    const payload = Array.isArray(r.data) ? r.data :
-      (r.data?.data || r.data?.matches || r.data?.events || []);
-    if (!Array.isArray(payload)) return [];
-    return payload.flatMap(group => Array.isArray(group?.matches)
-      ? group.matches.map(m => ({...m,
-          tournament_name: m.tournament_name || group.name,
-          country_name: m.country_name || group.country_name}))
-      : [group]);
+    return (
+      Array.isArray(r.data)
+        ? r.data
+        : (
+            r.data?.data ||
+            r.data?.matches ||
+            r.data?.events ||
+            []
+          )
+    );
 
   } catch (e) {
 
@@ -1124,7 +1124,8 @@ async function fetchLiveMatchesFromLiveFootball() {
 
   try {
 
-    if (!PAID_RAPIDAPI_KEY || !LIVE_FOOTBALL_LIVE_ENABLED) {
+    if (!PAID_RAPIDAPI_KEY) {
+      console.log('[Source LiveFootball] SKIPPED | RAPIDAPI_KEY missing');
       return [];
     }
 
@@ -1153,11 +1154,13 @@ async function fetchLiveMatchesFromLiveFootball() {
       );
 
 
-    return (
-      r.data?.result ||
-      r.data?.matches ||
-      []
-    );
+    const payload = r.data?.response ?? r.data?.result ?? r.data?.data ?? r.data;
+    const matches = Array.isArray(payload) ? payload : (payload?.matches ?? payload?.events ?? []);
+    if (!Array.isArray(matches)) {
+      console.warn('[Source LiveFootball] Unexpected LIVE response schema');
+      return [];
+    }
+    return matches;
 
   } catch (e) {
 
@@ -1280,11 +1283,9 @@ async function fetchFotMobStats(id) {
 }
 
 async function fetchLiveFootballDetailStats(eventId) {
-  // Endpoint is not verified; disable calls until explicitly configured.
-  const configuredPath = String(process.env.LIVE_FOOTBALL_STATS_PATH || '').trim();
-  if (!PAID_RAPIDAPI_KEY || !eventId || !configuredPath.startsWith('/')) return createEmptyStats();
+  if (!PAID_RAPIDAPI_KEY || !eventId) return createEmptyStats();
   try {
-    const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}${configuredPath}`, {
+    const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}/football-get-match-event-all-stats`, {
       params: { eventid: eventId },
       headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVE_FOOTBALL_HOST },
       timeout: 10000
@@ -1461,7 +1462,7 @@ function mergeStats(target, source) {
     const value =
       safeNumber(source[key]);
 
-    if (!(target._present?.[key] === true) && (source._present?.[key] === true || value > 0)) {
+    if (source._present?.[key] || value > 0) {
       target[key] = value;
       target._present[key] = true;
     }
@@ -2548,11 +2549,15 @@ async function fetchFlashScoreStats(
   }
 
 
-  // Do not burn RapidAPI quota probing three unverified endpoint paths.
-  // Set FLASHSCORE_STATS_PATH only after verifying a real endpoint.
-  const configuredPath = String(process.env.FLASHSCORE_STATS_PATH || '').trim();
-  if (!configuredPath || !configuredPath.startsWith('/')) return stats;
-  const urls = [`https://${FLASHSCORE_HOST}${configuredPath.replace('{matchId}', encodeURIComponent(matchId))}`];
+  const urls = [
+
+    `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/${matchId}/statistics`,
+
+    `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/${matchId}/statistics`,
+
+    `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/statistics?match_id=${matchId}`
+
+  ];
 
 
   let lastError = null;
@@ -2824,11 +2829,10 @@ async function fetchMatchDetailStats(
   // BƯỚC 2: lấy thêm cả chỉ số phụ nếu còn thiếu, không chỉ kiểm tra 5 core.
   // Ưu tiên SofaScore -> FlashScore -> Live Football.
   const sourcePriority = {
-    apisports: 5,
-    sofascore: 4,
-    flashscore: 3,
-    fotmob: 2,
-    'live-football': 1
+    sofascore: 3,
+    'live-football': 2,
+    fotmob: 1,
+    flashscore: 0, apisports: -1
   };
 
   const orderedSources = [...sourceMatches].sort(
@@ -3309,8 +3313,8 @@ function formatStatsText(
 
   return [
     `📊 LIVE: Attack ${stats.homeAttacks}-${stats.awayAttacks} | Danger ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | Poss ${stats.homePossession}%-${stats.awayPossession}%`,
-    `🎯 SÚT: Shots ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | Off ${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`,
-    `🚩 KHÁC: Corner ${stats.homeCorners}-${stats.awayCorners}${bigChanceText}`,
+    `🎯 SÚT: Shots ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | Off ${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget} | Blocked ${stats.homeBlockedShots}-${stats.awayBlockedShots}`,
+    `🚩 KHÁC: Corner ${stats.homeCorners}-${stats.awayCorners}${bigChanceText} | Yellow ${stats.homeYellowCards}-${stats.awayYellowCards} | Red ${stats.homeRedCards}-${stats.awayRedCards}`,
     `🔥 THẾ TRẬN: ${style.text} | Pressure ${homePressureShare}%-${awayPressureShare}%`
   ].join('\n');
 }
@@ -3412,7 +3416,7 @@ function calculateMomentum(
 
 
   // Keep the last valid snapshot if a provider returns partial/reset counters.
-  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','Corners'];
+  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','BlockedShots','Corners'];
   const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
   const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
   const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
@@ -5066,7 +5070,7 @@ function evaluateMatchDynamicAI(
   };
   const finishing = weighted([
     [normRate('TotalShots',30),0.35], [normRate('ShotsOnTarget',12),0.35],
-    [normRate('ShotsOffTarget',16),0.15],
+    [normRate('ShotsOffTarget',16),0.08], [normRate('BlockedShots',10),0.07],
     [normRatio('ShotsOnTarget','TotalShots',0.5),0.15]
   ]);
   const attacksGroup = weighted([
@@ -5075,7 +5079,7 @@ function evaluateMatchDynamicAI(
   ]);
   const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
   const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
-  const gameState = scoreState; // Exclude card signals from Rule Confidence.
+  const gameState = weighted([[cardScore,0.50],[scoreState,0.50]]);
   const groups = [
     [finishing,0.30],[attacksGroup,0.20],
     [momentum?.available ? momentumScore : null,0.20],
@@ -5271,11 +5275,13 @@ function evaluateMatchDynamicAI(
 
     `📊 Possession Pressure: ${round1(possessionScore)}%`,
 
+    `🧱 Blocked Score: ${round1(blockedScore)}%`,
 
     `🚩 Corner Score: ${round1(cornerScore)}%`,
 
     `💰 Odds Score: ${round1(oddsScore)}%`,
 
+    `🟨🟥 Card Score: ${round1(cardScore)}%`
   ];
 
 
@@ -5437,28 +5443,32 @@ function detectTenMinuteSpike(previous, current) {
   };
   const shots = delta('TotalShots'), sot = delta('ShotsOnTarget');
   const corners = delta('Corners'), attacks = delta('Attacks');
-  const dangerous = delta('DangerousAttacks');
+  const dangerous = delta('DangerousAttacks'), red = delta('RedCards');
   const sum = x => x === null ? null : x[0] + x[1];
   const sh = sum(shots), so = sum(sot), co = sum(corners);
   const da = sum(dangerous), at = sum(attacks);
   const cornerDensity = co === null ? null : co / gap;
   const pressure = da !== null && at !== null && da >= 9 && at >= 12;
+  // Cards count only when a new red card exists AND the opposing team has attacking momentum.
+  const cardContext = red !== null && red.some((v,i) => v > 0 &&
+    ((shots !== null && shots[1-i] >= 2) || (dangerous !== null && dangerous[1-i] >= 6)));
   const signals = {
     finishing: (sh !== null && sh >= 4) || (so !== null && so >= 2),
     corners: co !== null && co >= 2,
-    pressure: pressure
+    pressure: pressure,
+    cards: cardContext
   };
   const score = Math.min(100,
     (sh !== null && sh >= 4 ? 20 : 0) +
     (so !== null && so >= 2 ? 25 : 0) +
     (co !== null && co >= 2 ? 15 : 0) +
     (cornerDensity !== null && cornerDensity >= 0.3 ? 10 : 0) +
-    (pressure ? 20 : 0));
+    (pressure ? 20 : 0) + (cardContext ? 10 : 0));
   const groups = Object.values(signals).filter(Boolean).length;
   const confirmed = score >= BIG_SPIKE_MIN_SCORE && groups >= 2 &&
     (signals.finishing || signals.corners || signals.pressure);
   return {confirmed,score,groups,cornerDensity,signals,
-    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'}`};
+    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'} RED=${sum(red) ?? 'NA'}`};
 }
 
 function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
@@ -6496,7 +6506,7 @@ async function sendTelegramAlert(
   }
   if (hasPair('homeCorners', 'awayCorners')) statLines.push(`🚩 Góc ${pair('homeCorners', 'awayCorners')}`);
   if (hasPair('homePossession', 'awayPossession')) statLines.push(`📊 Kiểm soát ${pair('homePossession', 'awayPossession')}%`);
-
+  if (hasPair('homeRedCards', 'awayRedCards')) statLines.push(`🟥 Thẻ đỏ ${pair('homeRedCards', 'awayRedCards')}`);
   const momentum = item.momentum;
   const changes = [];
   if (momentum?.available) {
@@ -6526,8 +6536,8 @@ async function sendTelegramAlert(
     (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
       ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
     (hasPair('homeTotalShots','awayTotalShots') || hasPair('homeShotsOnTarget','awayShotsOnTarget'))
-      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')}` : null,
-    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')}`,
+      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')} | Blocked ${pair('homeBlockedShots','awayBlockedShots')}` : null,
+    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
@@ -6657,9 +6667,7 @@ async function fetchAllLiveMatches() {
   const all = [];
   for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football], ['FotMob', fotmob]]) {
     if (result.status === 'fulfilled') {
-      if (!(name === 'LiveFootball' && !LIVE_FOOTBALL_LIVE_ENABLED)) {
-        console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
-      }
+      console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
     } else {
       logSourceError(name, 'LIVE', result.reason);
     }
@@ -7067,7 +7075,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | BLK ${stats.homeBlockedShots}-${stats.awayBlockedShots} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
