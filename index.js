@@ -92,7 +92,7 @@ async function fetchApiSportsStats(id) {
       'Attacks':'Attacks','Dangerous Attacks':'DangerousAttacks','Dangerous attacks':'DangerousAttacks',
       'Red Cards':'RedCards','Yellow Cards':'YellowCards',
       'Shots off Goal':'ShotsOffTarget','Shots insidebox':'ShotsInsideBox','Shots inside box':'ShotsInsideBox','Blocked Shots':'BlockedShots',
-      'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves'};
+      'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves','Expected Goals':'ExpectedGoals','expected_goals':'ExpectedGoals','xG':'ExpectedGoals'};
     for (let side=0;side<2;side++) {
       for (const row of teams[side].statistics || []) {
         const suffix=fieldMap[row.type];
@@ -1218,9 +1218,9 @@ async function fetchLiveMatchesFromFotMob() {
   }
 }
 
-function parseFotMobTeamStats(data, period = 'All') {
+function parseFotMobTeamStats(data) {
   const result = createEmptyStats();
-  const sections = data?.content?.stats?.Periods?.[period]?.stats || [];
+  const sections = data?.content?.stats?.Periods?.All?.stats || [];
   const names = {
     'BallPossesion': ['homePossession', 'awayPossession'],
     'total_shots': ['homeTotalShots', 'awayTotalShots'],
@@ -1230,6 +1230,7 @@ function parseFotMobTeamStats(data, period = 'All') {
     'blocked_shots': ['homeBlockedShots', 'awayBlockedShots'],
     'corners': ['homeCorners', 'awayCorners'],
     'big_chance': ['homeBigChances', 'awayBigChances'],
+    'expected_goals': ['homeExpectedGoals', 'awayExpectedGoals'],
     'yellow_cards': ['homeYellowCards', 'awayYellowCards'],
     'red_cards': ['homeRedCards', 'awayRedCards']
   };
@@ -1241,6 +1242,7 @@ function parseFotMobTeamStats(data, period = 'All') {
         totalshots: 'total_shots', shots: 'total_shots', shotsontarget: 'ShotsOnTarget',
         shotsongoal: 'ShotsOnTarget', shotsofftarget: 'ShotsOffTarget', shotsinsidebox: 'ShotsInsideBox', blockedshots: 'blocked_shots',
         corners: 'corners', cornerkicks: 'corners', bigchances: 'big_chance',
+        expectedgoals: 'expected_goals', xg: 'expected_goals',
         yellowcards: 'yellow_cards', redcards: 'red_cards'
       };
       const keys = names[item.key] || names[aliases[normalizedKey]];
@@ -1272,11 +1274,6 @@ async function fetchFotMobStats(id) {
     const data = response.data?.data || response.data;
     if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
     const stats = parseFotMobTeamStats(data);
-    const periods = data?.content?.stats?.Periods || {};
-    const secondKey = Object.keys(periods).find(k => /^(secondhalf|2ndhalf|second half|2nd half|2nd)$/i.test(k.replace(/[_-]/g,'').trim()));
-    const firstKey = Object.keys(periods).find(k => /^(firsthalf|1sthalf|first half|1st half|1st)$/i.test(k.replace(/[_-]/g,'').trim()));
-    if (secondKey) stats._h2 = parseFotMobTeamStats(data, secondKey);
-    if (firstKey) stats._h1 = parseFotMobTeamStats(data, firstKey);
     fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
     return stats;
   } catch (error) {
@@ -1418,6 +1415,8 @@ function createEmptyStats() {
     // OPTIONAL
     // ------------------------------
 
+    homeExpectedGoals: 0,
+    awayExpectedGoals: 0,
     homeBigChances: 0,
     awayBigChances: 0,
 
@@ -1629,6 +1628,11 @@ function detectStatType(statName) {
 
 
   // ------------------------------------------
+  // EXPECTED GOALS (xG) - optional, never part of Rule/Spike
+  // ------------------------------------------
+  if (n === 'xg' || n === 'expected goals' || n === 'expected goal' || n === 'expectedgoals') return 'expectedGoals';
+
+  // ------------------------------------------
   // BIG CHANCES
   // ------------------------------------------
 
@@ -1692,7 +1696,7 @@ function applyStat(
     safeNumber(awayValue);
 
 
-  const statKey = {attacks:'Attacks',dangerousAttacks:'DangerousAttacks',shotsOnTarget:'ShotsOnTarget',blockedShots:'BlockedShots',shotsOffTarget:'ShotsOffTarget',shotsInsideBox:'ShotsInsideBox',totalShots:'TotalShots',possession:'Possession',corners:'Corners',yellowCards:'YellowCards',redCards:'RedCards',bigChances:'BigChances',goalkeeperSaves:'GoalkeeperSaves',fouls:'Fouls'}[type];
+  const statKey = {attacks:'Attacks',dangerousAttacks:'DangerousAttacks',shotsOnTarget:'ShotsOnTarget',blockedShots:'BlockedShots',shotsOffTarget:'ShotsOffTarget',shotsInsideBox:'ShotsInsideBox',totalShots:'TotalShots',possession:'Possession',corners:'Corners',yellowCards:'YellowCards',redCards:'RedCards',bigChances:'BigChances',goalkeeperSaves:'GoalkeeperSaves',fouls:'Fouls',expectedGoals:'ExpectedGoals'}[type];
   if (statKey) {
     if (homeValue !== null && homeValue !== undefined && homeValue !== '') stats._present['home'+statKey] = true;
     if (awayValue !== null && awayValue !== undefined && awayValue !== '') stats._present['away'+statKey] = true;
@@ -1810,6 +1814,11 @@ function applyStat(
 
       break;
 
+
+    case 'expectedGoals':
+      stats.homeExpectedGoals = home;
+      stats.awayExpectedGoals = away;
+      break;
 
     case 'bigChances':
 
@@ -2112,6 +2121,7 @@ function parseDirectKeys(
 
 
   const directPairs = [
+    { type: 'expectedGoals', homeKeys: ['homeExpectedGoals','home_expected_goals','homeXG','home_xg'], awayKeys: ['awayExpectedGoals','away_expected_goals','awayXG','away_xg'] },
 
     {
       type: 'attacks',
@@ -2333,6 +2343,7 @@ function parseDirectKeys(
   // -----------------------------------------
 
   const objectPairs = [
+    ['expectedGoals','expectedGoals'], ['expected_goals','expectedGoals'], ['xg','expectedGoals'],
 
     [
       'attacks',
@@ -2737,14 +2748,14 @@ function parseStatsFromRawMatch(
 // ==========================================================
 // CROSS-SOURCE PARTIAL STATS
 // 5 chỉ số ưu tiên để quyết định có cần fallback thêm hay không:
-// ATT / Dangerous Attack / Total Shots / SOT / Corners.
+// Total Shots / SOT / Corners / Shots Inside Box / Shots Off Target.
 // Mục tiêu: ít nhất 4/5; nếu dữ liệu raw của 3 nguồn ghép được 5/5 thì giữ 5/5.
 // Chỉ gọi detail API khi sau khi ghép raw vẫn < 4/5 để tránh lãng phí API.
 // ==========================================================
 
 function getCoreStatsCoverage(stats) {
   if (!stats) return 0;
-  const fields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  const fields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
   return fields.filter(field => ['home','away'].every(side =>
     stats._present?.[side+field] === true ||
     // Legacy parsers without presence metadata can still confirm positive values.
@@ -2766,8 +2777,6 @@ function mergeMissingStats(target, source) {
       target._fieldSources[key] = source.source || 'fallback';
     }
   }
-  if (source._h2 && !target._h2) target._h2 = source._h2;
-  if (source._h1 && !target._h1) target._h1 = source._h1;
   if (source.hasData) target.hasData = true;
   return target;
 }
@@ -2860,7 +2869,7 @@ async function fetchMatchDetailStats(
       (sourcePriority[a.source] || 0)
   );
 
-  const desiredFields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  const desiredFields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
   const missingFields = () => desiredFields.filter(f => !['home','away'].every(side => stats._present?.[side+f] === true));
   if (missingFields().length) {
 
@@ -2879,17 +2888,6 @@ async function fetchMatchDetailStats(
   }
 
 
-
-  // H2 provider period statistics are independent of full-match coverage.
-  // Reuse provider detail cache; never infer H2 from a post-HT snapshot.
-  if (!stats._h2) {
-    const fotmobMatch = sourceMatches.find(x => x.source === 'fotmob' && x.id);
-    if (fotmobMatch) {
-      const periodStats = await fetchFotMobStats(fotmobMatch.id);
-      if (periodStats._h2) stats._h2 = periodStats._h2;
-      if (periodStats._h1) stats._h1 = periodStats._h1;
-    }
-  }
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
   if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
@@ -2930,7 +2928,7 @@ async function fetchMatchDetailStats(
 
 
   console.log(`[STATS MISSING] ${match.homeName} vs ${match.awayName} | ${missingFields().join(',') || 'none'} | matched=${sourceMatches.map(x => x.source+':'+x.id).join(',')} | fieldSources=${JSON.stringify(stats._fieldSources || {})}`);
-  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | ATT=${stats.homeAttacks}-${stats.awayAttacks} DA=${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners}`);
+  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
 
   stats.source =
     `cross-source-${getCoreStatsCoverage(stats)}/5`;
@@ -2946,71 +2944,6 @@ async function fetchMatchDetailStats(
   return stats;
 }
 
-
-// H2-only Rule inputs. Snapshot at the beginning of H2 is the baseline.
-// Persist through audit storage; provider-specific period stats take precedence.
-const H2_COUNTERS = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget',
-  'ShotsOffTarget','Corners','BigChances','ShotsInsideBox'];
-const h2Baselines = new Map();
-const h2LoadAttempts = new Set();
-async function verifiedSecondHalfStats(full, matchKey, minute, match) {
-  const period = full?._h2;
-  if (period && ['TotalShots','ShotsOnTarget','Corners'].some(f =>
-    ['home','away'].every(side => period._present?.[side+f] === true))) {
-    const out = createEmptyStats();
-    for (const side of ['home','away']) for (const field of [...H2_COUNTERS,'Possession']) {
-      const key = side+field;
-      if (period._present?.[key] === true && Number.isFinite(Number(period[key]))) {
-        out[key] = Number(period[key]); out._present[key] = true;
-      }
-    }
-    out.source = 'provider-h2'; out.hasData = true;
-    return out;
-  }
-  if (!h2LoadAttempts.has(matchKey)) {
-    h2LoadAttempts.add(matchKey);
-    try { const stored = await audit.getH2Baseline(matchKey); if (stored) h2Baselines.set(matchKey,stored); }
-    catch(e) { console.warn('[H2 BASELINE LOAD]',e.message); }
-  }
-  let baseline = h2Baselines.get(matchKey);
-  const sourceFor = key => full?._fieldSources?.[key] || full?.source || 'unknown';
-  // Only a snapshot at minute 46 can be treated as the beginning of H2.
-  // At 47+ it is an observed partial baseline, not a confirmed full H2.
-  if (!baseline) {
-    baseline = {minute, createdAt:Date.now(), fields:{}, sources:{},
-      homeScore:match.homeScore,awayScore:match.awayScore,complete:minute===46};
-    for (const side of ['home','away']) for (const field of H2_COUNTERS) {
-      const key=side+field;
-      if (full?._present?.[key] === true && Number.isFinite(Number(full[key]))) {
-        baseline.fields[key]=Number(full[key]); baseline.sources[key]=sourceFor(key);
-      }
-    }
-    h2Baselines.set(matchKey,baseline);
-    try { await audit.saveH2Baseline(matchKey,baseline); }
-    catch(e) { console.warn('[H2 BASELINE SAVE]',e.message); }
-    console.log(`[H2 BASELINE] ${match.homeName} vs ${match.awayName} | ${minute}' | ${baseline.complete?'start-of-H2':'PARTIAL, no full-H2 Rule'} | NO RULE until next snapshot`);
-    return null;
-  }
-  if (!baseline.complete || minute <= baseline.minute) {
-    console.log(`[H2 PARTIAL] ${match.homeName} vs ${match.awayName} | baseline ${baseline.minute}' | provider H2 required for full-H2 Rule`);
-    return null;
-  }
-  const out=createEmptyStats();
-  for (const side of ['home','away']) for (const field of H2_COUNTERS) {
-    const key=side+field;
-    if (baseline.fields[key] === undefined || full?._present?.[key] !== true) continue;
-    // Cross-source changes can reset/rebase counters; never subtract incompatible sources.
-    if (baseline.sources[key] !== sourceFor(key)) continue;
-    const now=Number(full[key]), before=baseline.fields[key];
-    if (!Number.isFinite(now) || now<before) continue;
-    out[key]=now-before;out._present[key]=true;
-  }
-  // Percentage possession cannot be subtracted from the cumulative value.
-  out.source='snapshot-h2';
-  out.hasData=['TotalShots','ShotsOnTarget','Corners'].some(f =>
-    ['home','away'].every(side=>out._present[side+f]===true));
-  return out.hasData ? out : null;
-}
 
 // ==========================================================
 // 14. TOTAL HELPERS
@@ -5131,7 +5064,7 @@ function evaluateMatchDynamicAI(
   const normRate = (field, reference) => {
     const hk='home'+field, ak='away'+field;
     if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
-    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute-45) * 100 / reference * 100,0,100);
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
   };
   const normRatio = (numerator, denominator, reference) => {
     if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
@@ -5146,12 +5079,14 @@ function evaluateMatchDynamicAI(
   };
   const finishing = weighted([
     [normRate('TotalShots',30),0.35], [normRate('ShotsOnTarget',12),0.35],
-    [normRate('ShotsOffTarget',16),0.08],
     [normRatio('ShotsOnTarget','TotalShots',0.5),0.15]
   ]);
+  // Replace unavailable ATT/DA with verified OFF and Inside Box evidence.
+  // OFF is not counted again in finishing; both new metrics require provider presence.
   const attacksGroup = weighted([
-    [normRate('Attacks',160),0.35],[normRate('DangerousAttacks',100),0.45],
-    [normRatio('DangerousAttacks','Attacks',0.6),0.20]
+    [normRate('ShotsInsideBox',14),0.55],
+    [normRate('ShotsOffTarget',16),0.25],
+    [normRatio('ShotsInsideBox','TotalShots',0.55),0.20]
   ]);
   const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
   const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
@@ -6599,6 +6534,29 @@ async function sendTelegramAlert(
     ? `💰 Kèo nhà cái (${cleanTelegramText(bookmaker)}): Over ${odd.point ?? "?"} @ ${Number(odd.price).toFixed(2)} — chỉ tham khảo, KHÔNG cộng Rule`
     : null;
   const oddNote = oddLine ? ` └─> Odds Over ${Number(odd.price) <= 1.85 ? 'ổn định' : 'tham khảo'} (${Number(odd.price).toFixed(2)})` : null;
+  // xG chỉ phục vụ nhận định ngắn gọn, không in giá trị, không ảnh hưởng Rule/Spike.
+  // Chỉ kết luận về chất lượng cơ hội ĐÃ TẠO khi API xác nhận xG của cả hai đội.
+  const xgAvailable = st._present?.homeExpectedGoals === true && st._present?.awayExpectedGoals === true;
+  const xgHome = Number(st.homeExpectedGoals);
+  const xgAway = Number(st.awayExpectedGoals);
+  let qualityAssessment = null;
+  if (xgAvailable && Number.isFinite(xgHome) && Number.isFinite(xgAway) && xgHome >= 0 && xgAway >= 0) {
+    const xgDiff = xgHome - xgAway;
+    const shotsAvailable = st._present?.homeTotalShots === true && st._present?.awayTotalShots === true;
+    const homeShots = Number(st.homeTotalShots);
+    const awayShots = Number(st.awayTotalShots);
+    if (xgDiff >= 0.5) {
+      qualityAssessment = shotsAvailable && homeShots < awayShots
+        ? '🧠 NHẬN ĐỊNH: Chủ nhà sút ít hơn nhưng tạo cơ hội chất lượng hơn.'
+        : '🧠 NHẬN ĐỊNH: Chủ nhà tạo cơ hội chất lượng vượt trội.';
+    } else if (xgDiff <= -0.5) {
+      qualityAssessment = shotsAvailable && awayShots < homeShots
+        ? '🧠 NHẬN ĐỊNH: Đội khách sút ít hơn nhưng tạo cơ hội chất lượng hơn.'
+        : '🧠 NHẬN ĐỊNH: Đội khách tạo cơ hội chất lượng vượt trội.';
+    } else {
+      qualityAssessment = '🧠 NHẬN ĐỊNH: Chất lượng cơ hội hai đội tương đối cân bằng.';
+    }
+  }
   const compactStats = [
     (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
       ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
@@ -6606,6 +6564,7 @@ async function sendTelegramAlert(
       ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')}` : null,
     `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
+    qualityAssessment,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7088,17 +7047,12 @@ async function analyzeOneMatch(
 
 
   // ======================================================
-  // AI RULE: verified H2 stats ONLY; no full-match fallback.
+  // AI RULE
   // ======================================================
-  const ruleStats = await verifiedSecondHalfStats(stats, alertKey, minute, match);
-  if (!ruleStats || !['TotalShots','ShotsOnTarget','Corners'].some(f =>
-      ['home','away'].every(side => ruleStats._present?.[side+f] === true))) {
-    console.log(`[RULE H2 N/A] ${match.homeName} vs ${match.awayName} | ${minute}' | missing verified second-half statistics | NO TELEGRAM`);
-    return null;
-  }
+
   const ai =
     evaluateMatchDynamicAI(
-      ruleStats,
+      stats,
       odds,
       momentum,
       minute,
@@ -7117,7 +7071,7 @@ async function analyzeOneMatch(
       match.awayScore,
       ai.efficiency,
       minute,
-      ruleStats,
+      stats,
       momentum,
       ai.styleType
     );
@@ -7139,8 +7093,6 @@ async function analyzeOneMatch(
     );
 
 
-  // Attach H1/H2 to audit only; never alter full-match spike snapshots.
-  stats._h2Verified = ruleStats;
   const compactGoalTimeline =
     extractGoalTimeline(
       match.raw
@@ -7169,18 +7121,20 @@ async function analyzeOneMatch(
 function calculateRuleConfidence(stats, match, minute, momentum, rule) {
   // Evidence-based diagnostic score, NOT a probability and NEVER an alert gate.
   // Missing indicators are omitted rather than interpreted as genuine zeros.
-  const core = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
+  const core = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
   const has = f => ['home','away'].every(side => stats?._present?.[side+f] === true);
   const sum = f => Number(stats['home'+f] || 0) + Number(stats['away'+f] || 0);
   const clamp = n => Math.max(0,Math.min(1,n));
   const coverage = core.filter(has).length;
   const parts = [];
   const add = (key, weight, value, available) => {if(available) parts.push({key,weight,value:100*clamp(value)});};
-  const attacks = has('Attacks'), dangerous = has('DangerousAttacks');
-  const attackEvidence = dangerous ? clamp(sum('DangerousAttacks')/55) : attacks ? clamp(sum('Attacks')/110) : 0;
-  add('attackPressure',20,attackEvidence,dangerous || attacks);
+  const boxPresent = has('ShotsInsideBox'), offPresent = has('ShotsOffTarget');
+  const pressureEvidence = [];
+  if (boxPresent) pressureEvidence.push(clamp(sum('ShotsInsideBox')/10));
+  if (offPresent) pressureEvidence.push(clamp(sum('ShotsOffTarget')/12));
+  add('attackPressure',20,pressureEvidence.length ? pressureEvidence.reduce((a,b)=>a+b,0)/pressureEvidence.length : 0,pressureEvidence.length>0);
   const sh = has('TotalShots'), sot = has('ShotsOnTarget');
-  const off = has('ShotsOffTarget'), box = has('ShotsInsideBox');
+  const off = offPresent, box = boxPresent;
   const shots = sh ? sum('TotalShots') : 0;
   const onTarget = sot ? sum('ShotsOnTarget') : 0;
   const shotVolume = sh ? clamp(shots/22) : 0;
@@ -7191,10 +7145,10 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
   add('finishing',30,qualityPieces.reduce((a,b)=>a+b,0)/qualityPieces.length,sh || sot);
   add('corners',15,clamp(sum('Corners')/11),has('Corners'));
   const reliableMomentum = momentum?.available === true && Number(momentum.minuteGap)>0 && Number(momentum.minuteGap)<=20 && Number(minute)>=46;
-  const momentumSignals = reliableMomentum ? [Number(momentum.totalSOT)||0,Number(momentum.totalDangerous)||0,Number(momentum.totalCorners)||0] : [];
+  const momentumSignals = reliableMomentum ? [Number(momentum.totalSOT)||0,Number(momentum.totalCorners)||0] : [];
   const pace = reliableMomentum ? 10/Number(momentum.minuteGap) : 0;
-  add('liveMomentum',25, reliableMomentum ? clamp((momentumSignals[0]*pace/3 + momentumSignals[1]*pace/14 + momentumSignals[2]*pace/4)/3) : 0,reliableMomentum);
-  const agreementSignals = [dangerous && sum('DangerousAttacks')>=25, sot && onTarget>=4,has('Corners')&&sum('Corners')>=5].filter((v,i)=>[dangerous,sot,has('Corners')][i]);
+  add('liveMomentum',25, reliableMomentum ? clamp((momentumSignals[0]*pace/3 + momentumSignals[1]*pace/4)/2) : 0,reliableMomentum);
+  const agreementSignals = [box && sum('ShotsInsideBox')>=4, sot && onTarget>=4,has('Corners')&&sum('Corners')>=5].filter((v,i)=>[box,sot,has('Corners')][i]);
   add('agreement',10,agreementSignals.filter(Boolean).length/agreementSignals.length,agreementSignals.length>=2);
   const weight = parts.reduce((a,p)=>a+p.weight,0);
   const evidence = weight ? parts.reduce((a,p)=>a+p.weight*p.value,0)/weight : 0;
@@ -7202,7 +7156,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
   const percent = Math.round(evidence*100)/100;
   return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,
     components:Object.fromEntries(parts.map(p=>[p.key,Math.round(p.value*100)/100])),
-    availableWeight:weight,method:'live-evidence-v4'};
+    availableWeight:weight,method:'live-evidence-core5-box-off-v5'};
 }
 
   const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
