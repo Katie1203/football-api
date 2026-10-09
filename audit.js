@@ -16,7 +16,7 @@ return {...r,goalResult,overResult};}
 async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data);}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
-const LIVE_FIELDS=['TotalShots','ShotsOnTarget','ShotsOffTarget','ShotsInsideBox','Attacks','DangerousAttacks','Corners','Possession','BigChances'];
+const LIVE_FIELDS=['TotalShots','ShotsOnTarget','ShotsOffTarget','Attacks','DangerousAttacks','Corners','Possession','BigChances'];
 function captureLiveStats(stats){
  const out={};if(!stats)return out;
  for(const field of LIVE_FIELDS){for(const side of ['home','away']){
@@ -25,9 +25,9 @@ function captureLiveStats(stats){
  }}return out;
 }
 function captureConfidence(c){if(!c)return null;
- const out={coverage:safeNum(c.coverage),total:safeNum(c.total),percent:safeNum(c.percent),label:String(c.label||''),method:String(c.method||'coverage-v1'),availableWeight:safeNum(c.availableWeight)};
+ const out={coverage:safeNum(c.coverage),total:safeNum(c.total),percent:safeNum(c.percent),label:String(c.label||''),method:String(c.method||'coverage-v1')};
  if(c.components && typeof c.components==='object'){
-  out.components={};for(const k of ['attackPressure','finishing','corners','liveMomentum','agreement','quality','momentumReliability','stability'])if(c.components[k]!=null)out.components[k]=safeNum(c.components[k]);
+  out.components={};for(const k of ['quality','agreement','momentumReliability','stability'])out.components[k]=safeNum(c.components[k]);
  }return out;
 }
 function captureSpike(spike){if(!spike)return null;

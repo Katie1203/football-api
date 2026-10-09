@@ -89,6 +89,7 @@ async function fetchApiSportsStats(id) {
     if (!Array.isArray(teams) || teams.length !== 2) return result;
     const fieldMap = {'Shots on Goal':'ShotsOnTarget','Total Shots':'TotalShots',
       'Corner Kicks':'Corners','Ball Possession':'Possession',
+      'Attacks':'Attacks','Dangerous Attacks':'DangerousAttacks','Dangerous attacks':'DangerousAttacks',
       'Red Cards':'RedCards','Yellow Cards':'YellowCards',
       'Shots off Goal':'ShotsOffTarget','Shots insidebox':'ShotsInsideBox','Shots inside box':'ShotsInsideBox','Blocked Shots':'BlockedShots',
       'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves'};
@@ -2041,6 +2042,17 @@ function recursivelyParseStats(
   }
 
 
+  // Providers such as LiveFootball return {key, stats:[home,away], rawStats:[{value},{value}]}.
+  // Read only known statistical keys; never turn a title or momentum value into ATT/DA.
+  if (Array.isArray(node.stats) && node.stats.length === 2 &&
+      node.stats.every(x => x === null || typeof x !== 'object')) {
+    const kind = detectStatType(node.key || node.title || node.name || '');
+    if (kind) {
+      const pair = [0,1].map(i => node.rawStats?.[i]?.value ?? node.stats[i]);
+      applyStat(stats, kind, pair[0], pair[1]);
+    }
+  }
+
   parseGenericStatObject(
     node,
     stats
@@ -2530,6 +2542,7 @@ async function fetchSofaScoreStats(
 // 11. FLASHSCORE STATISTICS
 // ==========================================================
 
+const flashScoreStatsCache = new Map();
 async function fetchFlashScoreStats(
   matchId
 ) {
@@ -2545,6 +2558,9 @@ async function fetchFlashScoreStats(
     return stats;
   }
 
+
+  const cached = flashScoreStatsCache.get(String(matchId));
+  if (cached && Date.now() - cached.time < 90000) return cached.data;
 
   const urls = [
 
@@ -2608,7 +2624,7 @@ async function fetchFlashScoreStats(
 
         stats.source =
           'flashscore';
-
+        flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats});
         return stats;
       }
 
@@ -2622,6 +2638,7 @@ async function fetchFlashScoreStats(
 
   if (lastError) logSourceError('FlashScore', `STATS matchId=${matchId}`, lastError);
   else console.log(`[Source FlashScore] STATS matchId=${matchId} | Không có chỉ số`);
+  flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats});
   return stats;
 }
 
@@ -2826,10 +2843,8 @@ async function fetchMatchDetailStats(
   // BƯỚC 2: lấy thêm cả chỉ số phụ nếu còn thiếu, không chỉ kiểm tra 5 core.
   // Ưu tiên SofaScore -> FlashScore -> Live Football.
   const sourcePriority = {
-    sofascore: 3,
-    'live-football': 2,
-    fotmob: 1,
-    flashscore: 0, apisports: -1
+    apisports: 5, flashscore: 4, 'live-football': 3,
+    fotmob: 2, sofascore: 1
   };
 
   const orderedSources = [...sourceMatches].sort(
@@ -2838,7 +2853,7 @@ async function fetchMatchDetailStats(
       (sourcePriority[a.source] || 0)
   );
 
-  const desiredFields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners','ShotsOffTarget','ShotsInsideBox','Possession'];
+  const desiredFields = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget','Corners'];
   const missingFields = () => desiredFields.filter(f => !['home','away'].every(side => stats._present?.[side+f] === true));
   if (missingFields().length) {
 
@@ -2857,11 +2872,6 @@ async function fetchMatchDetailStats(
   }
 
 
-  // API-Football is final fallback when fewer than 5 core indicators are available.
-  if (missingFields().length) {
-    const apiMatch = sourceMatches.find(x => x.source === 'apisports');
-    if (apiMatch) mergeMissingStats(stats, await fetchApiSportsStats(apiMatch.id));
-  }
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
   if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
@@ -3310,8 +3320,8 @@ function formatStatsText(
 
   return [
     `📊 LIVE: Attack ${stats.homeAttacks}-${stats.awayAttacks} | Danger ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | Poss ${stats.homePossession}%-${stats.awayPossession}%`,
-    `🎯 SÚT: Shots ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | Off ${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget} | Blocked ${stats.homeBlockedShots}-${stats.awayBlockedShots}`,
-    `🚩 KHÁC: Corner ${stats.homeCorners}-${stats.awayCorners}${bigChanceText} | Yellow ${stats.homeYellowCards}-${stats.awayYellowCards} | Red ${stats.homeRedCards}-${stats.awayRedCards}`,
+    `🎯 SÚT: Shots ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | Off ${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`,
+    `🚩 KHÁC: Corner ${stats.homeCorners}-${stats.awayCorners}${bigChanceText}`,
     `🔥 THẾ TRẬN: ${style.text} | Pressure ${homePressureShare}%-${awayPressureShare}%`
   ].join('\n');
 }
@@ -3413,7 +3423,7 @@ function calculateMomentum(
 
 
   // Keep the last valid snapshot if a provider returns partial/reset counters.
-  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','BlockedShots','Corners'];
+  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','Corners'];
   const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
   const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
   const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
@@ -3686,15 +3696,6 @@ function calculateMomentum(
   }
 
 
-  // Blocked
-  if (blocked10 >= 4) {
-    score += 10;
-  } else if (blocked10 >= 2) {
-    score += 6;
-  } else if (blocked10 >= 1) {
-    score += 3;
-  }
-
 
   // Corners
   if (corners10 >= 4) {
@@ -3726,8 +3727,6 @@ function calculateMomentum(
 
     homeSOT * 5 +
 
-    homeBlocked * 2 +
-
     homeCorners * 1.8;
 
 
@@ -3738,8 +3737,6 @@ function calculateMomentum(
     awayDangerous * 0.35 +
 
     awaySOT * 5 +
-
-    awayBlocked * 2 +
 
     awayCorners * 1.8;
 
@@ -3861,7 +3858,6 @@ function formatMomentumText(
     `🚀 Attack: +${momentum.homeAttack} - +${momentum.awayAttack}`,
     `🔥 Dangerous: +${momentum.homeDangerous} - +${momentum.awayDangerous}`,
     `🎯 SOT: +${momentum.homeSOT} - +${momentum.awaySOT}`,
-    `🧱 Blocked: +${momentum.homeBlocked} - +${momentum.awayBlocked}`,
     `🚩 Corners: +${momentum.homeCorners} - +${momentum.awayCorners}`,
     '',
     `${momentum.text} (${momentum.score}%)`
@@ -5067,7 +5063,7 @@ function evaluateMatchDynamicAI(
   };
   const finishing = weighted([
     [normRate('TotalShots',30),0.35], [normRate('ShotsOnTarget',12),0.35],
-    [normRate('ShotsOffTarget',16),0.08], [normRate('BlockedShots',10),0.07],
+    [normRate('ShotsOffTarget',16),0.08],
     [normRatio('ShotsOnTarget','TotalShots',0.5),0.15]
   ]);
   const attacksGroup = weighted([
@@ -5076,7 +5072,7 @@ function evaluateMatchDynamicAI(
   ]);
   const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
   const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
-  const gameState = weighted([[cardScore,0.50],[scoreState,0.50]]);
+  const gameState = scoreState;
   const groups = [
     [finishing,0.30],[attacksGroup,0.20],
     [momentum?.available ? momentumScore : null,0.20],
@@ -5272,13 +5268,9 @@ function evaluateMatchDynamicAI(
 
     `📊 Possession Pressure: ${round1(possessionScore)}%`,
 
-    `🧱 Blocked Score: ${round1(blockedScore)}%`,
-
     `🚩 Corner Score: ${round1(cornerScore)}%`,
 
-    `💰 Odds Score: ${round1(oddsScore)}%`,
-
-    `🟨🟥 Card Score: ${round1(cardScore)}%`
+    `💰 Odds Score: ${round1(oddsScore)}%`
   ];
 
 
@@ -7080,7 +7072,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | BLK ${stats.homeBlockedShots}-${stats.awayBlockedShots} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
@@ -7473,10 +7465,7 @@ app.get(
         'Dangerous Attacks',
         'Possession',
         'Shots on Target',
-        'Blocked Shots',
         'Corners',
-        'Yellow Cards',
-        'Red Cards',
         'End-to-End',
         'Pressure',
         'Momentum',
