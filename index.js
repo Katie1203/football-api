@@ -28,8 +28,8 @@ const FLASHSCORE_LIVE_URL =
 const LIVE_FOOTBALL_HOST =
   'free-api-live-football-data.p.rapidapi.com';
 
-// LiveFootball discovery uses its fixed /matches route; no Render path variable.
-const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/matches`;
+// Verified RapidAPI Livescores endpoint; no extra Render path variable.
+const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/football-current-live`;
 const FOTMOB_HOST = 'fotmob-api.p.rapidapi.com';
 const FOTMOB_KEY = PAID_RAPIDAPI_KEY;
 const FOTMOB_CACHE_MS = 60000;
@@ -1135,10 +1135,6 @@ async function fetchLiveMatchesFromLiveFootball() {
       await axios.get(
         LIVE_FOOTBALL_URL,
         {
-          params: {
-            status: 'live'
-          },
-
           headers: {
 
             'x-rapidapi-key':
@@ -1156,7 +1152,7 @@ async function fetchLiveMatchesFromLiveFootball() {
 
 
     const payload = r.data?.response ?? r.data?.result ?? r.data?.data ?? r.data;
-    const matches = Array.isArray(payload) ? payload : (payload?.matches ?? payload?.events ?? []);
+    const matches = Array.isArray(payload) ? payload : (payload?.live ?? payload?.matches ?? payload?.events ?? []);
     if (!Array.isArray(matches)) {
       console.warn('[Source LiveFootball] Unexpected LIVE response schema');
       return [];
