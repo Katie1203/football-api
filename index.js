@@ -1218,9 +1218,9 @@ async function fetchLiveMatchesFromFotMob() {
   }
 }
 
-function parseFotMobTeamStats(data) {
+function parseFotMobTeamStats(data, period = 'All') {
   const result = createEmptyStats();
-  const sections = data?.content?.stats?.Periods?.All?.stats || [];
+  const sections = data?.content?.stats?.Periods?.[period]?.stats || [];
   const names = {
     'BallPossesion': ['homePossession', 'awayPossession'],
     'total_shots': ['homeTotalShots', 'awayTotalShots'],
@@ -1272,6 +1272,11 @@ async function fetchFotMobStats(id) {
     const data = response.data?.data || response.data;
     if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
     const stats = parseFotMobTeamStats(data);
+    const periods = data?.content?.stats?.Periods || {};
+    const secondKey = Object.keys(periods).find(k => /^(secondhalf|2ndhalf|second half|2nd half|2nd)$/i.test(k.replace(/[_-]/g,'').trim()));
+    const firstKey = Object.keys(periods).find(k => /^(firsthalf|1sthalf|first half|1st half|1st)$/i.test(k.replace(/[_-]/g,'').trim()));
+    if (secondKey) stats._h2 = parseFotMobTeamStats(data, secondKey);
+    if (firstKey) stats._h1 = parseFotMobTeamStats(data, firstKey);
     fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
     return stats;
   } catch (error) {
@@ -2761,6 +2766,8 @@ function mergeMissingStats(target, source) {
       target._fieldSources[key] = source.source || 'fallback';
     }
   }
+  if (source._h2 && !target._h2) target._h2 = source._h2;
+  if (source._h1 && !target._h1) target._h1 = source._h1;
   if (source.hasData) target.hasData = true;
   return target;
 }
@@ -2873,6 +2880,17 @@ async function fetchMatchDetailStats(
 
 
 
+  // H2 provider period statistics are independent of full-match coverage.
+  // Reuse provider detail cache; never infer H2 from a post-HT snapshot.
+  if (!stats._h2) {
+    const fotmobMatch = sourceMatches.find(x => x.source === 'fotmob' && x.id);
+    if (fotmobMatch) {
+      const periodStats = await fetchFotMobStats(fotmobMatch.id);
+      if (periodStats._h2) stats._h2 = periodStats._h2;
+      if (periodStats._h1) stats._h1 = periodStats._h1;
+    }
+  }
+
   // BƯỚC 3: Total Shots fallback như logic cũ.
   if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
     stats.homeTotalShots =
@@ -2928,6 +2946,71 @@ async function fetchMatchDetailStats(
   return stats;
 }
 
+
+// H2-only Rule inputs. Snapshot at the beginning of H2 is the baseline.
+// Persist through audit storage; provider-specific period stats take precedence.
+const H2_COUNTERS = ['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget',
+  'ShotsOffTarget','Corners','BigChances','ShotsInsideBox'];
+const h2Baselines = new Map();
+const h2LoadAttempts = new Set();
+async function verifiedSecondHalfStats(full, matchKey, minute, match) {
+  const period = full?._h2;
+  if (period && ['TotalShots','ShotsOnTarget','Corners'].some(f =>
+    ['home','away'].every(side => period._present?.[side+f] === true))) {
+    const out = createEmptyStats();
+    for (const side of ['home','away']) for (const field of [...H2_COUNTERS,'Possession']) {
+      const key = side+field;
+      if (period._present?.[key] === true && Number.isFinite(Number(period[key]))) {
+        out[key] = Number(period[key]); out._present[key] = true;
+      }
+    }
+    out.source = 'provider-h2'; out.hasData = true;
+    return out;
+  }
+  if (!h2LoadAttempts.has(matchKey)) {
+    h2LoadAttempts.add(matchKey);
+    try { const stored = await audit.getH2Baseline(matchKey); if (stored) h2Baselines.set(matchKey,stored); }
+    catch(e) { console.warn('[H2 BASELINE LOAD]',e.message); }
+  }
+  let baseline = h2Baselines.get(matchKey);
+  const sourceFor = key => full?._fieldSources?.[key] || full?.source || 'unknown';
+  // Only a snapshot at minute 46 can be treated as the beginning of H2.
+  // At 47+ it is an observed partial baseline, not a confirmed full H2.
+  if (!baseline) {
+    baseline = {minute, createdAt:Date.now(), fields:{}, sources:{},
+      homeScore:match.homeScore,awayScore:match.awayScore,complete:minute===46};
+    for (const side of ['home','away']) for (const field of H2_COUNTERS) {
+      const key=side+field;
+      if (full?._present?.[key] === true && Number.isFinite(Number(full[key]))) {
+        baseline.fields[key]=Number(full[key]); baseline.sources[key]=sourceFor(key);
+      }
+    }
+    h2Baselines.set(matchKey,baseline);
+    try { await audit.saveH2Baseline(matchKey,baseline); }
+    catch(e) { console.warn('[H2 BASELINE SAVE]',e.message); }
+    console.log(`[H2 BASELINE] ${match.homeName} vs ${match.awayName} | ${minute}' | ${baseline.complete?'start-of-H2':'PARTIAL, no full-H2 Rule'} | NO RULE until next snapshot`);
+    return null;
+  }
+  if (!baseline.complete || minute <= baseline.minute) {
+    console.log(`[H2 PARTIAL] ${match.homeName} vs ${match.awayName} | baseline ${baseline.minute}' | provider H2 required for full-H2 Rule`);
+    return null;
+  }
+  const out=createEmptyStats();
+  for (const side of ['home','away']) for (const field of H2_COUNTERS) {
+    const key=side+field;
+    if (baseline.fields[key] === undefined || full?._present?.[key] !== true) continue;
+    // Cross-source changes can reset/rebase counters; never subtract incompatible sources.
+    if (baseline.sources[key] !== sourceFor(key)) continue;
+    const now=Number(full[key]), before=baseline.fields[key];
+    if (!Number.isFinite(now) || now<before) continue;
+    out[key]=now-before;out._present[key]=true;
+  }
+  // Percentage possession cannot be subtracted from the cumulative value.
+  out.source='snapshot-h2';
+  out.hasData=['TotalShots','ShotsOnTarget','Corners'].some(f =>
+    ['home','away'].every(side=>out._present[side+f]===true));
+  return out.hasData ? out : null;
+}
 
 // ==========================================================
 // 14. TOTAL HELPERS
@@ -5048,7 +5131,7 @@ function evaluateMatchDynamicAI(
   const normRate = (field, reference) => {
     const hk='home'+field, ak='away'+field;
     if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
-    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute-45) * 100 / reference * 100,0,100);
   };
   const normRatio = (numerator, denominator, reference) => {
     if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
@@ -7005,12 +7088,17 @@ async function analyzeOneMatch(
 
 
   // ======================================================
-  // AI RULE
+  // AI RULE: verified H2 stats ONLY; no full-match fallback.
   // ======================================================
-
+  const ruleStats = await verifiedSecondHalfStats(stats, alertKey, minute, match);
+  if (!ruleStats || !['TotalShots','ShotsOnTarget','Corners'].some(f =>
+      ['home','away'].every(side => ruleStats._present?.[side+f] === true))) {
+    console.log(`[RULE H2 N/A] ${match.homeName} vs ${match.awayName} | ${minute}' | missing verified second-half statistics | NO TELEGRAM`);
+    return null;
+  }
   const ai =
     evaluateMatchDynamicAI(
-      stats,
+      ruleStats,
       odds,
       momentum,
       minute,
@@ -7029,7 +7117,7 @@ async function analyzeOneMatch(
       match.awayScore,
       ai.efficiency,
       minute,
-      stats,
+      ruleStats,
       momentum,
       ai.styleType
     );
@@ -7051,6 +7139,8 @@ async function analyzeOneMatch(
     );
 
 
+  // Attach H1/H2 to audit only; never alter full-match spike snapshots.
+  stats._h2Verified = ruleStats;
   const compactGoalTimeline =
     extractGoalTimeline(
       match.raw
