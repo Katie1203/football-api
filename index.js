@@ -153,7 +153,8 @@ async function hydrateAlertState() {
     alertState.set(r.matchKey, {
       alertCount:Number(r.alertNumber), lastPercentage:Number(r.rule)||0,
       lastMinute:Number(r.minute)||0, bigBetSent:r.alertType==='BIG BET',
-      alertSnapshot:null, updatedAt:Date.now()
+      alertSnapshot:null, updatedAt:Date.parse(r.createdAt) || Date.now(),
+      homeName:r.home, awayName:r.away, league:r.league
     });
   }
   auditHydrated = true;
@@ -5443,32 +5444,28 @@ function detectTenMinuteSpike(previous, current) {
   };
   const shots = delta('TotalShots'), sot = delta('ShotsOnTarget');
   const corners = delta('Corners'), attacks = delta('Attacks');
-  const dangerous = delta('DangerousAttacks'), red = delta('RedCards');
+  const dangerous = delta('DangerousAttacks');
   const sum = x => x === null ? null : x[0] + x[1];
   const sh = sum(shots), so = sum(sot), co = sum(corners);
   const da = sum(dangerous), at = sum(attacks);
   const cornerDensity = co === null ? null : co / gap;
   const pressure = da !== null && at !== null && da >= 9 && at >= 12;
-  // Cards count only when a new red card exists AND the opposing team has attacking momentum.
-  const cardContext = red !== null && red.some((v,i) => v > 0 &&
-    ((shots !== null && shots[1-i] >= 2) || (dangerous !== null && dangerous[1-i] >= 6)));
   const signals = {
     finishing: (sh !== null && sh >= 4) || (so !== null && so >= 2),
     corners: co !== null && co >= 2,
-    pressure: pressure,
-    cards: cardContext
+    pressure: pressure
   };
   const score = Math.min(100,
     (sh !== null && sh >= 4 ? 20 : 0) +
     (so !== null && so >= 2 ? 25 : 0) +
     (co !== null && co >= 2 ? 15 : 0) +
     (cornerDensity !== null && cornerDensity >= 0.3 ? 10 : 0) +
-    (pressure ? 20 : 0) + (cardContext ? 10 : 0));
+    (pressure ? 30 : 0));
   const groups = Object.values(signals).filter(Boolean).length;
   const confirmed = score >= BIG_SPIKE_MIN_SCORE && groups >= 2 &&
     (signals.finishing || signals.corners || signals.pressure);
   return {confirmed,score,groups,cornerDensity,signals,
-    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'} RED=${sum(red) ?? 'NA'}`};
+    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'}`};
 }
 
 function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
@@ -6506,7 +6503,6 @@ async function sendTelegramAlert(
   }
   if (hasPair('homeCorners', 'awayCorners')) statLines.push(`🚩 Góc ${pair('homeCorners', 'awayCorners')}`);
   if (hasPair('homePossession', 'awayPossession')) statLines.push(`📊 Kiểm soát ${pair('homePossession', 'awayPossession')}%`);
-  if (hasPair('homeRedCards', 'awayRedCards')) statLines.push(`🟥 Thẻ đỏ ${pair('homeRedCards', 'awayRedCards')}`);
   const momentum = item.momentum;
   const changes = [];
   if (momentum?.available) {
@@ -6536,8 +6532,8 @@ async function sendTelegramAlert(
     (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
       ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
     (hasPair('homeTotalShots','awayTotalShots') || hasPair('homeShotsOnTarget','awayShotsOnTarget'))
-      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')} | Blocked ${pair('homeBlockedShots','awayBlockedShots')}` : null,
-    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')} | Yellow ${pair('homeYellowCards','awayYellowCards')} | Red ${pair('homeRedCards','awayRedCards')}`,
+      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')}` : null,
+    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
@@ -6601,6 +6597,7 @@ async function sendTelegramAlert(
           isBigBet,
 
         alertSnapshot: makeMatchSnapshot(item.stats, item.minute, item.homeScore, item.awayScore),
+        homeName:item.homeName, awayName:item.awayName, league:item.league,
         updatedAt:
           Date.now()
       }
@@ -6955,10 +6952,22 @@ async function analyzeOneMatch(
 
   // Alert key dùng tên đội để giữ chung
   // trạng thái nếu API nguồn thay đổi.
-  const alertKey = createMatchKey(
+  const canonicalAlertKey = createMatchKey(
     resolverTokens(match.homeName).join(' '),
     resolverTokens(match.awayName).join(' ')
   );
+  // Reuse an existing alert key even when providers spell the same team differently.
+  // Only reuse when both teams are strongly matched; never match on score alone.
+  const matchingAlertKeys = [...alertState.entries()].filter(([key, prior]) =>
+    prior.homeName && prior.awayName &&
+    resolverTeamScore(prior.homeName, match.homeName) >= .90 &&
+    resolverTeamScore(prior.awayName, match.awayName) >= .90 &&
+    (!prior.league || !match.league ||
+      String(prior.league).toLowerCase() === String(match.league).toLowerCase())
+  );
+  const alertKey = alertState.has(canonicalAlertKey)
+    ? canonicalAlertKey
+    : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
 
 
   const momentum =
