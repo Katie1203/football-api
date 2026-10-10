@@ -1207,7 +1207,7 @@ async function fetchLiveMatchesFromFotMob() {
       for (const raw of league.matches || []) {
         if (!raw.status?.ongoing || raw.status?.finished || raw.status?.cancelled) continue;
         const minute = fotmobMinute(raw.status);
-        if (minute === null || minute < 46 || minute > 90) continue;
+        if (minute === null || minute < 46 || minute > 92) continue;
         matches.push({ ...raw, _fotmobLeagueName: league.name, _fotmobCountry: league.ccode });
       }
     }
@@ -4934,7 +4934,7 @@ function calculateTimeScore(
 
   if (
     minute >= 90 &&
-    minute <= 90
+    minute <= 92
   ) {
     return 68;
   }
@@ -5077,17 +5077,30 @@ function evaluateMatchDynamicAI(
     const w=valid.reduce((sum,[,weight])=>sum+weight,0);
     return w ? valid.reduce((sum,[v,weight])=>sum+v*weight,0)/w : null;
   };
-  // All available verified live indicators; grouped to limit correlated double counting.
-  const metricGroups = [
-    [weighted([[normRate('TotalShots',22),.35],[normRate('ShotsOnTarget',9),.45],[normRatio('ShotsOnTarget','TotalShots',.40),.20]]),.30],
-    [weighted([[normRate('ShotsInsideBox',12),.35],[normRate('ShotsOffTarget',12),.15],[normRate('BlockedShots',9),.15],[normRate('Attacks',120),.12],[normRate('DangerousAttacks',70),.23]]),.20],
-    [weighted([[normRate('BigChances',5),.55],[normRate('Corners',12),.25],[normRate('ExpectedGoals',2.8),.20]]),.20],
-    [momentum?.available ? momentumScore : null,.20],
-    [stats?._present?.homePossession && stats?._present?.awayPossession ? possessionScore : null,.05],
-    [stats?._present?.homeRedCards && stats?._present?.awayRedCards ? cardScore : null,.05]
-  ];
-  let finalScore = weighted(metricGroups);
-  if (finalScore === null) finalScore = 0;
+  // Rule: use every available verified field; no 5/5 prerequisite.
+  // Rates use elapsed minutes in the observation window (46 onward).
+  const windowMinutes=Math.max(1,minute-45);
+  const rate=(field,ref)=>{
+    const keys=['home'+field,'away'+field];
+    const observed=keys.filter(k=>stats?._present?.[k]===true && Number.isFinite(Number(stats[k])));
+    if(!observed.length)return null;
+    return clamp(observed.reduce((n,k)=>n+Number(stats[k]),0)/windowMinutes*45/ref*100,0,100);
+  };
+  const possession=(()=>{
+    const keys=['homePossession','awayPossession'].filter(k=>stats?._present?.[k]===true);
+    if(keys.length!==2)return null;
+    return clamp(Math.abs(Number(stats.homePossession)-Number(stats.awayPossession))*1.3+45,0,100);
+  })();
+  // Correlated indicators are grouped before combining group scores.
+  const finishing=weighted([[rate('TotalShots',14),0.32],[rate('ShotsOnTarget',5),0.43],[rate('ShotsOffTarget',7),0.12],[rate('BlockedShots',5),0.13]]);
+  const attack=weighted([[rate('Attacks',65),0.25],[rate('DangerousAttacks',38),0.35],[rate('ShotsInsideBox',7),0.30],[rate('ShotsOutsideBox',7),0.10]]);
+  const chances=weighted([[rate('BigChances',3),0.40],[rate('ExpectedGoals',1.1),0.40],[rate('Corners',7),0.20]]);
+  const discipline=weighted([[rate('RedCards',1),0.65],[rate('YellowCards',5),0.35]]);
+  const groups=[[finishing,0.34],[attack,0.27],[chances,0.20],[possession,0.06],[discipline,0.03],
+    [momentum?.available ? momentumScore:null,0.10]];
+  const evidenceGroups=groups.filter(([v])=>v!==null&&Number.isFinite(v));
+  let finalScore=weighted(evidenceGroups);
+  if(finalScore===null)finalScore=0;
 
   // ======================================================
   // EXTRA LOGIC / PENALTIES
@@ -5119,6 +5132,7 @@ function evaluateMatchDynamicAI(
 
   // Ít Dangerous Attack
   if (
+    (stats?._present?.homeDangerousAttacks || stats?._present?.awayDangerousAttacks) &&
     totals.totalDangerousAttacks > 0 &&
     totals.totalDangerousAttacks < 30 &&
     minute >= 65
@@ -6931,7 +6945,7 @@ async function analyzeOneMatch(
   if (
     !Number.isFinite(minute) ||
     minute < 46 ||
-    minute > 90
+    minute > 92
   ) {
 
     return null;
@@ -7111,24 +7125,21 @@ async function analyzeOneMatch(
 
 
 function calculateRuleConfidence(stats, match, minute, momentum, rule) {
-  // Data quality / coverage only; never changes Rule Score or Telegram decision.
-  const indicators = ['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots',
-    'ShotsInsideBox','ShotsOutsideBox','Corners','Attacks','DangerousAttacks',
-    'ExpectedGoals','BigChances','Possession','RedCards','YellowCards',
-    'Fouls','GoalkeeperSaves'];
-  const present = field => ['home','away'].every(side =>
-    stats?._present?.[side+field] === true && Number.isFinite(Number(stats[side+field])));
-  const available = indicators.filter(present);
-  const count = available.length;
-  const sources = new Set(Object.values(stats?._fieldSources || stats?.fieldSources || {}).filter(Boolean));
-  const sourceReliability = sources.size >= 2 ? 1 : sources.size === 1 ? .85 : .7;
-  const momentumReliability = momentum?.available && Number(momentum.minuteGap)>0 && Number(momentum.minuteGap)<=20 ? 1 : .7;
-  const baselineReliability = stats?._baselineMethod === 'native-window' || stats?._baselineMethod === 'verified-45' ? 1 : stats?._partialFrom46 ? .65 : .8;
-  const coverage = count / indicators.length;
-  const percent = count ? Math.round(100 * (coverage*.55 + sourceReliability*.15 + momentumReliability*.15 + baselineReliability*.15)*100)/100 : 0;
-  return {coverage:count,total:indicators.length,percent,
-    label:`${count} chỉ số hợp lệ`,method:'dynamic-all-available-v1',
-    components:{coverage:Math.round(coverage*100),sourceReliability:Math.round(sourceReliability*100),momentumReliability:Math.round(momentumReliability*100),baselineReliability:Math.round(baselineReliability*100)}};
+  // Informational reliability only; never changes Rule or Telegram gating.
+  const fields=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','ShotsInsideBox',
+    'ShotsOutsideBox','Corners','Attacks','DangerousAttacks','Possession','ExpectedGoals',
+    'BigChances','YellowCards','RedCards','GoalkeeperSaves','Fouls'];
+  const has=f=>['home','away'].some(side=>stats?._present?.[side+f]===true && Number.isFinite(Number(stats[side+f])));
+  const coverage=fields.filter(has).length;
+  const sources=stats?.fieldSources||stats?._fieldSources||{};
+  const distinctSources=new Set(Object.values(sources).flatMap(v=>Array.isArray(v)?v:[v]).filter(Boolean)).size;
+  const coverageScore=coverage/fields.length*100;
+  const sourceScore=distinctSources>=2?100:distinctSources===1?70:45;
+  const momentumScore=momentum?.available===true?100:40;
+  const percent=Math.round((coverageScore*0.75+sourceScore*0.15+momentumScore*0.10)*100)/100;
+  return {coverage,total:fields.length,percent,label:`${coverage}/${fields.length} chỉ số`,
+    components:{coverage:coverageScore,sourceReliability:sourceScore,momentumReliability:momentumScore},
+    method:'multi-stat-evidence-v1'};
 }
 
   const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
@@ -7311,7 +7322,7 @@ async function scanLiveMatches() {
       if (
         !Number.isFinite(minute) ||
         minute < 46 ||
-        minute > 90
+        minute > 92
       ) {
         continue;
       }

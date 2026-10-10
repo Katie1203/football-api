@@ -39,16 +39,25 @@ async function settleMatch(matchKey,h,a){await init();if(!Number.isInteger(h)||!
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
 function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
-function setup(app){app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);res.json({ok:true,summary:total,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data.slice(0,10000)});}catch(e){res.status(500).json({ok:false,error:e.message});}});
+function setup(app){app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);res.json({ok:true,summary:total,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data});}catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/delete',requireAuth,async(req,res)=>{try{
- await init();const ids=req.body?.ids;
- if(!Array.isArray(ids)||!ids.length||ids.length>10000||ids.some(id=>typeof id!=='string'||id.length>512))return res.status(400).json({ok:false,error:'Invalid ids'});
- const set=new Set(ids);const removed=records.filter(r=>set.has(r.id));
- if(pool){const client=await pool.connect();try{await client.query('BEGIN');await client.query('DELETE FROM promax_alert_audit WHERE id = ANY($1::text[])',[...set]);await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}}
- else {const next=records.filter(r=>!set.has(r.id));fs.writeFileSync(FILE+'.tmp',JSON.stringify(next,null,2));fs.renameSync(FILE+'.tmp',FILE);}
- records=records.filter(r=>!set.has(r.id));res.json({ok:true,deleted:removed.length});
+ const ids=req.body?.ids;
+ if(!Array.isArray(ids)||ids.length<1||ids.length>500||ids.some(x=>typeof x!=='string'||x.length>500))return res.status(400).json({ok:false,error:'Invalid ids (1-500)'});
+ const deleted=await deleteAuditIds(ids);res.json({ok:true,deleted});
  }catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/settle',requireAuth,async(req,res)=>{try{const {matchKey,ftHome,ftAway}=req.body||{};if(typeof matchKey!=='string'||!matchKey)return res.status(400).json({error:'matchKey required'});const count=await settleMatch(matchKey,Number(ftHome),Number(ftAway));res.json({ok:true,updated:count});}catch(e){res.status(400).json({ok:false,error:e.message});}});}
+// Delete audit records only (never affect live match state or Telegram history).
+async function deleteAuditIds(ids){
+ await init();
+ const unique=[...new Set(ids.filter(x=>typeof x==='string'&&x.length>0))];
+ if(!unique.length)return 0;
+ const existing=new Set(records.map(r=>r.id));const found=unique.filter(id=>existing.has(id));
+ if(!found.length)return 0;
+ if(pool)await pool.query('DELETE FROM promax_alert_audit WHERE id = ANY($1::text[])',[found]);
+ records=records.filter(r=>!found.includes(r.id));
+ if(!pool){fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}
+ return found.length;
+}
 // Reconcile only on a provider-confirmed finished match. Never treat a live score as FT.
 let checking=false;
 const lastFTCheck=new Map();
