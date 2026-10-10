@@ -168,50 +168,6 @@ const statsCache = new Map();
 // Lưu snapshot để tính Momentum
 const snapshotState = new Map();
 
-// Rolling baseline of cumulative provider stats. No dedicated H2 API is used.
-const window46Baselines = new Map();
-const WINDOW46_FIELDS = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget',
-  'BlockedShots','Attacks','DangerousAttacks','BigChances','ExpectedGoals',
-  'RedCards','YellowCards','Fouls','GoalkeeperSaves'];
-function window46Delta(matchKey, cumulative, minute) {
-  const now = Date.now();
-  const existing = window46Baselines.get(matchKey);
-  // Only create the reference before the Telegram evaluation window begins.
-  if (!existing) {
-    if (minute >= 65) return {ready:false,reason:'NO_PRE65_BASELINE'};
-    const present = Object.keys(cumulative._present || {}).filter(k=>cumulative._present[k] === true);
-    if (!present.length) return {ready:false,reason:'NO_BASELINE_STATS'};
-    window46Baselines.set(matchKey,{minute,stats:JSON.parse(JSON.stringify(cumulative)),updatedAt:now});
-    return {ready:false,reason:`BASELINE_SAVED_AT_${minute}`};
-  }
-  existing.updatedAt = now;
-  if (minute <= existing.minute) return {ready:false,reason:'WAIT_FOR_NEW_SAMPLE'};
-  const delta=createEmptyStats();
-  for (const field of WINDOW46_FIELDS) for (const side of ['home','away']) {
-    const k=side+field;
-    if (cumulative._present?.[k] !== true || existing.stats._present?.[k] !== true) continue;
-    const n=Number(cumulative[k])-Number(existing.stats[k]);
-    if (!Number.isFinite(n) || n < -0.00001) continue; // provider reset/mismatch
-    delta[k]=Math.max(0,Number(n.toFixed(3)));
-    delta._present[k]=true;
-  }
-  // Percentages cannot be subtracted. Keep only as context, never as H2 counts.
-  for (const side of ['home','away']) {
-    const k=side+'Possession';
-    if (cumulative._present?.[k] === true) {
-      delta[k]=cumulative[k];delta._present[k]=true;
-    }
-  }
-  delta.hasData=WINDOW46_FIELDS.some(f=>['home','away'].some(side=>delta._present[side+f]));
-  delta.source='window46-delta';
-  delta._period='OBSERVED_46_PLUS';
-  delta._baselineMinute=existing.minute;
-  delta._windowComplete=existing.minute===46;
-  delta._windowLabel=`${existing.minute}-${minute}`;
-  return {ready:delta.hasData,stats:delta,reason:delta.hasData?'OK':'NO_COMPARABLE_COUNTERS'};
-}
-
-
 let scanRunning = false;
 
 
@@ -233,10 +189,6 @@ function cleanupState() {
     }
   }
 
-
-  for (const [id, state] of window46Baselines.entries()) {
-    if (now - state.updatedAt > ALERT_STATE_TTL) window46Baselines.delete(id);
-  }
 
   for (const [id, state] of snapshotState.entries()) {
 
@@ -1322,6 +1274,11 @@ async function fetchFotMobStats(id) {
     const data = response.data?.data || response.data;
     if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
     const stats = parseFotMobTeamStats(data);
+    const periods=data?.content?.stats?.Periods || {};
+    const second=periods.SecondHalf || periods['2ndHalf'] || periods.Second || periods['2nd half'];
+    const first=periods.FirstHalf || periods['1stHalf'] || periods.First || periods['1st half'];
+    if(second?.stats) stats._verifiedWindow=parseFotMobTeamStats({content:{stats:{Periods:{All:second}}}});
+    else if(first?.stats) stats._verifiedBaseline=parseFotMobTeamStats({content:{stats:{Periods:{All:first}}}});
     fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
     return stats;
   } catch (error) {
@@ -2826,6 +2783,8 @@ function mergeMissingStats(target, source) {
     }
   }
   if (source.hasData) target.hasData = true;
+  if(source._verifiedWindow) target._verifiedWindow=source._verifiedWindow;
+  if(source._verifiedBaseline) target._verifiedBaseline=source._verifiedBaseline;
   return target;
 }
 
@@ -2875,7 +2834,7 @@ async function fetchMatchDetailStats(
 
   if (
     cached &&
-    Date.now() - cached.time < (getCoreStatsCoverage(cached.data) === 0 ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
+    Date.now() - cached.time < (!cached.data.hasData ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
   ) {
     return cached.data;
   }
@@ -2917,24 +2876,20 @@ async function fetchMatchDetailStats(
       (sourcePriority[a.source] || 0)
   );
 
-  const desiredFields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
-  const missingFields = () => desiredFields.filter(f => !['home','away'].every(side => stats._present?.[side+f] === true));
-  if (missingFields().length) {
-
-    for (const sourceMatch of orderedSources) {
-
-      if (!missingFields().length) {
-        break;
-      }
-
-      const extraStats =
-        await fetchStatsForSourceMatch(sourceMatch);
-
-      mergeMissingStats(stats, extraStats);
-      console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().join(',') || 'none'}`);
+  const desiredFields = ['TotalShots','ShotsOnTarget','ShotsOffTarget','ShotsInsideBox',
+    'BlockedShots','Corners','ExpectedGoals','BigChances','Attacks','DangerousAttacks',
+    'Possession','RedCards','YellowCards','Fouls','GoalkeeperSaves'];
+  const missingFields=()=>desiredFields.filter(f=>!['home','away'].every(side=>stats._present?.[side+f]===true));
+  // Fetch each matched provider at most once, only while meaningful evidence is missing.
+  if(missingFields().length){
+    for(const sourceMatch of orderedSources){
+      if(!missingFields().length && stats._verifiedWindow) break;
+      const extraStats=await fetchStatsForSourceMatch(sourceMatch);
+      mergeMissingStats(stats,extraStats);
+      if(extraStats._verifiedWindow && !stats._verifiedWindow)stats._verifiedWindow=extraStats._verifiedWindow;
+      if(extraStats._verifiedBaseline && !stats._verifiedBaseline)stats._verifiedBaseline=extraStats._verifiedBaseline;
     }
   }
-
 
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
@@ -2976,10 +2931,10 @@ async function fetchMatchDetailStats(
 
 
   console.log(`[STATS MISSING] ${match.homeName} vs ${match.awayName} | ${missingFields().join(',') || 'none'} | matched=${sourceMatches.map(x => x.source+':'+x.id).join(',')} | fieldSources=${JSON.stringify(stats._fieldSources || {})}`);
-  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
+  console.log(`[Stats đa nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
 
   stats.source =
-    `cross-source-${getCoreStatsCoverage(stats)}/5`;
+    `cross-source`;
 
   statsCache.set(
     cacheKey,
@@ -2992,6 +2947,41 @@ async function fetchMatchDetailStats(
   return stats;
 }
 
+
+// Window starting at 46'. Preserve genuine zero and never turn an unknown baseline into zero.
+const WINDOW_CUMULATIVE=['Attacks','DangerousAttacks','TotalShots','ShotsOnTarget',
+ 'ShotsOffTarget','ShotsInsideBox','BlockedShots','Corners','ExpectedGoals',
+ 'BigChances','Fouls','GoalkeeperSaves'];
+const windowBaselineState=new Map();
+function buildWindowStats(key,full,minute){
+ const result=createEmptyStats();result.source=full.source;result._period='from-46';
+ const native=full._verifiedWindow;
+ const previous=windowBaselineState.get(key);
+ if(!previous && minute===46){
+   const snapshot={minute,stats:JSON.parse(JSON.stringify(full)),updatedAt:Date.now()};
+   windowBaselineState.set(key,snapshot);
+ }
+ const baseline=full._verifiedBaseline || previous?.stats;
+ const validBaseline=full._verifiedBaseline || (previous && previous.minute===46 ? previous.stats : null);
+ for(const side of ['home','away']){
+   for(const field of WINDOW_CUMULATIVE){
+     const k=side+field;
+     if(native?._present?.[k]===true){result[k]=native[k];result._present[k]=true;continue;}
+     if(full._present?.[k]===true && validBaseline?._present?.[k]===true){
+       const diff=Number(full[k])-Number(validBaseline[k]);
+       if(Number.isFinite(diff)&&diff>=0){result[k]=diff;result._present[k]=true;}
+     }
+   }
+   // Current game state is context, not a cumulative window count.
+   for(const field of ['Possession','RedCards','YellowCards']){
+     const k=side+field;
+     if(full._present?.[k]===true){result[k]=full[k];result._present[k]=true;}
+   }
+ }
+ result.hasData=Object.keys(result._present).some(k=>WINDOW_CUMULATIVE.some(f=>k.endsWith(f)));
+ result._period=native?'provider-period-46+':validBaseline?'baseline-46-delta':'no-verified-46-baseline';
+ return result;
+}
 
 // ==========================================================
 // 14. TOTAL HELPERS
@@ -5023,25 +5013,24 @@ function evaluateMatchDynamicAI(
   awayScore
 ) {
 
-  const statsMinute = Math.max(1, minute - (stats._baselineMinute ?? 45));
   const attackScore =
     calculateAttackScore(
       stats,
-      statsMinute
+      minute
     );
 
 
   const dangerousScore =
     calculateDangerousAttackScore(
       stats,
-      statsMinute
+      minute
     );
 
 
   const sotScore =
     calculateSOTScore(
       stats,
-      statsMinute
+      minute
     );
 
 
@@ -5113,7 +5102,7 @@ function evaluateMatchDynamicAI(
   const normRate = (field, reference) => {
     const hk='home'+field, ak='away'+field;
     if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
-    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,statsMinute) * 100 / reference * 100,0,100);
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute-45) * 100 / reference * 100,0,100);
   };
   const normRatio = (numerator, denominator, reference) => {
     if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
@@ -5127,18 +5116,18 @@ function evaluateMatchDynamicAI(
     return w ? valid.reduce((sum,[v,weight])=>sum+v*weight,0)/w : null;
   };
   const finishing = weighted([
-    [normRate('TotalShots',30),0.35], [normRate('ShotsOnTarget',12),0.35],
+    [normRate('TotalShots',38),0.22], [normRate('ShotsOnTarget',17),0.48],
     [normRatio('ShotsOnTarget','TotalShots',0.5),0.15]
   ]);
   // Replace unavailable ATT/DA with verified OFF and Inside Box evidence.
   // OFF is not counted again in finishing; both new metrics require provider presence.
   const attacksGroup = weighted([
-    [normRate('ShotsInsideBox',14),0.55],
-    [normRate('ShotsOffTarget',16),0.25],
+    [normRate('ShotsInsideBox',20),0.55],
+    [normRate('ShotsOffTarget',23),0.10],
     [normRatio('ShotsInsideBox','TotalShots',0.55),0.20]
   ]);
-  const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
-  const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
+  const opportunities = weighted([[normRate('BigChances',8),0.40],[normRate('Corners',19),0.25],[normRate('ExpectedGoals',3.0),0.35]]);
+  const control = weighted([[stats?._present?.homePossession && stats?._present?.awayPossession ? possessionScore : null,0.30],[stats?._present?.homeAttacks && stats?._present?.awayAttacks ? normRate('Attacks',230) : null,0.25],[stats?._present?.homeDangerousAttacks && stats?._present?.awayDangerousAttacks ? normRate('DangerousAttacks',110) : null,0.45]]);
   const gameState = scoreState;
   const groups = [
     [finishing,0.30],[attacksGroup,0.20],
@@ -5148,6 +5137,15 @@ function evaluateMatchDynamicAI(
   // Reweight only observed groups; never silently assume absent statistics = 0.
   let finalScore = weighted(groups);
   if (finalScore === null) finalScore = 0;
+  // Do not count correlated shot volume as independent proof of a goal.
+  const shObserved=stats?._present?.homeTotalShots && stats?._present?.awayTotalShots;
+  const sotObserved=stats?._present?.homeShotsOnTarget && stats?._present?.awayShotsOnTarget;
+  const totalSH=Number(stats.homeTotalShots)+Number(stats.awayTotalShots);
+  const totalSOT=Number(stats.homeShotsOnTarget)+Number(stats.awayShotsOnTarget);
+  if(shObserved && sotObserved && totalSH>=5 && totalSOT/totalSH<.18)finalScore-=12;
+  const xgObserved=stats?._present?.homeExpectedGoals && stats?._present?.awayExpectedGoals;
+  if(xgObserved && totalSH>=5 && Number(stats.homeExpectedGoals)+Number(stats.awayExpectedGoals)<.35)finalScore-=9;
+  if(momentum?.available && momentum.score<35)finalScore-=6;
 
   // ======================================================
   // EXTRA LOGIC / PENALTIES
@@ -5162,105 +5160,8 @@ function evaluateMatchDynamicAI(
   const notes = [];
 
 
-  // Rất ít SOT cuối trận
-  if (
-    minute >= 70 &&
-    totals.totalShotsOnTarget <= 1
-  ) {
-
-    finalScore -= 8;
-
-    notes.push(
-      '⚠️ SOT quá thấp sau phút 70'
-    );
-  }
-
-
-  // Ít Dangerous Attack
-  if (
-    totals.totalDangerousAttacks > 0 &&
-    totals.totalDangerousAttacks < 30 &&
-    minute >= 65
-  ) {
-
-    finalScore -= 5;
-
-    notes.push(
-      '⚠️ Dangerous Attack thấp'
-    );
-  }
-
-
-  // Momentum cực mạnh
-  if (
-    momentum?.available &&
-    momentum.score >= 85
-  ) {
-
-    finalScore += 4;
-
-    notes.push(
-      '🔥 Momentum cực mạnh'
-    );
-  }
-
-
-  // Nhiều SOT + Dangerous
-  if (
-    totals.totalShotsOnTarget >= 8 &&
-    totals.totalDangerousAttacks >= 70
-  ) {
-
-    finalScore += 3;
-
-    notes.push(
-      '🔥 SOT + Dangerous Attack cao'
-    );
-  }
-
-
-  // Đôi công mạnh
-  if (
-    style.type ===
-    'END_TO_END'
-  ) {
-
-    finalScore += 3;
-
-    notes.push(
-      '⚔️ Hai đội đang đôi công'
-    );
-  }
-
-
-  // Một đội ép sân rõ
-  if (
-    style.type ===
-      'HOME_PRESSURE' ||
-    style.type ===
-      'AWAY_PRESSURE'
-  ) {
-
-    finalScore += 2;
-
-    notes.push(
-      '🔥 Có đội ép sân rõ rệt'
-    );
-  }
-
-
-  // Odds rất mạnh
-  if (
-    oddsAnalysis?.found &&
-    oddsAnalysis.score >= 85
-  ) {
-
-    // Odds chỉ tham khảo; không cộng điểm Rule.
-    notes.push(
-      '💰 Kèo Over đang mạnh'
-    );
-  }
-
+  // All adjustments above require explicit provider presence; no missing-as-zero penalties.
+  if(oddsAnalysis?.found && oddsAnalysis.score>=85)notes.push('Kèo Over tham khảo, không cộng Rule');
 
   // Clamp
   finalScore =
@@ -7019,20 +6920,7 @@ async function analyzeOneMatch(
   // FETCH STATS
   // ======================================================
 
-  const cumulativeStats = await fetchMatchDetailStats(match);
-  const baselineKey = createMatchKey(
-    resolverTokens(match.homeName).join(' '),
-    resolverTokens(match.awayName).join(' ')
-  );
-  const windowResult = window46Delta(baselineKey, cumulativeStats, minute);
-  if (!windowResult.ready) {
-    console.log(`[WINDOW 46] ${match.homeName} vs ${match.awayName} | ${minute}' | ${windowResult.reason}`);
-    return null;
-  }
-  const stats = windowResult.stats;
-  if (!stats._windowComplete) {
-    console.log(`[WINDOW 46 PARTIAL] ${match.homeName} vs ${match.awayName} | observed ${stats._windowLabel}; missing 46-${stats._baselineMinute}, not claimed as full window`);
-  }
+  const fullStats = await fetchMatchDetailStats(match);
 
 
   // ======================================================
@@ -7058,6 +6946,12 @@ async function analyzeOneMatch(
     ? canonicalAlertKey
     : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
 
+
+  const stats=buildWindowStats(alertKey,fullStats,minute);
+  if(!stats.hasData || !['TotalShots','ShotsOnTarget','ShotsInsideBox','ShotsOffTarget','Corners','ExpectedGoals','BigChances','Attacks','DangerousAttacks'].some(f=>['home','away'].some(side=>stats._present?.[side+f]===true))){
+    console.log(`[WINDOW WAIT] ${match.homeName} vs ${match.awayName} | ${minute}' | No verified 46+ cumulative statistics; do not score full-match counts`);
+    return null;
+  }
 
   const momentum =
     calculateMomentum(
@@ -7177,48 +7071,34 @@ async function analyzeOneMatch(
   );
 
 
-function calculateRuleConfidence(stats, match, minute, momentum, rule) {
-  // Evidence-based diagnostic score, NOT a probability and NEVER an alert gate.
-  // Missing indicators are omitted rather than interpreted as genuine zeros.
-  const core = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
-  const has = f => ['home','away'].every(side => stats?._present?.[side+f] === true);
-  const sum = f => Number(stats['home'+f] || 0) + Number(stats['away'+f] || 0);
-  const clamp = n => Math.max(0,Math.min(1,n));
-  const coverage = core.filter(has).length;
-  const parts = [];
-  const add = (key, weight, value, available) => {if(available) parts.push({key,weight,value:100*clamp(value)});};
-  const boxPresent = has('ShotsInsideBox'), offPresent = has('ShotsOffTarget');
-  const pressureEvidence = [];
-  if (boxPresent) pressureEvidence.push(clamp(sum('ShotsInsideBox')/10));
-  if (offPresent) pressureEvidence.push(clamp(sum('ShotsOffTarget')/12));
-  add('attackPressure',20,pressureEvidence.length ? pressureEvidence.reduce((a,b)=>a+b,0)/pressureEvidence.length : 0,pressureEvidence.length>0);
-  const sh = has('TotalShots'), sot = has('ShotsOnTarget');
-  const off = offPresent, box = boxPresent;
-  const shots = sh ? sum('TotalShots') : 0;
-  const onTarget = sot ? sum('ShotsOnTarget') : 0;
-  const shotVolume = sh ? clamp(shots/22) : 0;
-  const accuracy = sh && sot && shots > 0 ? clamp((onTarget/shots)/0.42) : sot ? clamp(onTarget/8) : 0;
-  const insideQuality = box && sh && shots > 0 ? clamp((sum('ShotsInsideBox')/shots)/0.6) : null;
-  const offQuality = off && sh && shots > 0 ? 1-clamp((sum('ShotsOffTarget')/shots)/0.85) : null;
-  const qualityPieces = [shotVolume,accuracy,...(insideQuality===null?[]:[insideQuality]),...(offQuality===null?[]:[offQuality])];
-  add('finishing',30,qualityPieces.reduce((a,b)=>a+b,0)/qualityPieces.length,sh || sot);
-  add('corners',15,clamp(sum('Corners')/11),has('Corners'));
-  const reliableMomentum = momentum?.available === true && Number(momentum.minuteGap)>0 && Number(momentum.minuteGap)<=20 && Number(minute)>=46;
-  const momentumSignals = reliableMomentum ? [Number(momentum.totalSOT)||0,Number(momentum.totalCorners)||0] : [];
-  const pace = reliableMomentum ? 10/Number(momentum.minuteGap) : 0;
-  add('liveMomentum',25, reliableMomentum ? clamp((momentumSignals[0]*pace/3 + momentumSignals[1]*pace/4)/2) : 0,reliableMomentum);
-  const agreementSignals = [box && sum('ShotsInsideBox')>=4, sot && onTarget>=4,has('Corners')&&sum('Corners')>=5].filter((v,i)=>[box,sot,has('Corners')][i]);
-  add('agreement',10,agreementSignals.filter(Boolean).length/agreementSignals.length,agreementSignals.length>=2);
-  const weight = parts.reduce((a,p)=>a+p.weight,0);
-  const evidence = weight ? parts.reduce((a,p)=>a+p.weight*p.value,0)/weight : 0;
-  // Unavailable dimensions reduce interpretability but never force their value to zero.
-  const percent = Math.round(evidence*100)/100;
-  return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,
-    components:Object.fromEntries(parts.map(p=>[p.key,Math.round(p.value*100)/100])),
-    availableWeight:weight,method:'live-evidence-core5-box-off-v5'};
-}
-
-  const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
+function calculateRuleConfidence(stats,match,minute,momentum,rule){
+ const get=f=>['home','away'].every(side=>stats?._present?.[side+f]===true)
+   ? Number(stats['home'+f])+Number(stats['away'+f]):null;
+ const sh=get('TotalShots'),sot=get('ShotsOnTarget'),off=get('ShotsOffTarget');
+ const box=get('ShotsInsideBox'),xg=get('ExpectedGoals'),bc=get('BigChances');
+ const corners=get('Corners'),da=get('DangerousAttacks'),att=get('Attacks');
+ const evidence=[];
+ const add=(name,v,w)=>{if(Number.isFinite(v))evidence.push({name,value:Math.max(0,Math.min(100,v)),weight:w});};
+ if(sh!==null && sot!==null && sh>0)add('shotAccuracy',100*Math.min(1,(sot/sh)/.48),3);
+ if(sh!==null && off!==null && sh>0)add('offTargetQuality',100*(1-Math.min(1,off/sh)),2);
+ if(sh!==null && box!==null && sh>0)add('insideBoxQuality',100*Math.min(1,(box/sh)/.62),2);
+ if(sh!==null && xg!==null && sh>0)add('chanceQuality',100*Math.min(1,(xg/sh)/.13),3);
+ if(bc!==null)add('bigChances',100*Math.min(1,bc/3),2);
+ if(sot!==null)add('onTargetEvidence',100*Math.min(1,sot/6),2);
+ if(corners!==null)add('corners',100*Math.min(1,corners/7),1);
+ if(da!==null)add('dangerousAttacks',100*Math.min(1,da/35),1);
+ if(att!==null)add('attacks',100*Math.min(1,att/70),.5);
+ if(momentum?.available)add('recentMomentum',Math.max(0,Math.min(100,Number(momentum.score))),3);
+ const weight=evidence.reduce((a,e)=>a+e.weight,0);
+ let value=weight?evidence.reduce((a,e)=>a+e.value*e.weight,0)/weight:0;
+ // Confidence is agreement/quality of available evidence, not count of fields or Rule score.
+ if(evidence.length>=3){
+   const spread=Math.sqrt(evidence.reduce((a,e)=>a+e.weight*(e.value-value)**2,0)/weight);
+   value=Math.max(0,value-Math.min(25,spread*.42));
+ }
+ return {percent:Math.round(value*10)/10,label:'Độ nhất quán bằng chứng',
+   method:'all-available-evidence-v1',components:Object.fromEntries(evidence.map(e=>[e.name,Math.round(e.value)]))};
+}  const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
   // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
   const followupState = alertState.get(alertKey);
   const decisionReason = String(alertDecision.reason || 'UNKNOWN');
