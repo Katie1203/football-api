@@ -2725,6 +2725,10 @@ function parseStatsFromRawMatch(
   );
 
 
+  // Some providers return detail stats under data/result/response wrappers.
+  // Inspect the whole response as well as known statistics containers.
+  recursivelyParseStats(raw, stats);
+
   const candidates = [
 
     raw.statistics,
@@ -2860,8 +2864,9 @@ async function fetchMatchDetailStats(
     match.awayName
   );
 
-  const cacheKey =
-    `cross:${matchKey || `${match.source}:${match.id}`}`;
+  // Keep native provider IDs in the cache identity: identical team names in
+  // different competitions/dates must not share statistics.
+  const cacheKey = `cross:${match.source}:${match.id}:${matchKey || ''}`;
 
   const cached = statsCache.get(cacheKey);
 
@@ -2874,9 +2879,12 @@ async function fetchMatchDetailStats(
 
 
   // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
-  const sourceMatches = Array.isArray(match.crossSourceMatches)
+  const sourceMatches = Array.isArray(match.crossSourceMatches) && match.crossSourceMatches.length
     ? match.crossSourceMatches
     : [match];
+  if (sourceMatches.length === 1) {
+    console.log(`[STATS RESOLVER] ${match.homeName} vs ${match.awayName} | ONLY ${match.source}:${match.id} | no cross-provider native ID available`);
+  }
 
 
   // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
