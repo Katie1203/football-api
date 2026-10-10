@@ -190,6 +190,12 @@ function cleanupState() {
   }
 
 
+  for (const [id, points] of momentumHistory10.entries()) {
+    if (!points.length || now - points[points.length - 1].updatedAt > ALERT_STATE_TTL) {
+      momentumHistory10.delete(id);
+    }
+  }
+
   for (const [id, state] of snapshotState.entries()) {
 
     if (
@@ -1498,9 +1504,18 @@ function detectStatType(statName) {
   // ------------------------------------------
 
   if (
+    n === 'da' ||
+    n === 'dangerous' ||
+    n === 'dangerousattacks' ||
+    n === 'dangerousattack' ||
+    n === 'danger attacks' ||
+    n === 'danger attack' ||
+    n === 'attacks dangerous' ||
     n.includes('dangerous attack') ||
-    n.includes('danger attacks') ||
-    n.includes('dangerous attacks')
+    n.includes('danger attack') ||
+    n.includes('attacks dangerous') ||
+    n.includes('dangerous offensive') ||
+    n.includes('tan cong nguy hiem')
   ) {
     return 'dangerousAttacks';
   }
@@ -2747,11 +2762,22 @@ function parseStatsFromRawMatch(
 
 // ==========================================================
 // CROSS-SOURCE PARTIAL STATS
-// 5 chỉ số ưu tiên để quyết định có cần fallback thêm hay không:
+// 5 chỉ số ưu tiên nội bộ cho fallback API (KHÔNG phải điều kiện Rule AI):
 // Total Shots / SOT / Corners / Shots Inside Box / Shots Off Target.
 // Mục tiêu: ít nhất 4/5; nếu dữ liệu raw của 3 nguồn ghép được 5/5 thì giữ 5/5.
 // Chỉ gọi detail API khi sau khi ghép raw vẫn < 4/5 để tránh lãng phí API.
 // ==========================================================
+
+function getAvailableStatsCoverage(stats) {
+  const fields = ['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots',
+    'ShotsInsideBox','ShotsOutsideBox','Corners','Attacks','DangerousAttacks',
+    'Possession','ExpectedGoals','BigChances','YellowCards','RedCards',
+    'GoalkeeperSaves','Fouls'];
+  const available = fields.filter(field => ['home','away'].some(side =>
+    stats?._present?.[side + field] === true || Number(stats?.[side + field]) > 0
+  ));
+  return { available: available.length, total: fields.length, fields: available };
+}
 
 function getCoreStatsCoverage(stats) {
   if (!stats) return 0;
@@ -2883,7 +2909,7 @@ async function fetchMatchDetailStats(
         await fetchStatsForSourceMatch(sourceMatch);
 
       mergeMissingStats(stats, extraStats);
-      console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().join(',') || 'none'}`);
+      console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | coverage=${getAvailableStatsCoverage(stats).available}/${getAvailableStatsCoverage(stats).total} | missingCore=${missingFields().join(',') || 'none'}`);
     }
   }
 
@@ -2928,10 +2954,10 @@ async function fetchMatchDetailStats(
 
 
   console.log(`[STATS MISSING] ${match.homeName} vs ${match.awayName} | ${missingFields().join(',') || 'none'} | matched=${sourceMatches.map(x => x.source+':'+x.id).join(',')} | fieldSources=${JSON.stringify(stats._fieldSources || {})}`);
-  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
+  console.log(`[Stats 3 nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | coverage=${getAvailableStatsCoverage(stats).available}/${getAvailableStatsCoverage(stats).total} | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
 
   stats.source =
-    `cross-source-${getCoreStatsCoverage(stats)}/5`;
+    `cross-source-${getAvailableStatsCoverage(stats).available}-fields`;
 
   statsCache.set(
     cacheKey,
@@ -3419,435 +3445,103 @@ function createSnapshot(stats, minute) {
 // CALCULATE MOMENTUM
 // ==========================================================
 
-function calculateMomentum(
-  matchId,
-  stats,
-  minute
-) {
+// Rolling 10-minute history: partial counters are accepted independently.
+// Never interpret an absent counter as zero or a cumulative total as a new event.
+const momentumHistory10 = new Map();
+const MOMENTUM_FIELDS10 = ['Attacks', 'DangerousAttacks', 'ShotsOnTarget', 'BlockedShots', 'Corners'];
 
-  const current =
-    createSnapshot(
-      stats,
-      minute
-    );
-
-
-  const previous =
-    snapshotState.get(
-      matchId
-    );
-
-
-  // Keep the last valid snapshot if a provider returns partial/reset counters.
-  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','Corners'];
-  const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
-  const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
-  const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
-    Number(current[side+f]) >= Number(previous[side+f])));
-  if (currentValid && (!previous || (previousValid && monotonic && minute > previous.minute))) {
-    snapshotState.set(matchId,{...current,updatedAt:Date.now()});
+function calculateMomentum(matchId, stats, minute) {
+  const current = createSnapshot(stats, minute);
+  const now = Date.now();
+  const history = (momentumHistory10.get(matchId) || []).filter(p =>
+    Number.isFinite(p.minute) && p.minute >= minute - 10 && p.minute <= minute &&
+    now - p.updatedAt < ALERT_STATE_TTL);
+  // Same-minute provider refresh: retain the most complete observation.
+  const same = history.findIndex(p => p.minute === minute);
+  if (same >= 0) {
+    const old = history[same];
+    for (const side of ['home','away']) for (const field of MOMENTUM_FIELDS10) {
+      const key = side + field;
+      if (!current._present[key] && old._present[key]) {
+        current[key] = old[key];
+        current._present[key] = true;
+      }
+    }
+    history.splice(same, 1);
   }
-  if (!currentValid || !previousValid || !monotonic) {
-    return {available:false,minuteGap:0,score:50,text:'Momentum thiếu dữ liệu hợp lệ',
-      totalAttack:0,totalDangerous:0,totalSOT:0,totalBlocked:0,totalCorners:0};
-  }
-
-
-  // Chưa có snapshot trước
-  if (!previous) {
-
-    return {
-      available: false,
-
-      minuteGap: 0,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
-      score: 50,
-
-      text:
-        '⏳ Đang thu thập Momentum'
-    };
-  }
-
-
-  const minuteGap =
-    minute -
-    safeNumber(
-      previous.minute
-    );
-
-
-  // Snapshot lỗi / trận nhảy phút ngược
-  if (
-    minuteGap <= 0 ||
-    minuteGap > 20
-  ) {
-
-    return {
-      available: false,
-
-      minuteGap,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
-      score: 50,
-
-      text:
-        '⏳ Momentum chưa đủ dữ liệu'
-    };
-  }
-
-
-  function delta(currentValue, oldValue) {
-
-    return Math.max(
-      0,
-      safeNumber(currentValue) -
-      safeNumber(oldValue)
-    );
-  }
-
-
-  const homeAttack =
-    delta(
-      current.homeAttacks,
-      previous.homeAttacks
-    );
-
-  const awayAttack =
-    delta(
-      current.awayAttacks,
-      previous.awayAttacks
-    );
-
-
-  const homeDangerous =
-    delta(
-      current.homeDangerousAttacks,
-      previous.homeDangerousAttacks
-    );
-
-  const awayDangerous =
-    delta(
-      current.awayDangerousAttacks,
-      previous.awayDangerousAttacks
-    );
-
-
-  const homeSOT =
-    delta(
-      current.homeShotsOnTarget,
-      previous.homeShotsOnTarget
-    );
-
-  const awaySOT =
-    delta(
-      current.awayShotsOnTarget,
-      previous.awayShotsOnTarget
-    );
-
-
-  const homeBlocked =
-    delta(
-      current.homeBlockedShots,
-      previous.homeBlockedShots
-    );
-
-  const awayBlocked =
-    delta(
-      current.awayBlockedShots,
-      previous.awayBlockedShots
-    );
-
-
-  const homeCorners =
-    delta(
-      current.homeCorners,
-      previous.homeCorners
-    );
-
-  const awayCorners =
-    delta(
-      current.awayCorners,
-      previous.awayCorners
-    );
-
-
-  const totalAttack =
-    homeAttack +
-    awayAttack;
-
-  const totalDangerous =
-    homeDangerous +
-    awayDangerous;
-
-  const totalSOT =
-    homeSOT +
-    awaySOT;
-
-  const totalBlocked =
-    homeBlocked +
-    awayBlocked;
-
-  const totalCorners =
-    homeCorners +
-    awayCorners;
-
-
-  // Chuẩn hóa về 10 phút
-  const factor =
-    10 /
-    Math.max(
-      minuteGap,
-      1
-    );
-
-
-  const attack10 =
-    totalAttack *
-    factor;
-
-  const dangerous10 =
-    totalDangerous *
-    factor;
-
-  const sot10 =
-    totalSOT *
-    factor;
-
-  const blocked10 =
-    totalBlocked *
-    factor;
-
-  const corners10 =
-    totalCorners *
-    factor;
-
-
-  // ======================================================
-  // MOMENTUM SCORE 0-100
-  // ======================================================
-
-  let score = 20;
-
-
-  // Attack
-  if (attack10 >= 35) {
-    score += 18;
-  } else if (attack10 >= 25) {
-    score += 14;
-  } else if (attack10 >= 15) {
-    score += 9;
-  } else if (attack10 >= 8) {
-    score += 4;
-  }
-
-
-  // Dangerous Attack
-  if (dangerous10 >= 20) {
-    score += 28;
-  } else if (dangerous10 >= 14) {
-    score += 22;
-  } else if (dangerous10 >= 9) {
-    score += 15;
-  } else if (dangerous10 >= 5) {
-    score += 8;
-  }
-
-
-  // SOT
-  if (sot10 >= 4) {
-    score += 25;
-  } else if (sot10 >= 3) {
-    score += 20;
-  } else if (sot10 >= 2) {
-    score += 14;
-  } else if (sot10 >= 1) {
-    score += 7;
-  }
-
-
-
-  // Corners
-  if (corners10 >= 4) {
-    score += 10;
-  } else if (corners10 >= 2) {
-    score += 6;
-  } else if (corners10 >= 1) {
-    score += 3;
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
-  // ======================================================
-  // MOMENTUM HOME/AWAY
-  // ======================================================
-
-  const homePressure =
-
-    homeAttack * 0.10 +
-
-    homeDangerous * 0.35 +
-
-    homeSOT * 5 +
-
-    homeCorners * 1.8;
-
-
-  const awayPressure =
-
-    awayAttack * 0.10 +
-
-    awayDangerous * 0.35 +
-
-    awaySOT * 5 +
-
-    awayCorners * 1.8;
-
-
-  let text =
-    '⚡ Momentum trung bình';
-
-
-  if (score >= 85) {
-
-    text =
-      '🔥🔥 MOMENTUM CỰC MẠNH';
-
-  } else if (score >= 75) {
-
-    text =
-      '🔥 MOMENTUM RẤT MẠNH';
-
-  } else if (score >= 65) {
-
-    text =
-      '⚡ MOMENTUM MẠNH';
-
-  } else if (score < 40) {
-
-    text =
-      '🐢 Momentum thấp';
-  }
-
-
-  return {
-
-    available: true,
-
-    minuteGap,
-
-    homeAttack,
-    awayAttack,
-
-    homeDangerous,
-    awayDangerous,
-
-    homeSOT,
-    awaySOT,
-
-    homeBlocked,
-    awayBlocked,
-
-    homeCorners,
-    awayCorners,
-
-    totalAttack,
-    totalDangerous,
-    totalSOT,
-    totalBlocked,
-    totalCorners,
-
-    attack10:
-      round1(attack10),
-
-    dangerous10:
-      round1(
-        dangerous10
-      ),
-
-    sot10:
-      round1(sot10),
-
-    blocked10:
-      round1(
-        blocked10
-      ),
-
-    corners10:
-      round1(
-        corners10
-      ),
-
-    homePressure:
-      round1(
-        homePressure
-      ),
-
-    awayPressure:
-      round1(
-        awayPressure
-      ),
-
-    score:
-      round1(score),
-
-    text
+  history.push({...current, updatedAt: now});
+  history.sort((a,b) => a.minute - b.minute);
+  // Keep a 10-minute rolling window plus a limited amount of state.
+  momentumHistory10.set(matchId, history.slice(-30));
+  snapshotState.set(matchId, {...current, updatedAt: now});
+
+  const result = {
+    available: false, minuteGap: 0, score: 50, text: '⏳ Đang thu thập Momentum 10 phút',
+    homeAttack:0,awayAttack:0,homeDangerous:0,awayDangerous:0,
+    homeSOT:0,awaySOT:0,homeBlocked:0,awayBlocked:0,
+    homeCorners:0,awayCorners:0,totalAttack:0,totalDangerous:0,
+    totalSOT:0,totalBlocked:0,totalCorners:0,attack10:0,dangerous10:0,
+    sot10:0,blocked10:0,corners10:0,homePressure:0,awayPressure:0,
+    evidenceFields:[], windowStartMinute:null
   };
+  const names = {Attacks:'Attack', DangerousAttacks:'Dangerous',
+    ShotsOnTarget:'SOT', BlockedShots:'Blocked', Corners:'Corners'};
+  let maxGap = 0;
+  for (const field of MOMENTUM_FIELDS10) {
+    for (const side of ['home','away']) {
+      const key = side + field;
+      if (!current._present?.[key]) continue;
+      // Earliest valid observation in the rolling window for this counter.
+      const baseline = history.find(p => p.minute < minute && p._present?.[key] &&
+        Number.isFinite(Number(p[key])) && Number(p[key]) <= Number(current[key]));
+      if (!baseline) continue;
+      const gap = minute - baseline.minute;
+      if (gap <= 0 || gap > 10) continue;
+      const amount = Number(current[key]) - Number(baseline[key]);
+      result[side + names[field]] = Math.max(0, amount);
+      result.evidenceFields.push(key);
+      maxGap = Math.max(maxGap, gap);
+    }
+  }
+  // A real change needs at least one verified comparable counter and elapsed time.
+  if (!result.evidenceFields.length) return result;
+  result.available = true;
+  result.minuteGap = maxGap;
+  result.windowStartMinute = minute - maxGap;
+  for (const [total, field] of [
+    ['totalAttack','Attack'],['totalDangerous','Dangerous'],
+    ['totalSOT','SOT'],['totalBlocked','Blocked'],['totalCorners','Corners']
+  ]) result[total] = result['home'+field] + result['away'+field];
+  // Do not extrapolate partial windows into fictional 10-minute event counts.
+  result.attack10 = result.totalAttack;
+  result.dangerous10 = result.totalDangerous;
+  result.sot10 = result.totalSOT;
+  result.blocked10 = result.totalBlocked;
+  result.corners10 = result.totalCorners;
+  const tier = (n, thresholds, points) => {
+    for(let i=0;i<thresholds.length;i++) if(n>=thresholds[i]) return points[i];
+    return 0;
+  };
+  let score = 20;
+  const has = field => result.evidenceFields.some(k => k === 'home'+field || k === 'away'+field);
+  if (has('Attacks')) score += tier(result.totalAttack,[35,25,15,8],[18,14,9,4]);
+  if (has('DangerousAttacks')) score += tier(result.totalDangerous,[20,14,9,5],[28,22,15,8]);
+  if (has('ShotsOnTarget')) score += tier(result.totalSOT,[4,3,2,1],[25,20,14,7]);
+  if (has('Corners')) score += tier(result.totalCorners,[4,2,1],[10,6,3]);
+  // DA without any confirmed shots on target is weaker evidence of conversion.
+  if (has('DangerousAttacks') && has('ShotsOnTarget') &&
+      result.totalDangerous >= 10 && result.totalSOT === 0) score -= 12;
+  result.score = round1(clamp(score,0,100));
+  result.homePressure = round1(result.homeAttack*.10 + result.homeDangerous*.35 +
+    result.homeSOT*5 + result.homeCorners*1.8);
+  result.awayPressure = round1(result.awayAttack*.10 + result.awayDangerous*.35 +
+    result.awaySOT*5 + result.awayCorners*1.8);
+  result.text = result.score>=85 ? '🔥🔥 MOMENTUM CỰC MẠNH' :
+    result.score>=75 ? '🔥 MOMENTUM RẤT MẠNH' :
+    result.score>=65 ? '⚡ MOMENTUM MẠNH' :
+    result.score<40 ? '🐢 Momentum thấp' : '⚡ Momentum trung bình';
+  return result;
 }
-
 
 // ==========================================================
 // 20. FORMAT MOMENTUM TELEGRAM
@@ -5145,6 +4839,34 @@ function evaluateMatchDynamicAI(
     );
   }
 
+
+  // Conversion Pressure: DA alone is not evidence of successful finishing.
+  // Only penalize verified zero/low finishing, never missing SOT.
+  const daKnown = ['home','away'].some(side => stats?._present?.[side+'DangerousAttacks'] === true);
+  const sotKnown = ['home','away'].every(side => stats?._present?.[side+'ShotsOnTarget'] === true);
+  const shotsKnown = ['home','away'].every(side => stats?._present?.[side+'TotalShots'] === true);
+  const bigKnown = ['home','away'].some(side => stats?._present?.[side+'BigChances'] === true);
+  const bigCount = Number(stats.homeBigChances || 0) + Number(stats.awayBigChances || 0);
+  if (daKnown && sotKnown && totals.totalDangerousAttacks >= 35 && totals.totalShotsOnTarget === 0) {
+    finalScore -= 12;
+    notes.push('⚠️ DA cao nhưng chưa có SOT xác minh: áp lực chuyển hóa thấp');
+  } else if (daKnown && sotKnown && shotsKnown && totals.totalDangerousAttacks >= 35 &&
+      totals.totalShots >= 12 && totals.totalShotsOnTarget <= 1 && (!bigKnown || bigCount === 0)) {
+    finalScore -= 7;
+    notes.push('⚠️ Nhiều pha tấn công nhưng dứt điểm trúng đích thấp');
+  }
+  // Late-match contextual SOT: require verified SOT and shot count.
+  if (minute >= 75 && sotKnown && shotsKnown && totals.totalShots >= 10 && totals.totalShotsOnTarget <= 1) {
+    finalScore -= 5;
+    notes.push('⚠️ SOT thấp so với tổng sút ở giai đoạn cuối trận');
+  }
+  // Time booster requires verified recent momentum, not the clock alone.
+  if (minute >= 75 && minute <= 88 && momentum?.available === true &&
+      momentum.score >= 75 && (homeScore !== awayScore) &&
+      (sotKnown || bigKnown)) {
+    finalScore += 3;
+    notes.push('⏱️ Nhịp ép cuối trận tăng và tỷ số chưa cân bằng');
+  }
 
   // Momentum cực mạnh
   if (
