@@ -16,7 +16,7 @@ return {...r,goalResult,overResult};}
 async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data);}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
-const LIVE_FIELDS=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','Attacks','DangerousAttacks','Corners','Possession','BigChances','RedCards','YellowCards','ShotsInsideBox','ExpectedGoals'];
+const LIVE_FIELDS=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','Attacks','DangerousAttacks','Corners','Possession','BigChances','RedCards','YellowCards'];
 function captureLiveStats(stats){
  const out={};if(!stats)return out;
  for(const field of LIVE_FIELDS){for(const side of ['home','away']){
@@ -34,25 +34,20 @@ function captureSpike(spike){if(!spike)return null;
  return {confirmed:spike.confirmed===true,score:safeNum(spike.score),groups:safeNum(spike.groups),cornerDensity:safeNum(spike.cornerDensity),reason:String(spike.reason||''),signals:spike.signals&&typeof spike.signals==='object'?{
  finishing:spike.signals.finishing===true,corners:spike.signals.corners===true,pressure:spike.signals.pressure===true,cards:spike.signals.cards===true}:null};
 }
-async function addAlert(item,number,messageId){const id=`${item.alertKey}|${number}|${messageId}`;const rec=scoreResults({id,matchKey:item.alertKey,source:item.source||'',sourceId:String(item.id||''),sourceIds:{...(item.sourceIds||{}),...((item.source && item.id)?{[item.source]:String(item.id)}:{})},home:item.homeName,away:item.awayName,league:item.league,alertNumber:number,alertType:item.alertDecision?.bigBet?'BIG BET':'ALERT',minute:Number(item.minute),homeScore:Number(item.homeScore),awayScore:Number(item.awayScore),rule:safeNum(item.ai?.efficiency),momentum:safeNum(item.momentum?.score),ruleConfidence:captureConfidence(item.ruleConfidence),spike:captureSpike(item.alertDecision?.spike),alertReason:String(item.alertDecision?.reason||""),liveStats:captureLiveStats(item.stats),statsBaselineMethod:String(item.stats?._baselineMethod||'unknown'),statsObservedSinceMinute:safeNum(item.stats?._observedSinceMinute),overLine:item.odds?.found?safeNum(item.odds.point):null,overPrice:item.odds?.found?safeNum(item.odds.price):null,telegramMessageId:messageId,createdAt:new Date().toISOString(),ftHome:null,ftAway:null,settledAt:null});await save(rec);return rec;}
+async function addAlert(item,number,messageId){const id=`${item.alertKey}|${number}|${messageId}`;const rec=scoreResults({id,matchKey:item.alertKey,source:item.source||'',sourceId:String(item.id||''),sourceIds:{...(item.sourceIds||{}),...((item.source && item.id)?{[item.source]:String(item.id)}:{})},home:item.homeName,away:item.awayName,league:item.league,alertNumber:number,alertType:item.alertDecision?.bigBet?'BIG BET':'ALERT',minute:Number(item.minute),homeScore:Number(item.homeScore),awayScore:Number(item.awayScore),rule:safeNum(item.ai?.efficiency),momentum:safeNum(item.momentum?.score),ruleConfidence:captureConfidence(item.ruleConfidence),spike:captureSpike(item.alertDecision?.spike),alertReason:String(item.alertDecision?.reason||""),liveStats:captureLiveStats(item.stats),overLine:item.odds?.found?safeNum(item.odds.point):null,overPrice:item.odds?.found?safeNum(item.odds.price):null,telegramMessageId:messageId,createdAt:new Date().toISOString(),ftHome:null,ftAway:null,settledAt:null});await save(rec);return rec;}
 async function settleMatch(matchKey,h,a){await init();if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0)throw Error('FT must be nonnegative integers');let count=0;for(const r of records.filter(x=>x.matchKey===matchKey&&x.ftHome==null)){const next=scoreResults({...r,ftHome:h,ftAway:a,settledAt:new Date().toISOString()});await save(next);count++;}return count;}
-async function deleteAlerts(ids){
- await init();
- if(!Array.isArray(ids)||ids.length>10000||ids.some(x=>typeof x!=='string'||x.length>300))throw Error('Invalid IDs');
- const set=new Set(ids);const found=records.filter(x=>set.has(x.id));
- if(pool && found.length) await pool.query('DELETE FROM promax_alert_audit WHERE id = ANY($1::text[])',[found.map(x=>x.id)]);
- records=records.filter(x=>!set.has(x.id));
- if(!pool){fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}
- return found.length;
-}
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
 function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
 function setup(app){app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);res.json({ok:true,summary:total,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data.slice(0,10000)});}catch(e){res.status(500).json({ok:false,error:e.message});}});
-app.post('/api/audit/delete',requireAuth,async(req,res)=>{
- try{const ids=req.body?.ids;const deleted=await deleteAlerts(ids);res.json({ok:true,deleted});}
- catch(e){res.status(400).json({ok:false,error:e.message});}
-});
+app.post('/api/audit/delete',requireAuth,async(req,res)=>{try{
+ await init();const ids=req.body?.ids;
+ if(!Array.isArray(ids)||!ids.length||ids.length>10000||ids.some(id=>typeof id!=='string'||id.length>512))return res.status(400).json({ok:false,error:'Invalid ids'});
+ const set=new Set(ids);const removed=records.filter(r=>set.has(r.id));
+ if(pool){const client=await pool.connect();try{await client.query('BEGIN');await client.query('DELETE FROM promax_alert_audit WHERE id = ANY($1::text[])',[...set]);await client.query('COMMIT');}catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}}
+ else {const next=records.filter(r=>!set.has(r.id));fs.writeFileSync(FILE+'.tmp',JSON.stringify(next,null,2));fs.renameSync(FILE+'.tmp',FILE);}
+ records=records.filter(r=>!set.has(r.id));res.json({ok:true,deleted:removed.length});
+ }catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/settle',requireAuth,async(req,res)=>{try{const {matchKey,ftHome,ftAway}=req.body||{};if(typeof matchKey!=='string'||!matchKey)return res.status(400).json({error:'matchKey required'});const count=await settleMatch(matchKey,Number(ftHome),Number(ftAway));res.json({ok:true,updated:count});}catch(e){res.status(400).json({ok:false,error:e.message});}});}
 // Reconcile only on a provider-confirmed finished match. Never treat a live score as FT.
 let checking=false;
