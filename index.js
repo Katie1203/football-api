@@ -1218,9 +1218,10 @@ async function fetchLiveMatchesFromFotMob() {
   }
 }
 
-function parseFotMobTeamStats(data) {
+function parseFotMobTeamStats(data, period = "All") {
   const result = createEmptyStats();
-  const sections = data?.content?.stats?.Periods?.All?.stats || [];
+  const periods = data?.content?.stats?.Periods || {};
+  const sections = periods[period]?.stats || [];
   const names = {
     'BallPossesion': ['homePossession', 'awayPossession'],
     'total_shots': ['homeTotalShots', 'awayTotalShots'],
@@ -1274,6 +1275,9 @@ async function fetchFotMobStats(id) {
     const data = response.data?.data || response.data;
     if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
     const stats = parseFotMobTeamStats(data);
+    const periods = data?.content?.stats?.Periods || {};
+    const h2Name = ['SecondHalf','2ndHalf','secondHalf','2nd half','2nd','2'].find(k => periods[k]?.stats);
+    if (h2Name) stats._secondHalf = parseFotMobTeamStats(data,h2Name);
     fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
     return stats;
   } catch (error) {
@@ -2888,6 +2892,14 @@ async function fetchMatchDetailStats(
   }
 
 
+
+  // Native H2 is queried even if full-game stats already have 5/5 coverage.
+  // Reuse the existing FotMob detail cache; never infer H2 from All.
+  const fotmobMatch = orderedSources.find(x => x.source === 'fotmob');
+  if (fotmobMatch) {
+    const fm = await fetchFotMobStats(fotmobMatch.id);
+    if (fm._secondHalf) stats._secondHalf = fm._secondHalf;
+  }
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
   if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
@@ -5064,7 +5076,7 @@ function evaluateMatchDynamicAI(
   const normRate = (field, reference) => {
     const hk='home'+field, ak='away'+field;
     if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
-    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute-45) * 100 / reference * 100,0,100);
   };
   const normRatio = (numerator, denominator, reference) => {
     if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
@@ -5089,12 +5101,15 @@ function evaluateMatchDynamicAI(
     [normRatio('ShotsInsideBox','TotalShots',0.55),0.20]
   ]);
   const opportunities = weighted([[normRate('BigChances',6),0.55],[normRate('Corners',14),0.45]]);
-  const control = weighted([[possessionScore,0.40],[style.score,0.60]]);
+  const xgQuality = normRate('ExpectedGoals',2.4);
+  const bigChanceQuality = normRate('BigChances',4);
+  const control = weighted([[stats?._present?.homePossession && stats?._present?.awayPossession ? possessionScore : null,0.40],[style.score,0.60]]);
+  const quality = weighted([[xgQuality,0.55],[bigChanceQuality,0.45]]);
   const gameState = scoreState;
   const groups = [
     [finishing,0.30],[attacksGroup,0.20],
     [momentum?.available ? momentumScore : null,0.20],
-    [opportunities,0.10],[control,0.10],[gameState,0.05],[timeScore,0.05]
+    [opportunities,0.10],[quality,0.10],[control,0.05],[gameState,0.025],[timeScore,0.025]
   ];
   // Reweight only observed groups; never silently assume absent statistics = 0.
   let finalScore = weighted(groups);
@@ -5129,6 +5144,7 @@ function evaluateMatchDynamicAI(
 
   // Ít Dangerous Attack
   if (
+    stats._present?.homeDangerousAttacks && stats._present?.awayDangerousAttacks &&
     totals.totalDangerousAttacks > 0 &&
     totals.totalDangerousAttacks < 30 &&
     minute >= 65
@@ -5158,6 +5174,7 @@ function evaluateMatchDynamicAI(
 
   // Nhiều SOT + Dangerous
   if (
+    stats._present?.homeDangerousAttacks && stats._present?.awayDangerousAttacks &&
     totals.totalShotsOnTarget >= 8 &&
     totals.totalDangerousAttacks >= 70
   ) {
@@ -7000,12 +7017,13 @@ async function analyzeOneMatch(
     : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
 
 
-  const momentum =
-    calculateMomentum(
-      alertKey,
-      stats,
-      minute
-    );
+  const h2Stats = resolveSecondHalfStats(alertKey, stats, minute);
+  if (!h2Stats._h2Verified) {
+    console.log(`[H2 INCOMPLETE] ${match.homeName} vs ${match.awayName} | ${minute}' | ${h2Stats._h2Reason} | NO TELEGRAM`);
+    return null; // Never pass accumulated H1 stats into Rule or alerts.
+  }
+  const ruleStats = h2Stats;
+  const momentum = calculateMomentum(alertKey, ruleStats, minute);
 
   // Giai đoạn 46–64: chỉ thu thập dữ liệu và cập nhật Momentum.
   // Quyết định gửi Telegram chỉ được thực hiện từ phút 65.
@@ -7034,7 +7052,7 @@ async function analyzeOneMatch(
   // ======================================================
 
   if (
-    !hasUsefulStats(stats) &&
+    !hasUsefulStats(ruleStats) &&
     !odds.found
   ) {
 
@@ -7052,7 +7070,7 @@ async function analyzeOneMatch(
 
   const ai =
     evaluateMatchDynamicAI(
-      stats,
+      ruleStats,
       odds,
       momentum,
       minute,
@@ -7071,7 +7089,7 @@ async function analyzeOneMatch(
       match.awayScore,
       ai.efficiency,
       minute,
-      stats,
+      ruleStats,
       momentum,
       ai.styleType
     );
@@ -7087,7 +7105,7 @@ async function analyzeOneMatch(
       ai.efficiency,
       minute,
       momentum,
-      stats,
+      ruleStats,
       match.homeScore,
       match.awayScore
     );
@@ -7101,10 +7119,10 @@ async function analyzeOneMatch(
 
   const compactBigChance =
     (
-      stats.homeBigChances > 0 ||
-      stats.awayBigChances > 0
+      ruleStats.homeBigChances > 0 ||
+      ruleStats.awayBigChances > 0
     )
-      ? ` | BC ${stats.homeBigChances}-${stats.awayBigChances}`
+      ? ` | BC ${ruleStats.homeBigChances}-${ruleStats.awayBigChances}`
       : '';
 
 
@@ -7114,52 +7132,76 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${ruleStats.homeAttacks}-${ruleStats.awayAttacks} | DA ${ruleStats.homeDangerousAttacks}-${ruleStats.awayDangerousAttacks} | SH ${ruleStats.homeTotalShots}-${ruleStats.awayTotalShots} | SOT ${ruleStats.homeShotsOnTarget}-${ruleStats.awayShotsOnTarget} | COR ${ruleStats.homeCorners}-${ruleStats.awayCorners} | POSS ${ruleStats.homePossession}-${ruleStats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
-function calculateRuleConfidence(stats, match, minute, momentum, rule) {
-  // Evidence-based diagnostic score, NOT a probability and NEVER an alert gate.
-  // Missing indicators are omitted rather than interpreted as genuine zeros.
-  const core = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
-  const has = f => ['home','away'].every(side => stats?._present?.[side+f] === true);
-  const sum = f => Number(stats['home'+f] || 0) + Number(stats['away'+f] || 0);
-  const clamp = n => Math.max(0,Math.min(1,n));
-  const coverage = core.filter(has).length;
-  const parts = [];
-  const add = (key, weight, value, available) => {if(available) parts.push({key,weight,value:100*clamp(value)});};
-  const boxPresent = has('ShotsInsideBox'), offPresent = has('ShotsOffTarget');
-  const pressureEvidence = [];
-  if (boxPresent) pressureEvidence.push(clamp(sum('ShotsInsideBox')/10));
-  if (offPresent) pressureEvidence.push(clamp(sum('ShotsOffTarget')/12));
-  add('attackPressure',20,pressureEvidence.length ? pressureEvidence.reduce((a,b)=>a+b,0)/pressureEvidence.length : 0,pressureEvidence.length>0);
-  const sh = has('TotalShots'), sot = has('ShotsOnTarget');
-  const off = offPresent, box = boxPresent;
-  const shots = sh ? sum('TotalShots') : 0;
-  const onTarget = sot ? sum('ShotsOnTarget') : 0;
-  const shotVolume = sh ? clamp(shots/22) : 0;
-  const accuracy = sh && sot && shots > 0 ? clamp((onTarget/shots)/0.42) : sot ? clamp(onTarget/8) : 0;
-  const insideQuality = box && sh && shots > 0 ? clamp((sum('ShotsInsideBox')/shots)/0.6) : null;
-  const offQuality = off && sh && shots > 0 ? 1-clamp((sum('ShotsOffTarget')/shots)/0.85) : null;
-  const qualityPieces = [shotVolume,accuracy,...(insideQuality===null?[]:[insideQuality]),...(offQuality===null?[]:[offQuality])];
-  add('finishing',30,qualityPieces.reduce((a,b)=>a+b,0)/qualityPieces.length,sh || sot);
-  add('corners',15,clamp(sum('Corners')/11),has('Corners'));
-  const reliableMomentum = momentum?.available === true && Number(momentum.minuteGap)>0 && Number(momentum.minuteGap)<=20 && Number(minute)>=46;
-  const momentumSignals = reliableMomentum ? [Number(momentum.totalSOT)||0,Number(momentum.totalCorners)||0] : [];
-  const pace = reliableMomentum ? 10/Number(momentum.minuteGap) : 0;
-  add('liveMomentum',25, reliableMomentum ? clamp((momentumSignals[0]*pace/3 + momentumSignals[1]*pace/4)/2) : 0,reliableMomentum);
-  const agreementSignals = [box && sum('ShotsInsideBox')>=4, sot && onTarget>=4,has('Corners')&&sum('Corners')>=5].filter((v,i)=>[box,sot,has('Corners')][i]);
-  add('agreement',10,agreementSignals.filter(Boolean).length/agreementSignals.length,agreementSignals.length>=2);
-  const weight = parts.reduce((a,p)=>a+p.weight,0);
-  const evidence = weight ? parts.reduce((a,p)=>a+p.weight*p.value,0)/weight : 0;
-  // Unavailable dimensions reduce interpretability but never force their value to zero.
-  const percent = Math.round(evidence*100)/100;
-  return {coverage,total:5,percent,label:`${coverage}/5 chỉ số`,
-    components:Object.fromEntries(parts.map(p=>[p.key,Math.round(p.value*100)/100])),
-    availableWeight:weight,method:'live-evidence-core5-box-off-v5'};
+// Verified native H2 stats are preferred. A first snapshot at minute 47+ is NOT an HT baseline.
+const h2Baselines=new Map();
+const H2_COUNT_FIELDS=['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget','BlockedShots','Attacks','DangerousAttacks','BigChances','ExpectedGoals','YellowCards','RedCards','GoalkeeperSaves','Fouls'];
+function resolveSecondHalfStats(key, full, minute) {
+  if(full?._secondHalf && getCoreStatsCoverage(full._secondHalf)>0) {
+    const out=createEmptyStats();
+    mergeMissingStats(out,full._secondHalf);
+    // Possession from the H2 period only; full-match possession is context, never H2 evidence.
+    out._h2Verified=true;out._h2Method='native-period';out._h2Reason='FotMob H2';
+    return out;
+  }
+  const baseline=h2Baselines.get(key);
+  // Capture only true HT or <=45. Live discovery normally starts at 46,
+  // so this path requires an independently collected HT snapshot.
+  if(minute<=45 && getCoreStatsCoverage(full)>0) {
+    h2Baselines.set(key,{minute,stats:JSON.parse(JSON.stringify(full))});
+  }
+  if(!baseline || baseline.minute<45 || baseline.minute>45)
+    return {...createEmptyStats(),_h2Verified:false,_h2Reason:'No verified HT baseline or native H2 period'};
+  const out=createEmptyStats();
+  for(const field of H2_COUNT_FIELDS) for(const side of ['home','away']) {
+    const k=side+field;
+    if(full._present?.[k]!==true || baseline.stats._present?.[k]!==true) continue;
+    const delta=Number(full[k])-Number(baseline.stats[k]);
+    if(!Number.isFinite(delta)||delta<0) continue;
+    out[k]=delta;out._present[k]=true;
+  }
+  out.hasData=getCoreStatsCoverage(out)>0;
+  out._h2Verified=out.hasData;out._h2Method='HT-delta';out._h2Reason='Verified minute-45 snapshot';
+  return out;
 }
 
-  const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
+function calculateRuleConfidence(stats, match, minute, momentum, rule) {
+  // Diagnostic agreement of REAL H2 primary + supplementary metrics, not a goal probability.
+  const core=['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
+  const has=f=>['home','away'].every(side=>stats?._present?.[side+f]===true);
+  const sum=f=>Number(stats['home'+f]||0)+Number(stats['away'+f]||0);
+  const cap=v=>Math.max(0,Math.min(1,v));
+  const coverage=core.filter(has).length;
+  const sh=has('TotalShots')?sum('TotalShots'):null;
+  const sot=has('ShotsOnTarget')?sum('ShotsOnTarget'):null;
+  const box=has('ShotsInsideBox')?sum('ShotsInsideBox'):null;
+  const off=has('ShotsOffTarget')?sum('ShotsOffTarget'):null;
+  const cor=has('Corners')?sum('Corners'):null;
+  const components={};
+  // A high volume alone must not manufacture confidence.
+  if(sh!==null && sot!==null && sh>0) components.finishing=cap((sot/sh)/0.48);
+  if(sh!==null && box!==null && sh>0) components.insideBox=cap((box/sh)/0.62);
+  if(sh!==null && off!==null && sh>0) components.offTarget=cap(1-(off/sh)/0.75);
+  if(cor!==null) components.corners=cap(cor/7);
+  if(has('ExpectedGoals')) components.xg=cap(sum('ExpectedGoals')/1.3);
+  if(has('BigChances')) components.bigChances=cap(sum('BigChances')/3);
+  if(momentum?.available && momentum.minuteGap>0 && momentum.minuteGap<=15)
+    components.momentum=cap(((Number(momentum.totalSOT)||0)*2+(Number(momentum.totalCorners)||0))/Math.max(1,momentum.minuteGap)*5/5);
+  if(has('DangerousAttacks') && has('Attacks') && sum('Attacks')>0)
+    components.dangerous=cap((sum('DangerousAttacks')/sum('Attacks'))/0.55);
+  const values=Object.values(components);
+  // Geometric mean penalizes contradictory evidence; no neutral=100 for missing data.
+  const agreement=values.length ? Math.exp(values.reduce((a,v)=>a+Math.log(Math.max(.01,v)),0)/values.length) : 0;
+  const dataFactor=cap(0.4+0.6*coverage/5);
+  const supplementalFactor=cap(0.75+0.25*Math.min(1,Math.max(0,values.length-3)/3));
+  const percent=Math.round(100*agreement*dataFactor*supplementalFactor*100)/100;
+  return {coverage,total:5,percent,label:`${coverage}/5 H2`,components:Object.fromEntries(Object.entries(components).map(([k,v])=>[k,Math.round(v*100)])),method:'h2-multimetric-geometric-v1'};
+}
+
+  const ruleConfidence = calculateRuleConfidence(ruleStats, match, minute, momentum, ai.efficiency);
   // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
   const followupState = alertState.get(alertKey);
   const decisionReason = String(alertDecision.reason || 'UNKNOWN');
@@ -7178,7 +7220,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     minute,
 
-    stats,
+    stats: ruleStats,
 
     momentum,
 
