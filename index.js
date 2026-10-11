@@ -2821,7 +2821,7 @@ async function fetchMatchDetailStats(
   );
 
   const cacheKey =
-    `cross:${matchKey || `${match.source}:${match.id}`}`;
+    `cross:${matchKey || `${match.source}:${match.id}`}:${resolverLeagueCountry(match)}:${String(match.league || "").toLowerCase()}`;
 
   const cached = statsCache.get(cacheKey);
 
@@ -2841,6 +2841,9 @@ async function fetchMatchDetailStats(
   for (const candidate of independentLiveSourceRegistry) {
     if (sourceMatches.some(m => m.source === candidate.source && String(m.id) === String(candidate.id))) continue;
     if (resolverSameMatch(match, candidate)) sourceMatches.push(candidate);
+  }
+  if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
+    console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | NO_CROSS_PROVIDER_MATCH | candidates=${independentLiveSourceRegistry.length}`);
   }
   if (sourceMatches.length > linked.length) {
     console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | additional=${sourceMatches.slice(linked.length).map(m=>m.source+':'+m.id).join(',')}`);
@@ -2890,7 +2893,10 @@ async function fetchMatchDetailStats(
       const extraStats =
         await fetchStatsForSourceMatch(sourceMatch);
 
+      const before = missingFields();
       mergeMissingStats(stats, extraStats);
+      const supplied = before.filter(f => !missingFields().includes(f));
+      console.log(`[DETAIL RESULT] ${sourceMatch.source}:${sourceMatch.id} | supplied=${supplied.join(',') || 'NONE'} | rawHasData=${!!extraStats?.hasData} | missing=${missingFields().join(',') || 'none'}`);
       console.log(`[DA/ATT SOURCE] ${sourceMatch.source}:${sourceMatch.id} | DA=${stats._present?.homeDangerousAttacks && stats._present?.awayDangerousAttacks ? `${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks}` : 'MISSING'} | ATT=${stats._present?.homeAttacks && stats._present?.awayAttacks ? `${stats.homeAttacks}-${stats.awayAttacks}` : 'MISSING'}`);
       console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().join(',') || 'none'}`);
     }
@@ -6852,17 +6858,31 @@ function resolverTokens(name) {
 function resolverTeamScore(a, b) {
   const x = resolverTokens(a), y = resolverTokens(b);
   if (!x.length || !y.length) return 0;
-  const left = x.join(''), right = y.join('');
-  if (left === right) return 1;
-  // Reject different age groups and women's/reserve variants.
   const tags = /^(u\d{2}|women|woman|w|reserves|reserve|ii|iii|b)$/;
   const xt = x.filter(t => tags.test(t)).sort().join('|');
   const yt = y.filter(t => tags.test(t)).sort().join('|');
   if (xt !== yt) return 0;
-  const overlap = x.filter(t => y.includes(t)).length;
-  const dice = 2 * overlap / (x.length + y.length);
-  if (left.length >= 6 && right.length >= 6 && (left.includes(right) || right.includes(left))) return Math.max(dice, .89);
-  return dice;
+  const left = x.join(''), right = y.join('');
+  if (left === right) return 1;
+  const common = x.filter(t => y.includes(t)).length;
+  const dice = 2 * common / (x.length + y.length);
+  if (left.length >= 6 && right.length >= 6 && (left.includes(right) || right.includes(left))) return Math.max(dice, .92);
+  // Fuzzy spelling: e.g. diacritics/transliterations, never match on a short generic token alone.
+  const editDistance = (u,v) => {
+    const prev = Array.from({length:v.length+1}, (_,i)=>i);
+    for (let i=1;i<=u.length;i++) {
+      let diag=prev[0]; prev[0]=i;
+      for(let j=1;j<=v.length;j++) {
+        const old=prev[j];
+        prev[j]=Math.min(prev[j]+1,prev[j-1]+1,diag+(u[i-1]===v[j-1]?0:1));
+        diag=old;
+      }
+    }
+    return prev[v.length];
+  };
+  const fuzzy = left.length>=6 && right.length>=6
+    ? 1-editDistance(left,right)/Math.max(left.length,right.length) : 0;
+  return Math.max(dice,fuzzy);
 }
 function resolverLeagueCountry(m) {
   const raw = m.raw || {};
@@ -6872,14 +6892,19 @@ function resolverSameMatch(a, b) {
   if (a.source === b.source) return String(a.id) === String(b.id);
   const home = resolverTeamScore(a.homeName, b.homeName);
   const away = resolverTeamScore(a.awayName, b.awayName);
-  if (home < .78 || away < .78 || (home + away) / 2 < .86) return false;
+  // Never reverse home/away or link a match based on score alone.
+  if (home < .79 || away < .79 || (home+away)/2 < .87) return false;
   const ac = resolverLeagueCountry(a), bc = resolverLeagueCountry(b);
-  if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2 && !([ac,bc].includes('rou') && [ac,bc].some(x => x.includes('romania')))) return false;
+  if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2 && !([ac,bc].includes('rou') && [ac,bc].some(x=>x.includes('romania')))) return false;
   const am = Number(a.minute), bm = Number(b.minute);
-  if (Number.isFinite(am) && Number.isFinite(bm) && am > 0 && bm > 0 && Math.abs(am - bm) > 12) return false;
-  const as = Number(a.homeScore), bs = Number(b.homeScore);
-  const at = Number(a.awayScore), bt = Number(b.awayScore);
-  if ([as, bs, at, bt].every(Number.isFinite) && (as !== bs || at !== bt)) return false;
+  if (Number.isFinite(am) && Number.isFinite(bm) && am > 0 && bm > 0 && Math.abs(am-bm)>15) return false;
+  // LIVE scores can temporarily differ between providers. Only tolerate a one-goal
+  // difference when both teams match almost exactly and the clocks are close.
+  const values=[a.homeScore,b.homeScore,a.awayScore,b.awayScore];
+  if (values.every(v=>v!==null && v!==undefined && v!=='' && Number.isFinite(Number(v)))) {
+    const delta=Math.abs(Number(a.homeScore)-Number(b.homeScore))+Math.abs(Number(a.awayScore)-Number(b.awayScore));
+    if (delta>0 && !(delta===1 && home>=.94 && away>=.94 && am>0 && bm>0 && Math.abs(am-bm)<=5)) return false;
+  }
   return true;
 }
 function deduplicateMatches(matches) {
