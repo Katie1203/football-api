@@ -127,7 +127,7 @@ const MAX_ALERTS_PER_MATCH = 2;
 
 // Khoảng cách tối thiểu giữa 2 cảnh báo
 const MIN_ALERT_GAP_MINUTES = 1;
-const MIN_TELEGRAM_MINUTE = 60;
+const MIN_TELEGRAM_MINUTE = 65;
 const FOLLOWUP_WINDOW_MINUTES = 10;
 
 // Xóa trạng thái trận cũ sau 4 giờ
@@ -2834,9 +2834,17 @@ async function fetchMatchDetailStats(
 
 
   // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
-  const sourceMatches = Array.isArray(match.crossSourceMatches)
-    ? match.crossSourceMatches
-    : [match];
+  // Resolve native IDs independently from the LIVE discovery pool even if
+  // deduplication did not attach crossSourceMatches. Never reuse an ID across providers.
+  const linked = Array.isArray(match.crossSourceMatches) ? match.crossSourceMatches : [match];
+  const sourceMatches = [...linked];
+  for (const candidate of independentLiveSourceRegistry) {
+    if (sourceMatches.some(m => m.source === candidate.source && String(m.id) === String(candidate.id))) continue;
+    if (resolverSameMatch(match, candidate)) sourceMatches.push(candidate);
+  }
+  if (sourceMatches.length > linked.length) {
+    console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | additional=${sourceMatches.slice(linked.length).map(m=>m.source+':'+m.id).join(',')}`);
+  }
 
 
   // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
@@ -2883,6 +2891,7 @@ async function fetchMatchDetailStats(
         await fetchStatsForSourceMatch(sourceMatch);
 
       mergeMissingStats(stats, extraStats);
+      console.log(`[DA/ATT SOURCE] ${sourceMatch.source}:${sourceMatch.id} | DA=${stats._present?.homeDangerousAttacks && stats._present?.awayDangerousAttacks ? `${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks}` : 'MISSING'} | ATT=${stats._present?.homeAttacks && stats._present?.awayAttacks ? `${stats.homeAttacks}-${stats.awayAttacks}` : 'MISSING'}`);
       console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().join(',') || 'none'}`);
     }
   }
@@ -6715,6 +6724,8 @@ async function sendTelegramAlert(
 // 44. FETCH ALL LIVE SOURCES
 // ==========================================================
 
+let independentLiveSourceRegistry = [];
+
 async function fetchAllLiveMatches() {
 
   const [
@@ -6816,6 +6827,7 @@ async function fetchAllLiveMatches() {
   } else logSourceError('API-Football','LIVE',apisports.reason);
 
 
+  independentLiveSourceRegistry = all.filter(m => m && m.id != null && m.homeName && m.awayName);
   if (!all.length) console.warn('[Live Discovery] ALL SOURCES EMPTY | check API subscription, JSON structure, and match time');
   else console.log(`[Live Discovery] ${all.length} source records before dedup | SofaScore ${sofa.status === 'fulfilled' ? sofa.value.length : 0} | FotMob ${fotmob.status === 'fulfilled' ? fotmob.value.length : 0}`);
   return all;
@@ -7154,7 +7166,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 Rule ${ai.efficiency}% | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency}% | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
@@ -7184,7 +7196,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
      decisionReason.startsWith('MONITORING'));
   const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
-  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | Rule ${ai.efficiency}% | V2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
+  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency}% | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
   const result = {
 
     ...match,
