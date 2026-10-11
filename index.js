@@ -723,6 +723,71 @@ function parseMinuteValue(value) {
 }
 
 
+// Verified October 2026 FlashScore / LiveFootball JSON adapters.
+function normalizeProviderMinute(raw, source) {
+  if (source === 'flashscore' || raw?.match_status?.live_minute != null) {
+    const st = raw?.match_status || {};
+    if (st.is_finished || st.is_cancelled || st.is_postponed) return 999;
+    if (/half.?time|^ht$/i.test(String(st.stage || ''))) return 'HT';
+    const n = Number(st.live_minute);
+    if (Number.isFinite(n) && n > 0) return n;
+    const m = String(st.live_time || '').match(/^(\d{1,3})/);
+    return m ? Number(m[1]) : 0;
+  }
+  if (source === 'live-football' || raw?.status?.liveTime) {
+    const st = raw?.status || {};
+    if (st.finished || st.cancelled) return 999;
+    const lt = st.liveTime || {};
+    if (lt.shortKey === 'halftime_short' || /^HT$/i.test(String(lt.short))) return 'HT';
+    const m = String(lt.short || '').match(/^(\d{1,3})/);
+    if (m) return Number(m[1]);
+    const elapsed = String(lt.long || '').match(/^(\d{1,3}):(\d{1,2})$/);
+    return elapsed ? Number(elapsed[1]) + 1 : 0;
+  }
+  return null;
+}
+function parseVerifiedProviderStats(payload, source) {
+  const out = createEmptyStats();
+  const aliases = {
+    'total shots':'TotalShots','total_shots':'TotalShots',
+    'shots on target':'ShotsOnTarget','ShotsOnTarget':'ShotsOnTarget',
+    'corner kicks':'Corners','corners':'Corners',
+    'ball possession':'Possession','BallPossesion':'Possession',
+    'blocked shots':'BlockedShots','blocked_shots':'BlockedShots',
+    'shots off target':'ShotsOffTarget','ShotsOffTarget':'ShotsOffTarget',
+    'shots inside the box':'ShotsInsideBox','shots_inside_box':'ShotsInsideBox',
+    'red cards':'RedCards','red_cards':'RedCards',
+    'dangerous attacks':'DangerousAttacks','dangerous_attacks':'DangerousAttacks',
+    'total attacks':'Attacks','attacks':'Attacks'
+  };
+  function put(name, values) {
+    const field = aliases[name] || aliases[String(name || '').toLowerCase()];
+    if (!field || !Array.isArray(values)) return;
+    for (let i=0; i<2; i++) {
+      const raw = values[i];
+      if (raw === null || raw === undefined || raw === '') continue;
+      const n = Number(String(raw).replace('%',''));
+      if (!Number.isFinite(n)) continue;
+      const key = (i === 0 ? 'home' : 'away') + field;
+      out[key] = n; out._present[key] = true; out.hasData = true;
+    }
+  }
+  if (source === 'flashscore') {
+    const rows = payload?.match ?? payload?.data?.match;
+    if (Array.isArray(rows)) for (const r of rows) put(r.name, [r.home_team, r.away_team]);
+  } else if (source === 'live-football') {
+    const groups = payload?.response?.stats ?? payload?.stats;
+    if (Array.isArray(groups)) for (const g of groups) {
+      for (const r of (Array.isArray(g.stats) ? g.stats : [])) {
+        const values = Array.isArray(r.rawStats) ? r.rawStats.map(v=>v?.value) : r.stats;
+        put(r.key, values);
+      }
+    }
+  }
+  if (out.hasData) out.source = source;
+  return out;
+}
+
 // ==========================================================
 // CALCULATE EXACT MINUTE
 // ==========================================================
@@ -732,6 +797,8 @@ function calculateExactMinute(item) {
   if (!item) {
     return 0;
   }
+  const verifiedMinute = normalizeProviderMinute(item, item._providerSource);
+  if (verifiedMinute !== null) return verifiedMinute;
   if (item._apiSportsStatus) {
     if (['FT','AET','PEN','CANC','PST','ABD'].includes(item._apiSportsStatus)) return 999;
     if (item._apiSportsStatus === 'HT') return 'HT';
@@ -1099,16 +1166,18 @@ async function fetchLiveMatchesFromFlashScore() {
       );
 
 
-    return (
-      Array.isArray(r.data)
-        ? r.data
-        : (
-            r.data?.data ||
-            r.data?.matches ||
-            r.data?.events ||
-            []
-          )
-    );
+    // FlashScore LIVE is an array of tournaments, each containing matches[].
+    const payload = Array.isArray(r.data) ? r.data : (r.data?.data ?? r.data?.response ?? []);
+    if (!Array.isArray(payload)) return [];
+    return payload.flatMap(league => {
+      if (!Array.isArray(league?.matches)) return league?.match_id ? [league] : [];
+      return league.matches.map(m => ({
+        ...m,
+        _flashLeagueName: league.name,
+        _flashCountry: league.country_name,
+        _providerSource: 'flashscore'
+      }));
+    });
 
   } catch (e) {
 
@@ -1158,7 +1227,7 @@ async function fetchLiveMatchesFromLiveFootball() {
       console.warn('[Source LiveFootball] Unexpected LIVE response schema');
       return [];
     }
-    return matches;
+    return matches.map(m => ({...m, _providerSource: 'live-football'}));
 
   } catch (e) {
 
@@ -1290,7 +1359,8 @@ async function fetchLiveFootballDetailStats(eventId) {
       headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVE_FOOTBALL_HOST },
       timeout: 10000
     });
-    return parseStatsFromRawMatch(response.data?.data || response.data?.result || response.data);
+    const parsed = parseVerifiedProviderStats(response.data, 'live-football');
+    return parsed.hasData ? parsed : parseStatsFromRawMatch(response.data);
   } catch (error) {
     logSourceError('LiveFootball', 'DETAIL', error);
     return createEmptyStats();
@@ -2518,6 +2588,7 @@ async function fetchSofaScoreStats(
       }
 
 
+      mergeStats(stats, parseVerifiedProviderStats(r.data, 'flashscore'));
       parseDirectKeys(
         r.data,
         stats
@@ -2578,15 +2649,11 @@ async function fetchFlashScoreStats(
   const cached = flashScoreStatsCache.get(String(matchId));
   if (cached && Date.now() - cached.time < 90000) return cached.data;
 
-  const urls = [
-
-    `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/${matchId}/statistics`,
-
-    `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/${matchId}/statistics`,
-
-    `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/statistics?match_id=${matchId}`
-
-  ];
+  // Override via env when the subscribed FlashScore API exposes another route.
+  const url = process.env.FLASHSCORE_STATS_URL_TEMPLATE
+    ? process.env.FLASHSCORE_STATS_URL_TEMPLATE.replace('{matchId}', encodeURIComponent(matchId))
+    : `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/statistics?match_id=${encodeURIComponent(matchId)}`;
+  const urls = [url];
 
 
   let lastError = null;
@@ -5561,6 +5628,7 @@ function extractScores(raw) {
   const home = safeNumber(
     raw?.homeScore?.current ??
     raw?.homeScore?.display ??
+    raw?.home?.score ??
     raw?.score?.home ??
     raw?.scores?.home ??
     raw?.home_score ??
@@ -5574,6 +5642,7 @@ function extractScores(raw) {
   const away = safeNumber(
     raw?.awayScore?.current ??
     raw?.awayScore?.display ??
+    raw?.away?.score ??
     raw?.score?.away ??
     raw?.scores?.away ??
     raw?.away_score ??
@@ -5705,9 +5774,8 @@ function formatLiveMatch(
     awayScore:
       score.away,
 
-    league:
-      parseLeagueName(raw),
-
+    league: raw?._flashLeagueName || parseLeagueName(raw),
+    minute: normalizeProviderMinute(raw, source) ?? calculateExactMinute(raw),
     raw
   };
 }
@@ -6886,7 +6954,7 @@ function resolverTeamScore(a, b) {
 }
 function resolverLeagueCountry(m) {
   const raw = m.raw || {};
-  return String(raw._fotmobCountry || raw.league?.country?.name || raw.league?.country || raw.tournament?.category?.country?.name || raw.country || '').toLowerCase().trim();
+  return String(raw._flashCountry || raw._fotmobCountry || raw.league?.country?.name || raw.league?.country || raw.tournament?.category?.country?.name || raw.country || '').toLowerCase().trim();
 }
 function resolverSameMatch(a, b) {
   if (a.source === b.source) return String(a.id) === String(b.id);
@@ -6987,10 +7055,7 @@ async function analyzeOneMatch(
   allOdds
 ) {
 
-  const minuteRaw =
-    calculateExactMinute(
-      match.raw
-    );
+  const minuteRaw = match.minute ?? calculateExactMinute(match.raw);
 
 
   if (
