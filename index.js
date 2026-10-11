@@ -78,17 +78,9 @@ function formatApiSportsMatch(raw) {
   };
 }
 const apiSportsStatsCache = new Map();
-// Statistics-only quota circuit breaker. LIVE discovery and FT Audit remain unchanged.
-let apiSportsStatsQuotaBlockedUntil = 0;
-function apiSportsStatsQuotaError(error) {
-  const body = JSON.stringify(error?.response?.data || {});
-  const message = `${error?.message || ''} ${body}`;
-  return error?.response?.status === 429 || /quota|rate.limit|requests.limit|limit.reached|too many requests/i.test(message);
-}
-
 async function fetchApiSportsStats(id) {
   const result = createEmptyStats();
-  if (!APISPORTS_KEY || !id || Date.now() < apiSportsStatsQuotaBlockedUntil) return result;
+  if (!APISPORTS_KEY || !id) return result;
   const cached = apiSportsStatsCache.get(String(id));
   if (cached && Date.now()-cached.time < 90000) return cached.data;
   try {
@@ -113,25 +105,14 @@ async function fetchApiSportsStats(id) {
     result.source='apisports';
     apiSportsStatsCache.set(String(id),{time:Date.now(),data:result});
     return result;
-  } catch(e) {
-    if (apiSportsStatsQuotaError(e)) {
-      apiSportsStatsQuotaBlockedUntil = Date.now() + 15 * 60 * 1000;
-      console.warn('[STATS SOURCE] apisports | QUOTA_OR_RATE_LIMIT | skip statistics calls for 15min');
-    } else logSourceError('API-Football','STATS',e);
-    return result;
-  }
+  } catch(e) { logSourceError('API-Football','STATS',e); return result; }
 }
 // ==========================================================
 // 2. ALERT / CACHE CONFIG
 // ==========================================================
 
-// Rule Score tối thiểu 65% để gửi Telegram
-const MIN_SEND_PERCENTAGE = 65.0;
-const MIN_RULE_CONFIDENCE = 60;
-const PRESSURE_WINDOW_MINUTES = 10;
-const PRESSURE_PENALTY = 8;
-const pressureHistory = new Map();
-const postGoalHistory = new Map();
+// >= 58% gửi Telegram
+const MIN_SEND_PERCENTAGE = 70.0; // Strictly greater than 70 to send
 
 // >= 75% BIG BET
 const BIG_BET_PERCENTAGE = 75.0;
@@ -142,7 +123,7 @@ const BIG_BET_PERCENTAGE = 75.0;
 const ALERT_INCREASE_THRESHOLD = 10.0;
 
 // Tối đa 3 cảnh báo / trận
-const MAX_ALERTS_PER_MATCH = 3;
+const MAX_ALERTS_PER_MATCH = 2;
 
 // Khoảng cách tối thiểu giữa 2 cảnh báo
 const MIN_ALERT_GAP_MINUTES = 1;
@@ -1226,7 +1207,7 @@ async function fetchLiveMatchesFromFotMob() {
       for (const raw of league.matches || []) {
         if (!raw.status?.ongoing || raw.status?.finished || raw.status?.cancelled) continue;
         const minute = fotmobMinute(raw.status);
-        if (minute === null || minute < 46 || minute > 92) continue;
+        if (minute === null || minute < 46 || minute > 90) continue;
         matches.push({ ...raw, _fotmobLeagueName: league.name, _fotmobCountry: league.ccode });
       }
     }
@@ -1250,6 +1231,8 @@ function parseFotMobTeamStats(data) {
     'corners': ['homeCorners', 'awayCorners'],
     'big_chance': ['homeBigChances', 'awayBigChances'],
     'expected_goals': ['homeExpectedGoals', 'awayExpectedGoals'],
+    'dangerous_attacks': ['homeDangerousAttacks', 'awayDangerousAttacks'],
+    'attacks': ['homeAttacks', 'awayAttacks'],
     'yellow_cards': ['homeYellowCards', 'awayYellowCards'],
     'red_cards': ['homeRedCards', 'awayRedCards']
   };
@@ -1262,6 +1245,9 @@ function parseFotMobTeamStats(data) {
         shotsongoal: 'ShotsOnTarget', shotsofftarget: 'ShotsOffTarget', shotsinsidebox: 'ShotsInsideBox', blockedshots: 'blocked_shots',
         corners: 'corners', cornerkicks: 'corners', bigchances: 'big_chance',
         expectedgoals: 'expected_goals', xg: 'expected_goals',
+        dangerousattacks: 'dangerous_attacks', dangerousattack: 'dangerous_attacks',
+        dangerattacks: 'dangerous_attacks', dangerattack: 'dangerous_attacks',
+        attacks: 'attacks', totalattacks: 'attacks',
         yellowcards: 'yellow_cards', redcards: 'red_cards'
       };
       const keys = names[item.key] || names[aliases[normalizedKey]];
@@ -1293,6 +1279,9 @@ async function fetchFotMobStats(id) {
     const data = response.data?.data || response.data;
     if (data?.general?.finished || data?.header?.status?.finished) return createEmptyStats();
     const stats = parseFotMobTeamStats(data);
+    mergeMissingStats(stats, parseStatsFromRawMatch(data));
+    stats.source = 'fotmob';
+    console.log(`[STATS SOURCE] fotmob:${cacheKey} | coverage=${getAllStatsCoverage(stats).count}/16 | core=${getCoreStatsCoverage(stats)}/5 | fields=${Object.keys(stats._present || {}).length}`);
     fotmobDetailCache.set(cacheKey, { time: Date.now(), stats });
     return stats;
   } catch (error) {
@@ -1301,17 +1290,28 @@ async function fetchFotMobStats(id) {
   }
 }
 
+// Independent LiveFootball detail request. A provider error never blocks other sources.
+const liveFootballStatsCache = new Map();
 async function fetchLiveFootballDetailStats(eventId) {
   if (!PAID_RAPIDAPI_KEY || !eventId) return createEmptyStats();
+  const key = String(eventId);
+  const cached = liveFootballStatsCache.get(key);
+  if (cached && Date.now() - cached.time < (cached.coverage ? 60000 : 15000)) return cached.stats;
   try {
     const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}/football-get-match-event-all-stats`, {
       params: { eventid: eventId },
       headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVE_FOOTBALL_HOST },
       timeout: 10000
     });
-    return parseStatsFromRawMatch(response.data?.data || response.data?.result || response.data);
+    const payload = response.data?.data ?? response.data?.result ?? response.data?.response ?? response.data;
+    const stats = parseStatsFromRawMatch(payload);
+    stats.source = 'live-football';
+    const coverage = getCoreStatsCoverage(stats);
+    liveFootballStatsCache.set(key, { time: Date.now(), stats, coverage });
+    console.log(`[STATS SOURCE] live-football:${key} | coverage=${getAllStatsCoverage(stats).count}/16 | core=${coverage}/5 | fields=${Object.keys(stats._present || {}).length}`);
+    return stats;
   } catch (error) {
-    logSourceError('LiveFootball', 'DETAIL', error);
+    logSourceError('LiveFootball', `DETAIL eventid=${key}`, error);
     return createEmptyStats();
   }
 }
@@ -1520,9 +1520,7 @@ function detectStatType(statName) {
     n.includes('dangerous attack') ||
     n.includes('danger attacks') ||
     n.includes('dangerous attacks') ||
-    n === 'da' || n === 'dangerous' || n === 'danger attack' ||
-    n === 'attacks dangerous' || n === 'attack dangerous' ||
-    n === 'dangerousattacks' || n === 'dangerousattack'
+    /^(dangerousattacks?|dangerattacks?|dangerousatt|dangeratt|da)$/.test(n.replace(/[^a-z0-9]/g, ''))
   ) {
     return 'dangerousAttacks';
   }
@@ -1734,13 +1732,11 @@ function applyStat(
 
 
     case 'dangerousAttacks':
-
-      stats.homeDangerousAttacks =
-        home;
-
-      stats.awayDangerousAttacks =
-        away;
-
+      // Missing provider values must not overwrite previously resolved DA.
+      if (homeValue !== null && homeValue !== undefined && homeValue !== '')
+        stats.homeDangerousAttacks = home;
+      if (awayValue !== null && awayValue !== undefined && awayValue !== '')
+        stats.awayDangerousAttacks = away;
       break;
 
 
@@ -2081,32 +2077,14 @@ function recursivelyParseStats(
   // Providers such as LiveFootball return {key, stats:[home,away], rawStats:[{value},{value}]}.
   // Read only known statistical keys; never turn a title or momentum value into ATT/DA.
   if (Array.isArray(node.stats) && node.stats.length === 2 &&
-      node.stats.every(x => x === null || typeof x !== 'object')) {
+      node.stats.every(x => x === null || typeof x !== 'object' || ('value' in x))) {
     const kind = detectStatType(node.key || node.title || node.name || '');
     if (kind) {
-      const pair = [0,1].map(i => node.rawStats?.[i]?.value ?? node.stats[i]);
+      const pair = [0,1].map(i => node.rawStats?.[i]?.value ?? node.stats[i]?.value ?? node.stats[i]);
       applyStat(stats, kind, pair[0], pair[1]);
     }
   }
 
-  // Named DA fields from provider flat objects (never confuse with Total Attacks).
-  const flatDA = (side) => {
-    const names = side === 'home'
-      ? ['homeDA','homeDa','homeDangerousAttacks','da_home','daHome','dangerousAttacksHome']
-      : ['awayDA','awayDa','awayDangerousAttacks','da_away','daAway','dangerousAttacksAway'];
-    for (const name of names) {
-      if (Object.prototype.hasOwnProperty.call(node,name) && node[name] !== null && node[name] !== '') {
-        const value = Number(String(node[name]).replace('%',''));
-        if (Number.isFinite(value) && value >= 0) return value;
-      }
-    }
-    return null;
-  };
-  const flatHomeDA=flatDA('home'), flatAwayDA=flatDA('away');
-  if (flatHomeDA !== null || flatAwayDA !== null) {
-    if (flatHomeDA !== null) { stats.homeDangerousAttacks=flatHomeDA; stats._present.homeDangerousAttacks=true; }
-    if (flatAwayDA !== null) { stats.awayDangerousAttacks=flatAwayDA; stats._present.awayDangerousAttacks=true; }
-  }
   parseGenericStatObject(
     node,
     stats
@@ -2570,13 +2548,10 @@ async function fetchSofaScoreStats(
       );
 
 
-      if (
-        stats.hasData
-      ) {
-
-        stats.source =
-          'sofascore';
-
+      if (Object.keys(stats._present || {}).length) {
+        stats.hasData = true;
+        stats.source = 'sofascore';
+        console.log(`[STATS SOURCE] sofascore:${matchId} | coverage=${getAllStatsCoverage(stats).count}/16 | core=${getCoreStatsCoverage(stats)}/5 | fields=${Object.keys(stats._present).length}`);
         return stats;
       }
 
@@ -2694,7 +2669,7 @@ async function fetchFlashScoreStats(
 
   if (lastError) logSourceError('FlashScore', `STATS matchId=${matchId}`, lastError);
   else console.log(`[Source FlashScore] STATS matchId=${matchId} | Không có chỉ số`);
-  // Do not cache empty responses; retry on a later scan.
+  flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats});
   return stats;
 }
 
@@ -2724,10 +2699,6 @@ function parseStatsFromRawMatch(
     stats
   );
 
-
-  // Some providers return detail stats under data/result/response wrappers.
-  // Inspect the whole response as well as known statistics containers.
-  recursivelyParseStats(raw, stats);
 
   const candidates = [
 
@@ -2797,6 +2768,20 @@ function parseStatsFromRawMatch(
 // Chỉ gọi detail API khi sau khi ghép raw vẫn < 4/5 để tránh lãng phí API.
 // ==========================================================
 
+// Dashboard/log coverage: 16 distinct indicators, both teams must be present.
+// Separate from the 5-core fallback/cache gate.
+const LOG_STATS_INDICATORS = ['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots',
+  'ShotsInsideBox','ShotsOutsideBox','Corners','Attacks','DangerousAttacks',
+  'ExpectedGoals','BigChances','Possession','RedCards','YellowCards',
+  'Fouls','GoalkeeperSaves'];
+function getAllStatsCoverage(stats) {
+  const available = LOG_STATS_INDICATORS.filter(field => ['home','away'].every(side =>
+    stats?._present?.[side + field] === true &&
+    Number.isFinite(Number(stats[side + field]))));
+  return {count: available.length, total: LOG_STATS_INDICATORS.length,
+    missing: LOG_STATS_INDICATORS.filter(field => !available.includes(field))};
+}
+
 function getCoreStatsCoverage(stats) {
   if (!stats) return 0;
   const fields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
@@ -2840,8 +2825,7 @@ async function fetchStatsForSourceMatch(sourceMatch) {
     return fetchFlashScoreStats(sourceMatch.id);
   }
 
-  // Live Football hiện không có detail-stat endpoint riêng trong bản này.
-  // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
+  // LiveFootball has its own detail-stat endpoint.
   if (sourceMatch.source === 'live-football') {
     return fetchLiveFootballDetailStats(sourceMatch.id);
   }
@@ -2864,84 +2848,75 @@ async function fetchMatchDetailStats(
     match.awayName
   );
 
-  // Keep native provider IDs in the cache identity: identical team names in
-  // different competitions/dates must not share statistics.
-  const cacheKey = `cross:${match.source}:${match.id}:${matchKey || ''}`;
+  const cacheKey =
+    `cross:${matchKey || `${match.source}:${match.id}`}`;
 
   const cached = statsCache.get(cacheKey);
 
   if (
     cached &&
-    Date.now() - cached.time < (getCoreStatsCoverage(cached.data) === 0 ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
+    Date.now() - cached.time < ((getCoreStatsCoverage(cached.data) < 5) ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
   ) {
     return cached.data;
   }
 
 
   // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
-  const sourceMatches = Array.isArray(match.crossSourceMatches) && match.crossSourceMatches.length
+  const sourceMatches = Array.isArray(match.crossSourceMatches)
     ? match.crossSourceMatches
     : [match];
-  if (sourceMatches.length === 1) {
-    console.log(`[STATS RESOLVER] ${match.homeName} vs ${match.awayName} | ONLY ${match.source}:${match.id} | no cross-provider native ID available`);
-  }
 
 
-  // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
-  let stats = parseStatsFromRawMatch(match.raw);
+  // API-FOOTBALL is the preferred statistics provider. Its HTTP 429 or
+  // missing fields must never block independently matched provider IDs.
+  const sourcePriority = { apisports: 5, sofascore: 4, 'live-football': 3, fotmob: 2, flashscore: 1 };
+  const orderedSources = [...sourceMatches].sort((a,b) =>
+    (sourcePriority[b.source] || 0) - (sourcePriority[a.source] || 0));
+  const stats = createEmptyStats();
+  stats._fieldSources = {};
+  const trackedFields = Object.keys(createEmptyStats()).filter(k =>
+    (k.startsWith('home') || k.startsWith('away')) && k !== 'hasData');
+  const missingFields = () => trackedFields.filter(k => stats._present?.[k] !== true);
 
-  for (const sourceMatch of sourceMatches) {
-
-    if (
-      sourceMatch.source === match.source &&
-      String(sourceMatch.id) === String(match.id)
-    ) {
-      continue;
-    }
-
-    const rawStats = parseStatsFromRawMatch(sourceMatch.raw);
-    mergeMissingStats(stats, rawStats);
-  }
-
-
-  // BƯỚC 2: Independent per-provider detail statistics. No provider is mandatory.
-  // Rotate the starting source deterministically across matches to avoid a fixed primary.
-  const uniqueSources = [...new Map(sourceMatches.map(m => [`${m.source}:${m.id}`, m])).values()]
-    .filter(m => m && m.id != null && m.id !== '');
-  const seed = [...String(matchKey || match.id || '')].reduce((sum, ch) => sum + ch.charCodeAt(0), 0);
-  const offset = uniqueSources.length ? seed % uniqueSources.length : 0;
-  const orderedSources = uniqueSources.slice(offset).concat(uniqueSources.slice(0, offset));
-  const desiredFields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'];
-  const trackedFields = Object.keys(createEmptyStats()).filter(k => k.startsWith('home') || k.startsWith('away'));
-  const missingFields = () => desiredFields.filter(f => !['home','away'].every(side => stats._present?.[side+f] === true));
-  const missingCount = () => trackedFields.filter(k => stats._present?.[k] !== true).length;
+  // Merge primary provider first; other providers fill missing fields only.
+  // A provider's own RAW payload can also contain valid statistics.
   for (const sourceMatch of orderedSources) {
-    if (missingCount() === 0) break;
-    if (sourceMatch.source === 'apisports' && Date.now() < apiSportsStatsQuotaBlockedUntil) {
-      console.log(`[STATS SOURCE] ${sourceMatch.source}:${sourceMatch.id} | QUOTA_BLOCKED | skip`);
+    const rawStats = parseStatsFromRawMatch(sourceMatch.raw);
+    rawStats.source = sourceMatch.source;
+    mergeMissingStats(stats, rawStats);
+    // A complete raw payload needs no extra detail request for this provider.
+    const rawPresent = trackedFields.filter(k => rawStats._present?.[k] === true).length;
+    if (rawPresent === trackedFields.length) {
+      console.log(`[STATS SOURCE] ${sourceMatch.source}:${sourceMatch.id} | RAW complete | missing=${missingFields().length}`);
       continue;
     }
-    const before = missingCount();
-    const extraStats = await fetchStatsForSourceMatch(sourceMatch);
-    mergeMissingStats(stats, extraStats);
-    const gained = before - missingCount();
-    console.log(`[STATS SOURCE] ${match.homeName} vs ${match.awayName} | ${sourceMatch.source}:${sourceMatch.id} | ${gained ? `VALID +${gained} fields` : 'NO_NEW_STATS'} | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().join(',') || 'none'}`);
+    try {
+      const detailStats = await fetchStatsForSourceMatch(sourceMatch);
+      if (detailStats) {
+        detailStats.source = sourceMatch.source;
+        mergeMissingStats(stats, detailStats);
+        console.log(`[STATS SOURCE] ${sourceMatch.source}:${sourceMatch.id} | detail fields=${Object.keys(detailStats._present || {}).length} | coverage=${getAllStatsCoverage(stats).count}/16 | core=${getCoreStatsCoverage(stats)}/5 | missing=${missingFields().length}`);
+      }
+    } catch (error) {
+      logSourceError(sourceMatch.source, 'STATS', error);
+      // Continue to the next independent provider, including after 429.
+    }
+    if (missingFields().length === 0) break;
+  }
+  if (missingFields().length) {
+    console.log(`[STATS FALLBACK] ${match.homeName} vs ${match.awayName} | remaining=${missingFields().join(',')} | available=${orderedSources.map(x => x.source+':'+x.id).join(',')}`);
   }
 
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
-  if (!stats._present?.homeTotalShots && ["homeShotsOnTarget","homeShotsOffTarget","homeBlockedShots"].every(k => stats._present?.[k] === true)) {
-    stats._present.homeTotalShots = true;
-    (stats._fieldSources ||= {}).homeTotalShots = "derived-confirmed";
+  if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
     stats.homeTotalShots =
       stats.homeShotsOnTarget +
       stats.homeShotsOffTarget +
       stats.homeBlockedShots;
   }
 
-  if (!stats._present?.awayTotalShots && ["awayShotsOnTarget","awayShotsOffTarget","awayBlockedShots"].every(k => stats._present?.[k] === true)) {
-    stats._present.awayTotalShots = true;
-    (stats._fieldSources ||= {}).awayTotalShots = "derived-confirmed";
+  if (!stats._present?.awayTotalShots && stats.awayTotalShots <= 0) {
     stats.awayTotalShots =
       stats.awayShotsOnTarget +
       stats.awayShotsOffTarget +
@@ -2951,33 +2926,33 @@ async function fetchMatchDetailStats(
 
   // Possession fallback như logic cũ.
   if (
-    stats._present?.homePossession === true &&
-    stats._present?.awayPossession !== true
+    stats.homePossession > 0 &&
+    stats.awayPossession <= 0
   ) {
-    stats.awayPossession = Math.max(0, 100 - stats.homePossession);
-    stats._present.awayPossession = true;
-    (stats._fieldSources ||= {}).awayPossession = "derived-complement";
+    stats.awayPossession = Math.max(
+      0,
+      100 - stats.homePossession
+    );
   }
 
   if (
-    stats._present?.awayPossession === true &&
-    stats._present?.homePossession !== true
+    stats.awayPossession > 0 &&
+    stats.homePossession <= 0
   ) {
-    stats.homePossession = Math.max(0, 100 - stats.awayPossession);
-    stats._present.homePossession = true;
-    (stats._fieldSources ||= {}).homePossession = "derived-complement";
+    stats.homePossession = Math.max(
+      0,
+      100 - stats.awayPossession
+    );
   }
 
 
-  console.log(`[STATS MISSING] ${match.homeName} vs ${match.awayName} | ${missingFields().join(',') || 'none'} | matched=${sourceMatches.map(x => x.source+':'+x.id).join(',')} | fieldSources=${JSON.stringify(stats._fieldSources || {})}`);
-  const displayStat = (field) => stats._present?.[field] === true ? stats[field] : 'N/A';
-  const displayPair = (field) => `${displayStat('home'+field)}-${displayStat('away'+field)}`;
-  console.log(`[Stats đa nguồn] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getCoreStatsCoverage(stats)}/5 | SH=${displayPair('TotalShots')} SOT=${displayPair('ShotsOnTarget')} COR=${displayPair('Corners')} BOX=${displayPair('ShotsInsideBox')} OFF=${displayPair('ShotsOffTarget')}`);
+  console.log(`[STATS MISSING] ${match.homeName} vs ${match.awayName} | indicators=${getAllStatsCoverage(stats).missing.join(',') || 'none'} | fields=${missingFields().join(',') || 'none'} | matched=${sourceMatches.map(x => x.source+':'+x.id).join(',')} | fieldSources=${JSON.stringify(stats._fieldSources || {})}`);
+  console.log(`[STATS MULTISOURCE] ${match.homeName} vs ${match.awayName} | ${sourceMatches.map(x => x.source).join(' + ')} | ${getAllStatsCoverage(stats).count}/16 | SH=${stats.homeTotalShots}-${stats.awayTotalShots} SOT=${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} COR=${stats.homeCorners}-${stats.awayCorners} BOX=${stats.homeShotsInsideBox}-${stats.awayShotsInsideBox} OFF=${stats.homeShotsOffTarget}-${stats.awayShotsOffTarget}`);
 
   stats.source =
-    `cross-source-${getCoreStatsCoverage(stats)}/5`;
+    `cross-source-${getAllStatsCoverage(stats).count}/16`;
 
-  if (missingCount() < trackedFields.length) statsCache.set(
+  statsCache.set(
     cacheKey,
     {
       time: Date.now(),
@@ -3453,8 +3428,6 @@ function createSnapshot(stats, minute) {
     awayCorners:
       stats.awayCorners,
     homeTotalShots: stats.homeTotalShots, awayTotalShots: stats.awayTotalShots,
-    homeExpectedGoals: stats.homeExpectedGoals, awayExpectedGoals: stats.awayExpectedGoals,
-    homeBigChances: stats.homeBigChances, awayBigChances: stats.awayBigChances,
     homeRedCards: stats.homeRedCards, awayRedCards: stats.awayRedCards,
     _present: {...(stats._present || {})}
   };
@@ -3465,45 +3438,433 @@ function createSnapshot(stats, minute) {
 // CALCULATE MOMENTUM
 // ==========================================================
 
-function calculateMomentum(matchId, stats, minute) {
-  const now = createSnapshot(stats, minute);
-  const existing = pressureHistory.get(matchId) || [];
-  const history = existing.filter(x => Number.isFinite(x.minute) && x.minute <= minute && minute-x.minute <= 20);
-  if (!history.some(x => x.minute === minute)) history.push(now);
-  else history[history.findIndex(x => x.minute === minute)] = now;
-  history.sort((a,b)=>a.minute-b.minute);
-  pressureHistory.set(matchId,history.slice(-35));
-  const prior=history.filter(x=>x.minute<minute && minute-x.minute<=10)[0];
-  const pairDelta=(field)=>{
-    if(!prior)return null;
-    const keys=['home'+field,'away'+field];
-    if(!keys.every(k=>prior._present?.[k]===true && now._present?.[k]===true))return null;
-    const values=keys.map(k=>Number(now[k])-Number(prior[k]));
-    return values.every(v=>Number.isFinite(v)&&v>=0)?values:null;
+function calculateMomentum(
+  matchId,
+  stats,
+  minute
+) {
+
+  const current =
+    createSnapshot(
+      stats,
+      minute
+    );
+
+
+  const previous =
+    snapshotState.get(
+      matchId
+    );
+
+
+  // Keep the last valid snapshot if a provider returns partial/reset counters.
+  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','Corners'];
+  const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
+  const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
+  const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
+    Number(current[side+f]) >= Number(previous[side+f])));
+  if (currentValid && (!previous || (previousValid && monotonic && minute > previous.minute))) {
+    snapshotState.set(matchId,{...current,updatedAt:Date.now()});
+  }
+  if (!currentValid || !previousValid || !monotonic) {
+    return {available:false,minuteGap:0,score:50,text:'Momentum thiếu dữ liệu hợp lệ',
+      totalAttack:0,totalDangerous:0,totalSOT:0,totalBlocked:0,totalCorners:0};
+  }
+
+
+  // Chưa có snapshot trước
+  if (!previous) {
+
+    return {
+      available: false,
+
+      minuteGap: 0,
+
+      homeAttack: 0,
+      awayAttack: 0,
+
+      homeDangerous: 0,
+      awayDangerous: 0,
+
+      homeSOT: 0,
+      awaySOT: 0,
+
+      homeBlocked: 0,
+      awayBlocked: 0,
+
+      homeCorners: 0,
+      awayCorners: 0,
+
+      totalAttack: 0,
+      totalDangerous: 0,
+      totalSOT: 0,
+      totalBlocked: 0,
+      totalCorners: 0,
+
+      homePressure: 0,
+      awayPressure: 0,
+
+      score: 50,
+
+      text:
+        '⏳ Đang thu thập Momentum'
+    };
+  }
+
+
+  const minuteGap =
+    minute -
+    safeNumber(
+      previous.minute
+    );
+
+
+  // Snapshot lỗi / trận nhảy phút ngược
+  if (
+    minuteGap <= 0 ||
+    minuteGap > 20
+  ) {
+
+    return {
+      available: false,
+
+      minuteGap,
+
+      homeAttack: 0,
+      awayAttack: 0,
+
+      homeDangerous: 0,
+      awayDangerous: 0,
+
+      homeSOT: 0,
+      awaySOT: 0,
+
+      homeBlocked: 0,
+      awayBlocked: 0,
+
+      homeCorners: 0,
+      awayCorners: 0,
+
+      totalAttack: 0,
+      totalDangerous: 0,
+      totalSOT: 0,
+      totalBlocked: 0,
+      totalCorners: 0,
+
+      homePressure: 0,
+      awayPressure: 0,
+
+      score: 50,
+
+      text:
+        '⏳ Momentum chưa đủ dữ liệu'
+    };
+  }
+
+
+  function delta(currentValue, oldValue) {
+
+    return Math.max(
+      0,
+      safeNumber(currentValue) -
+      safeNumber(oldValue)
+    );
+  }
+
+
+  const homeAttack =
+    delta(
+      current.homeAttacks,
+      previous.homeAttacks
+    );
+
+  const awayAttack =
+    delta(
+      current.awayAttacks,
+      previous.awayAttacks
+    );
+
+
+  const homeDangerous =
+    delta(
+      current.homeDangerousAttacks,
+      previous.homeDangerousAttacks
+    );
+
+  const awayDangerous =
+    delta(
+      current.awayDangerousAttacks,
+      previous.awayDangerousAttacks
+    );
+
+
+  const homeSOT =
+    delta(
+      current.homeShotsOnTarget,
+      previous.homeShotsOnTarget
+    );
+
+  const awaySOT =
+    delta(
+      current.awayShotsOnTarget,
+      previous.awayShotsOnTarget
+    );
+
+
+  const homeBlocked =
+    delta(
+      current.homeBlockedShots,
+      previous.homeBlockedShots
+    );
+
+  const awayBlocked =
+    delta(
+      current.awayBlockedShots,
+      previous.awayBlockedShots
+    );
+
+
+  const homeCorners =
+    delta(
+      current.homeCorners,
+      previous.homeCorners
+    );
+
+  const awayCorners =
+    delta(
+      current.awayCorners,
+      previous.awayCorners
+    );
+
+
+  const totalAttack =
+    homeAttack +
+    awayAttack;
+
+  const totalDangerous =
+    homeDangerous +
+    awayDangerous;
+
+  const totalSOT =
+    homeSOT +
+    awaySOT;
+
+  const totalBlocked =
+    homeBlocked +
+    awayBlocked;
+
+  const totalCorners =
+    homeCorners +
+    awayCorners;
+
+
+  // Chuẩn hóa về 10 phút
+  const factor =
+    10 /
+    Math.max(
+      minuteGap,
+      1
+    );
+
+
+  const attack10 =
+    totalAttack *
+    factor;
+
+  const dangerous10 =
+    totalDangerous *
+    factor;
+
+  const sot10 =
+    totalSOT *
+    factor;
+
+  const blocked10 =
+    totalBlocked *
+    factor;
+
+  const corners10 =
+    totalCorners *
+    factor;
+
+
+  // ======================================================
+  // MOMENTUM SCORE 0-100
+  // ======================================================
+
+  let score = 20;
+
+
+  // Attack
+  if (attack10 >= 35) {
+    score += 18;
+  } else if (attack10 >= 25) {
+    score += 14;
+  } else if (attack10 >= 15) {
+    score += 9;
+  } else if (attack10 >= 8) {
+    score += 4;
+  }
+
+
+  // Dangerous Attack
+  if (dangerous10 >= 20) {
+    score += 28;
+  } else if (dangerous10 >= 14) {
+    score += 22;
+  } else if (dangerous10 >= 9) {
+    score += 15;
+  } else if (dangerous10 >= 5) {
+    score += 8;
+  }
+
+
+  // SOT
+  if (sot10 >= 4) {
+    score += 25;
+  } else if (sot10 >= 3) {
+    score += 20;
+  } else if (sot10 >= 2) {
+    score += 14;
+  } else if (sot10 >= 1) {
+    score += 7;
+  }
+
+
+
+  // Corners
+  if (corners10 >= 4) {
+    score += 10;
+  } else if (corners10 >= 2) {
+    score += 6;
+  } else if (corners10 >= 1) {
+    score += 3;
+  }
+
+
+  score =
+    clamp(
+      score,
+      0,
+      100
+    );
+
+
+  // ======================================================
+  // MOMENTUM HOME/AWAY
+  // ======================================================
+
+  const homePressure =
+
+    homeAttack * 0.10 +
+
+    homeDangerous * 0.35 +
+
+    homeSOT * 5 +
+
+    homeCorners * 1.8;
+
+
+  const awayPressure =
+
+    awayAttack * 0.10 +
+
+    awayDangerous * 0.35 +
+
+    awaySOT * 5 +
+
+    awayCorners * 1.8;
+
+
+  let text =
+    '⚡ Momentum trung bình';
+
+
+  if (score >= 85) {
+
+    text =
+      '🔥🔥 MOMENTUM CỰC MẠNH';
+
+  } else if (score >= 75) {
+
+    text =
+      '🔥 MOMENTUM RẤT MẠNH';
+
+  } else if (score >= 65) {
+
+    text =
+      '⚡ MOMENTUM MẠNH';
+
+  } else if (score < 40) {
+
+    text =
+      '🐢 Momentum thấp';
+  }
+
+
+  return {
+
+    available: true,
+
+    minuteGap,
+
+    homeAttack,
+    awayAttack,
+
+    homeDangerous,
+    awayDangerous,
+
+    homeSOT,
+    awaySOT,
+
+    homeBlocked,
+    awayBlocked,
+
+    homeCorners,
+    awayCorners,
+
+    totalAttack,
+    totalDangerous,
+    totalSOT,
+    totalBlocked,
+    totalCorners,
+
+    attack10:
+      round1(attack10),
+
+    dangerous10:
+      round1(
+        dangerous10
+      ),
+
+    sot10:
+      round1(sot10),
+
+    blocked10:
+      round1(
+        blocked10
+      ),
+
+    corners10:
+      round1(
+        corners10
+      ),
+
+    homePressure:
+      round1(
+        homePressure
+      ),
+
+    awayPressure:
+      round1(
+        awayPressure
+      ),
+
+    score:
+      round1(score),
+
+    text
   };
-  const sum=v=>v===null?null:v[0]+v[1];
-  const sh=sum(pairDelta('TotalShots')), so=sum(pairDelta('ShotsOnTarget')),
-    da=sum(pairDelta('DangerousAttacks')), co=sum(pairDelta('Corners')),
-    at=sum(pairDelta('Attacks')), bc=sum(pairDelta('BigChances')),
-    xg=sum(pairDelta('ExpectedGoals'));
-  const valid=[sh,so,da,co,at,bc,xg].filter(v=>v!==null).length;
-  const gap=prior?minute-prior.minute:0;
-  const scale=gap>0?10/gap:1;
-  const score=valid?Math.max(0,Math.min(100,20+
-    Math.min(25,(so??0)*scale*9)+Math.min(20,(sh??0)*scale*3)+
-    Math.min(20,(da??0)*scale*1.1)+Math.min(8,(co??0)*scale*3)+
-    Math.min(7,(bc??0)*scale*5))):50;
-  return {available:valid>0, minuteGap:gap,score:Math.round(score*10)/10,
-    totalAttack:at??0,totalDangerous:da??0,totalSOT:so??0,totalBlocked:0,totalCorners:co??0,
-    attacks10:at===null?null:at*scale,dangerous10:da===null?null:da*scale,
-    sot10:so===null?null:so*scale,corners10:co===null?null:co*scale,
-    shots10:sh===null?null:sh*scale,bigChances10:bc===null?null:bc*scale,xg10:xg===null?null:xg*scale,
-    shotsDelta:sh,cornersDelta:co,sotDelta:so,daDelta:da,
-    homeAttack:pairDelta('Attacks')?.[0]??0,awayAttack:pairDelta('Attacks')?.[1]??0,
-    homeDangerous:pairDelta('DangerousAttacks')?.[0]??0,awayDangerous:pairDelta('DangerousAttacks')?.[1]??0,
-    homeSOT:pairDelta('ShotsOnTarget')?.[0]??0,awaySOT:pairDelta('ShotsOnTarget')?.[1]??0,
-    homeCorners:pairDelta('Corners')?.[0]??0,awayCorners:pairDelta('Corners')?.[1]??0,
-    text:valid?`Momentum ${gap}p: SH +${sh??'N/A'} SOT +${so??'N/A'} DA +${da??'N/A'} COR +${co??'N/A'}`:'Đang thu thập dữ liệu Momentum'};
 }
 
 
@@ -4592,7 +4953,7 @@ function calculateTimeScore(
 
   if (
     minute >= 90 &&
-    minute <= 92
+    minute <= 90
   ) {
     return 68;
   }
@@ -4717,43 +5078,35 @@ function evaluateMatchDynamicAI(
   // WEIGHTED SCORE
   // ======================================================
 
-  // Full-match cumulative counters are NEVER normalized as if they began at minute 46.
-  // Current pressure comes exclusively from verified differences between snapshots.
-  const clampScore=v=>Math.max(0,Math.min(100,v));
-  const weighted=parts=>{const valid=parts.filter(([v])=>v!==null&&Number.isFinite(v));
-    const w=valid.reduce((n,[,weight])=>n+weight,0);
-    return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;};
-  const recent=(field,ref)=>{
-    const v=momentum?.[field];
-    return momentum?.available && v!==null && Number.isFinite(v)?clampScore(v/ref*100):null;
+  // LIVE-only 0..100 metric normalization; reference rates are configurable heuristics,
+  // NOT empirical goal probabilities. Missing values do not become observed zero.
+  const normRate = (field, reference) => {
+    const hk='home'+field, ak='away'+field;
+    if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
+    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
   };
-  const finishing=weighted([[recent('shots10',6),0.36],[recent('sot10',3),0.54],[recent('bigChances10',2),0.10]]);
-  const attack=weighted([[recent('dangerous10',24),0.60],[recent('attacks10',40),0.40]]);
-  const chances=weighted([[recent('xg10',0.7),0.55],[recent('bigChances10',2),0.25],[recent('corners10',4),0.20]]);
-  const groups=[['finishing',finishing,0.48],['attack',attack,0.24],['chances',chances,0.18],
-    ['momentum',momentum?.available?momentum.score:null,0.10]];
-  const present=groups.filter(([,v])=>v!==null&&Number.isFinite(v));
-  const coverage=present.reduce((n,[,,w])=>n+w,0);
-  // Missing groups must not amplify a single strong statistic to 95%.
-  let finalScore=present.reduce((n,[,v,w])=>n+v*w,0)+Math.max(0,1-coverage)*35;
-  const ruleAdjustments=[];
-  const adjust=(points,reason)=>{finalScore+=points;ruleAdjustments.push({points,reason});};
-  const recentShots=momentum?.shots10 ?? null, recentSOT=momentum?.sot10 ?? null,
-    recentDA=momentum?.dangerous10 ?? null;
-  // Conversion Pressure: only compare observed fields; null is NOT zero.
-  if(recentDA!==null && recentSOT!==null && recentDA>=12 && recentSOT===0)
-    adjust(-12,'DA_HIGH_SOT_ZERO');
-  if(recentShots!==null && recentSOT!==null && recentShots>=5 && recentSOT<=1)
-    adjust(-9,'SHOTS_HIGH_SOT_LOW');
-  if(minute>=70 && recentSOT!==null && recentSOT===0)
-    adjust(-6,'CONTEXTUAL_SOT_ZERO');
-  // Late booster only for fresh, verified pressure and a trailing team.
-  if(minute>=75 && minute<=88 && homeScore!==awayScore && momentum?.available &&
-    momentum.score>=75 && recentSOT!==null && recentSOT>=2)
-    adjust(2,'LATE_PRESSURE_TRAILING');
-  if(momentum?.available && momentum.score>=85 && recentSOT!==null && recentSOT>=2)
-    adjust(2,'VERIFIED_MOMENTUM_SPIKE');
-  console.log(`[RULE BREAKDOWN] ${minute}' | ${groups.map(([n,v,w])=>`${n}=${v===null?'NA':v.toFixed(1)}*${w}`).join(' | ')} | coverage=${coverage.toFixed(2)} | adjustments=${JSON.stringify(ruleAdjustments)} | raw=${finalScore.toFixed(1)}`);
+  const normRatio = (numerator, denominator, reference) => {
+    if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
+    const n=Number(stats['home'+numerator])+Number(stats['away'+numerator]);
+    const d=Number(stats['home'+denominator])+Number(stats['away'+denominator]);
+    return d > 0 ? clamp((n/d)/reference*100,0,100) : null;
+  };
+  const weighted = parts => {
+    const valid=parts.filter(([v])=>v !== null && Number.isFinite(v));
+    const w=valid.reduce((sum,[,weight])=>sum+weight,0);
+    return w ? valid.reduce((sum,[v,weight])=>sum+v*weight,0)/w : null;
+  };
+  // All available verified live indicators; grouped to limit correlated double counting.
+  const metricGroups = [
+    [weighted([[normRate('TotalShots',22),.35],[normRate('ShotsOnTarget',9),.45],[normRatio('ShotsOnTarget','TotalShots',.40),.20]]),.30],
+    [weighted([[normRate('ShotsInsideBox',12),.35],[normRate('ShotsOffTarget',12),.15],[normRate('BlockedShots',9),.15],[normRate('Attacks',120),.12],[normRate('DangerousAttacks',70),.23]]),.20],
+    [weighted([[normRate('BigChances',5),.55],[normRate('Corners',12),.25],[normRate('ExpectedGoals',2.8),.20]]),.20],
+    [momentum?.available ? momentumScore : null,.20],
+    [stats?._present?.homePossession && stats?._present?.awayPossession ? possessionScore : null,.05],
+    [stats?._present?.homeRedCards && stats?._present?.awayRedCards ? cardScore : null,.05]
+  ];
+  let finalScore = weighted(metricGroups);
+  if (finalScore === null) finalScore = 0;
 
   // ======================================================
   // EXTRA LOGIC / PENALTIES
@@ -4768,8 +5121,96 @@ function evaluateMatchDynamicAI(
   const notes = [];
 
 
-  // All quality penalties and evidence-based bonuses are already applied above.
-  // Do not add bonuses from cumulative full-match totals.
+  // Rất ít SOT cuối trận
+  if (
+    minute >= 70 &&
+    stats?._present?.homeShotsOnTarget && stats?._present?.awayShotsOnTarget &&
+    totals.totalShotsOnTarget <= 1
+  ) {
+
+    finalScore -= 8;
+
+    notes.push(
+      '⚠️ SOT quá thấp sau phút 70'
+    );
+  }
+
+
+  // Ít Dangerous Attack
+  if (
+    totals.totalDangerousAttacks > 0 &&
+    totals.totalDangerousAttacks < 30 &&
+    minute >= 65
+  ) {
+
+    finalScore -= 5;
+
+    notes.push(
+      '⚠️ Dangerous Attack thấp'
+    );
+  }
+
+
+  // Momentum cực mạnh
+  if (
+    momentum?.available &&
+    momentum.score >= 85
+  ) {
+
+    finalScore += 4;
+
+    notes.push(
+      '🔥 Momentum cực mạnh'
+    );
+  }
+
+
+  // Nhiều SOT + Dangerous
+  if (
+    stats?._present?.homeShotsOnTarget && stats?._present?.awayShotsOnTarget &&
+    stats?._present?.homeDangerousAttacks && stats?._present?.awayDangerousAttacks &&
+    totals.totalShotsOnTarget >= 8 &&
+    totals.totalDangerousAttacks >= 70
+  ) {
+
+    finalScore += 3;
+
+    notes.push(
+      '🔥 SOT + Dangerous Attack cao'
+    );
+  }
+
+
+  // Đôi công mạnh
+  if (
+    style.type ===
+    'END_TO_END'
+  ) {
+
+    finalScore += 3;
+
+    notes.push(
+      '⚔️ Hai đội đang đôi công'
+    );
+  }
+
+
+  // Một đội ép sân rõ
+  if (
+    style.type ===
+      'HOME_PRESSURE' ||
+    style.type ===
+      'AWAY_PRESSURE'
+  ) {
+
+    finalScore += 2;
+
+    notes.push(
+      '🔥 Có đội ép sân rõ rệt'
+    );
+  }
+
+
   // Odds rất mạnh
   if (
     oddsAnalysis?.found &&
@@ -5048,12 +5489,12 @@ function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, st
   const current = Number(currentPercentage);
   if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute > 92)
     return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
-  if (!Number.isFinite(current) || current < MIN_SEND_PERCENTAGE)
-    return {send:false,bigBet:false,reason:`RULE_BELOW_${MIN_SEND_PERCENTAGE}`};
+  if (!Number.isFinite(current) || current <= MIN_SEND_PERCENTAGE)
+    return {send:false,bigBet:false,reason:`RULE_NOT_ABOVE_${MIN_SEND_PERCENTAGE}`};
   const previous = alertState.get(matchId);
   if (!previous) return {send:true,bigBet:false,reason:'FIRST_ALERT'};
   if (previous.alertCount >= MAX_ALERTS_PER_MATCH)
-    return {send:false,bigBet:false,reason:'MAX_3_ALERTS'};
+    return {send:false,bigBet:false,reason:'MAX_2_ALERTS'};
   const gap = currentMinute - previous.lastMinute;
   if (gap <= 0) return {send:false,bigBet:false,reason:'WAIT_NEXT_MINUTE'};
   if (gap > FOLLOWUP_WINDOW_MINUTES) return {send:false,bigBet:false,reason:'FOLLOWUP_EXPIRED'};
@@ -6135,10 +6576,9 @@ async function sendTelegramAlert(
     `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')}`,
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
     qualityAssessment,
-    `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, điều kiện gửi)`,
+    `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
-    `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`,
-    `🧠 Khả năng còn bàn (ước tính chưa hiệu chỉnh): ${item.ai.goalProbabilityEstimate===null?'N/A':item.ai.goalProbabilityEstimate+'%'}`
+    `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
   const messageLines = [
     title,
@@ -6510,7 +6950,7 @@ async function analyzeOneMatch(
   if (
     !Number.isFinite(minute) ||
     minute < 46 ||
-    minute > 92
+    minute > 90
   ) {
 
     return null;
@@ -6690,88 +7130,27 @@ async function analyzeOneMatch(
 
 
 function calculateRuleConfidence(stats, match, minute, momentum, rule) {
-  // Informational reliability only; never changes Rule or Telegram gating.
-  const fields=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','ShotsInsideBox',
-    'ShotsOutsideBox','Corners','Attacks','DangerousAttacks','Possession','ExpectedGoals',
-    'BigChances','YellowCards','RedCards','GoalkeeperSaves','Fouls'];
-  const has=f=>['home','away'].some(side=>stats?._present?.[side+f]===true && Number.isFinite(Number(stats[side+f])));
-  const coverage=fields.filter(has).length;
-  const sources=stats?.fieldSources||stats?._fieldSources||{};
-  const distinctSources=new Set(Object.values(sources).flatMap(v=>Array.isArray(v)?v:[v]).filter(Boolean)).size;
-  const coverageScore=coverage/fields.length*100;
-  const sourceScore=distinctSources>=2?100:distinctSources===1?70:45;
-  const momentumScore=momentum?.available===true?100:40;
-  const percent=Math.round((coverageScore*0.75+sourceScore*0.15+momentumScore*0.10)*100)/100;
-  return {coverage,total:fields.length,percent,label:`${coverage}/${fields.length} chỉ số`,
-    components:{coverage:coverageScore,sourceReliability:sourceScore,momentumReliability:momentumScore},
-    method:'multi-stat-evidence-v1'};
+  // Data quality / coverage only; never changes Rule Score or Telegram decision.
+  const indicators = ['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots',
+    'ShotsInsideBox','ShotsOutsideBox','Corners','Attacks','DangerousAttacks',
+    'ExpectedGoals','BigChances','Possession','RedCards','YellowCards',
+    'Fouls','GoalkeeperSaves'];
+  const present = field => ['home','away'].every(side =>
+    stats?._present?.[side+field] === true && Number.isFinite(Number(stats[side+field])));
+  const available = indicators.filter(present);
+  const count = available.length;
+  const sources = new Set(Object.values(stats?._fieldSources || stats?.fieldSources || {}).filter(Boolean));
+  const sourceReliability = sources.size >= 2 ? 1 : sources.size === 1 ? .85 : .7;
+  const momentumReliability = momentum?.available && Number(momentum.minuteGap)>0 && Number(momentum.minuteGap)<=20 ? 1 : .7;
+  const baselineReliability = stats?._baselineMethod === 'native-window' || stats?._baselineMethod === 'verified-45' ? 1 : stats?._partialFrom46 ? .65 : .8;
+  const coverage = count / indicators.length;
+  const percent = count ? Math.round(100 * (coverage*.55 + sourceReliability*.15 + momentumReliability*.15 + baselineReliability*.15)*100)/100 : 0;
+  return {coverage:count,total:indicators.length,percent,
+    label:`${count} chỉ số hợp lệ`,method:'dynamic-all-available-v1',
+    components:{coverage:Math.round(coverage*100),sourceReliability:Math.round(sourceReliability*100),momentumReliability:Math.round(momentumReliability*100),baselineReliability:Math.round(baselineReliability*100)}};
 }
 
   const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
-  // Compare pressure at a common 10-minute rate even when snapshots are <10 minutes apart.
-  // Null means unverified; it must never be interpreted as a confirmed zero.
-  const shotsNew=momentum?.shots10 ?? null;
-  const cornersNew=momentum?.corners10 ?? null;
-  const pressureOk=shotsNew!==null && cornersNew!==null && shotsNew>=3 && cornersNew>=1;
-  // Recalculate each scan from fresh AI Rule; never accumulate -8 between scans.
-  if(!pressureOk) {
-    ai.efficiency=Math.round(Math.max(5,ai.efficiency-PRESSURE_PENALTY)*10)/10;
-    ai.shouldSend=ai.efficiency>=MIN_SEND_PERCENTAGE;
-    console.log(`[PRESSURE RECHECK] ${match.homeName} vs ${match.awayName} | ${minute}' | SH=${shotsNew??'N/A'} COR=${cornersNew??'N/A'} | Rule -${PRESSURE_PENALTY}=${ai.efficiency}% | RESCAN NEXT CYCLE`);
-  }
-  // Rule threshold is checked AFTER all penalties, and confidence is a separate gate.
-  if(ai.efficiency<MIN_SEND_PERCENTAGE) {
-    alertDecision.send=false;alertDecision.bigBet=false;alertDecision.reason='RULE_BELOW_65_FINAL';
-  } else if(ruleConfidence.percent<MIN_RULE_CONFIDENCE) {
-    alertDecision.send=false;alertDecision.bigBet=false;alertDecision.reason='CONFIDENCE_BELOW_60';
-  } else if(!pressureOk) {
-    alertDecision.send=false;alertDecision.bigBet=false;alertDecision.reason='PRESSURE_RECHECK_10_MIN';
-  }
-  // Post-goal monitor: use only verified score transitions; never infer a goal minute
-  // from an unchanged score or from a missing source. A fresh goal postpones alerts
-  // until a NEW shot/DA/SOT increase is verified after the observed goal.
-  const observedScore=Number(match.homeScore)+Number(match.awayScore);
-  const goalState=postGoalHistory.get(alertKey);
-  if(Number.isFinite(observedScore)) {
-    if(goalState && Number.isFinite(goalState.score) && observedScore>goalState.score && minute>=goalState.minute) {
-      postGoalHistory.set(alertKey,{score:observedScore,minute,goalMinute:minute,
-        snapshot:makeMatchSnapshot(stats,minute,match.homeScore,match.awayScore)});
-    } else if(!goalState) {
-      postGoalHistory.set(alertKey,{score:observedScore,minute,goalMinute:null,snapshot:null});
-    } else if(observedScore>=goalState.score) {
-      goalState.score=observedScore;goalState.minute=minute;
-    }
-  }
-  const postGoal=postGoalHistory.get(alertKey);
-  if(postGoal?.goalMinute!==null && postGoal?.goalMinute!==undefined &&
-     minute-postGoal.goalMinute>=0 && minute-postGoal.goalMinute<=10) {
-    const baseline=postGoal.snapshot;
-    const diff=(field)=>{
-      const keys=['home'+field,'away'+field];
-      if(!baseline || !keys.every(k=>baseline._present?.[k]===true && stats?._present?.[k]===true))return null;
-      const values=keys.map(k=>Number(stats[k])-Number(baseline[k]));
-      return values.every(v=>Number.isFinite(v)&&v>=0)?values[0]+values[1]:null;
-    };
-    const newShots=diff('TotalShots'),newSOT=diff('ShotsOnTarget'),newDA=diff('DangerousAttacks');
-    const freshPressure=(newSOT!==null&&newSOT>=1) ||
-      (newShots!==null&&newShots>=3) || (newDA!==null&&newDA>=10 && newShots!==null&&newShots>=1);
-    if(!freshPressure) {
-      alertDecision.send=false;alertDecision.bigBet=false;
-      alertDecision.reason='WAIT_POST_GOAL_NEW_MOMENTUM';
-      console.log(`[POST-GOAL] ${match.homeName} vs ${match.awayName} | ${minute}' | observed goal at ${postGoal.goalMinute}' | waiting for new pressure`);
-    }
-  }
-  if(!(stats?._present?.homeDangerousAttacks || stats?._present?.awayDangerousAttacks))
-    console.log(`[DA DATA] ${match.homeName} vs ${match.awayName} | NO_VALID_DA_FIELD`);
-
-  // Heuristic only: not an empirically calibrated probability; independent of Rule.
-  const remainingMinutes=Math.max(0,90-minute);
-  const shotEvidence=momentum?.shots10;
-  const sotEvidence=momentum?.sot10;
-  const estimatedGoalProbability=(shotEvidence===null || sotEvidence===null)?null:
-    Math.round(Math.max(0,Math.min(90,(1-Math.exp(-remainingMinutes/90 *
-      (0.6+0.06*shotEvidence+0.16*sotEvidence)))*100))*10)/10;
-  ai.goalProbabilityEstimate=estimatedGoalProbability;
   // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
   const followupState = alertState.get(alertKey);
   const decisionReason = String(alertDecision.reason || 'UNKNOWN');
@@ -6951,7 +7330,7 @@ async function scanLiveMatches() {
       if (
         !Number.isFinite(minute) ||
         minute < 46 ||
-        minute > 92
+        minute > 90
       ) {
         continue;
       }
