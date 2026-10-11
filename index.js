@@ -482,19 +482,19 @@ function leagueCountryName(value) {
   return LEAGUE_COUNTRY_CODES[raw.toUpperCase()] || COUNTRY_MAP[raw] || raw;
 }
 function parseLeagueName(item) {
-  if (!item) return 'Bóng Đá Quốc Tế';
+  if (!item) return 'Chưa xác định giải';
   const leagueRaw = String(
     item.tournament?.name || item.competitionName || item.league?.name ||
     (typeof item.league === 'string' ? item.league : '') ||
-    item.competition?.name || item.competition || item._fotmobLeagueName || ''
+    item.competition?.name || item.competition || item._flashLeagueName || item._fotmobLeagueName || ''
   ).trim();
   const countryRaw = item.tournament?.category?.name || item.tournament?.category?.country?.name ||
     item.category?.name || item.league?.country || item.country?.name ||
-    item.country || item._fotmobCountry || item.ccode || '';
+    item.country || item._flashCountry || item._fotmobCountry || item.ccode || '';
   const country = leagueCountryName(countryRaw);
   const key = leagueRaw.toLocaleLowerCase('en-US').replace(/\s+/g, ' ').trim();
   const countryKey = country.toLocaleLowerCase('en-US');
-  if (!leagueRaw) return country || 'Bóng Đá Quốc Tế';
+  if (!leagueRaw) return 'Chưa xác định giải';
   if (UNAMBIGUOUS_LEAGUES[key]) return UNAMBIGUOUS_LEAGUES[key];
   if (key === 'tanzanian premier league') return 'VĐQG Tanzania (Tanzanian Premier League)';
   if (key === 'english premier league') return 'Ngoại Hạng Anh';
@@ -2652,7 +2652,7 @@ async function fetchFlashScoreStats(
   // Override via env when the subscribed FlashScore API exposes another route.
   const url = process.env.FLASHSCORE_STATS_URL_TEMPLATE
     ? process.env.FLASHSCORE_STATS_URL_TEMPLATE.replace('{matchId}', encodeURIComponent(matchId))
-    : `https://${FLASHSCORE_HOST}/api/flashscore/v2/match/statistics?match_id=${encodeURIComponent(matchId)}`;
+    : `https://${FLASHSCORE_HOST}/api/flashscore/v2/matches/match/stats?match_id=${encodeURIComponent(matchId)}`;
   const urls = [url];
 
 
@@ -5774,7 +5774,7 @@ function formatLiveMatch(
     awayScore:
       score.away,
 
-    league: raw?._flashLeagueName || parseLeagueName(raw),
+    league: parseLeagueName(raw),
     minute: normalizeProviderMinute(raw, source) ?? calculateExactMinute(raw),
     raw
   };
@@ -6991,6 +6991,9 @@ function deduplicateMatches(matches) {
     const primary = group[0];
     primary.crossSourceMatches = group;
     primary.sourceIds = Object.fromEntries(group.map(m => [m.source, String(m.id)]));
+    const actualLeague = group.map(m => m.league).find(v => v && !/^(Bóng Đá Quốc Tế|Chưa xác định giải)$/i.test(String(v)));
+    if (actualLeague) primary.league = actualLeague;
+    else primary.league = `Chưa xác định giải (${primary.source}:${primary.id})`;
     if (group.length > 1) {
       joined++;
       console.log(`[Cross-Source LINK] ${primary.homeName} vs ${primary.awayName} | ${group.map(m => `${m.source}:${m.id}`).join(' | ')}`);

@@ -123,6 +123,53 @@ async function fetchApiSportsFT(id){
   return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
  }catch(e){console.warn(`[AUDIT FT] API-Football id=${id} HTTP ${e.response?.status||e.message}`);return null;}
 }
+// LiveFootball date-results provider. Configure exact RapidAPI endpoint in Render;
+// URL example template shape: https://HOST/VERIFIED_PATH?date={date}
+// Do not assume an undocumented route or query parameter.
+const LF_HOST='free-api-live-football-data.p.rapidapi.com';
+const lfDateCache=new Map();
+function parseLiveFootballDateFT(m){
+ const st=m?.status||{},reason=String(st.reason?.short||'').toUpperCase();
+ if(st.finished!==true||st.cancelled===true||st.awarded===true||!['FT','AET','PEN'].includes(reason))return null;
+ const h=m?.home?.score,a=m?.away?.score;
+ if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0)return null;
+ return {h,a,kind:reason,matchId:String(m.id)};
+}
+function pendingMatchDate(r){
+ // Prefer saved kickoff UTC; fallback to alert UTC day, checking neighbor days.
+ const value=r.kickoffUTC||r.createdAt;
+ const dt=new Date(value);
+ return Number.isFinite(dt.getTime())?dt:null;
+}
+function dateStringUTC(d){return d.toISOString().slice(0,10).replace(/-/g,'');}
+async function fetchLiveFootballByDate(date,key){
+ const template=(process.env.LIVE_FOOTBALL_MATCHES_BY_DATE_URL_TEMPLATE||'https://free-api-live-football-data.p.rapidapi.com/football-get-matches-by-date?date={date}').trim();
+ if(!template||!key)return [];
+ const cacheKey=date;
+ const cached=lfDateCache.get(cacheKey);
+ if(cached&&Date.now()-cached.time<120000)return cached.matches;
+ const url=template.replace(/\{date\}/g,encodeURIComponent(date));
+ try{
+  const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':LF_HOST},timeout:10000});
+  const matches=data?.response?.matches;
+  if(!Array.isArray(matches))throw Error('response.matches is not an array');
+  lfDateCache.set(cacheKey,{time:Date.now(),matches});
+  return matches;
+ }catch(e){console.warn(`[AUDIT FT] LiveFootball date=${date} HTTP ${e.response?.status||e.message}`);return [];}
+}
+async function fetchLiveFootballFT(r,key){
+ const id=r.sourceIds?.['live-football']||(r.source==='live-football'?r.sourceId:null);
+ if(!id||!key)return null;
+ const d=pendingMatchDate(r);if(!d)return null;
+ // Dates can be interpreted differently by provider timezone; check adjacent days.
+ const dates=[-1,0,1].map(n=>dateStringUTC(new Date(d.getTime()+n*86400000)));
+ for(const date of dates){
+  const rows=await fetchLiveFootballByDate(date,key);
+  const match=rows.find(x=>String(x.id)===String(id));
+  if(match){const ft=parseLiveFootballDateFT(match);if(ft)return ft;}
+ }
+ return null;
+}
 async function reconcile(){
  if(checking)return;checking=true;
  try{await init();const key=process.env.RAPIDAPI_KEY;if(!key && !process.env.APISPORTS_KEY)return;
@@ -131,8 +178,8 @@ async function reconcile(){
   for(const r of pending){lastFTCheck.set(r.matchKey,Date.now());
    const ids=r.sourceIds||{};const sofa=ids.sofascore||(r.source==='sofascore'?r.sourceId:null);
    const fotmob=ids.fotmob||(r.source==='fotmob'?r.sourceId:null);
-   let ft=null;
-   if(sofa&&key&&/^\d+$/.test(String(sofa)))ft=await fetchSofaFT(sofa,key);
+   let ft=await fetchLiveFootballFT(r,key);
+   if(!ft&&sofa&&key&&/^\d+$/.test(String(sofa)))ft=await fetchSofaFT(sofa,key);
    if(!ft&&fotmob&&key&&/^\d+$/.test(String(fotmob)))ft=await fetchFotmobFT(fotmob,key);
     const apiId=ids.apisports||(r.source==='apisports'?r.sourceId:null);
     if(!ft&&apiId)ft=await fetchApiSportsFT(apiId);
