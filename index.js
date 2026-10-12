@@ -5164,8 +5164,49 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
       tempo:tempo===null?null:round1(tempo),
       tempoLevel:tempo===null?'UNKNOWN':tempo>=70?'HIGH':tempo>=40?'MEDIUM':'LOW',
       tempoEvidence:'ESTIMATED_MATCH_AVERAGE',
-      timeFactor,stateFactor,redFactor,availableGroups:groups
+      timeFactor,stateFactor,redFactor,availableGroups:groups,
+      remainingMinutesEstimate:remaining,
+      gameState:lead===0?'DRAW':lead===1?'ONE_GOAL_GAP':lead===2?'TWO_GOAL_GAP':'LARGE_GAP',
+      reliability:{availableGroups:groups,totalGroups:8,
+        coveragePercent:round1(groups/8*100),
+        missing:['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!['home','away'].every(side=>present[side+f]===true)),
+        label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'},
+      tempoMethod:'MATCH_AVERAGE_ONLY',
+      pressureMethod:'SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
+      qualityMethod:'SOT_RATIO_BIG_CHANCES_XG_BOX'
     }};
+}
+// Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
+// Comparison only; never used for Telegram or BIG BET decisions.
+function evaluateRuleV3Legacy(v2,minute,homeScore,awayScore){
+  const base=Number(v2?.efficiency);
+  if(v2?.efficiency==null||!Number.isFinite(base))return null;
+  const gap=Math.abs(Number(homeScore)-Number(awayScore));
+  const remaining=Math.max(0,95-Number(minute));
+  const lateFactor=remaining<=5?.68:remaining<=10?.78:remaining<=20?.9:1;
+  const gapFactor=gap>=4?.76:gap===3?.84:gap===2?.93:1;
+  return round1(clamp(base*lateFactor*gapFactor,0,95));
+}
+// Display-only diagnostics: never used to gate alerts.
+function formatV3Advanced(ai, stats, minute) {
+  const c=ai?.v3Components;
+  if (!c) return 'V3 ADVANCED: N/A (insufficient current stats)';
+  const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
+  const available=(field)=>['home','away'].every(side=>stats?._present?.[side+field]===true);
+  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!available(f));
+  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (ESTIMATED match-average) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Time x${fmt(c.timeFactor)} (~${c.remainingMinutesEstimate}m) | 5.State ${c.gameState} x${fmt(c.stateFactor)} Red x${fmt(c.redFactor)} | 6.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Missing ${missing.join(',')||'none'}`;
+}
+function v3TelegramDetail(ai,stats,minute){
+  const c=ai?.v3Components;
+  if(!c)return '🧩 V3 Advanced: Chưa đủ dữ liệu hiện tại';
+  const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
+  const missing=['Attacks','DangerousAttacks','BigChances','ExpectedGoals'].filter(f=>!['home','away'].every(side=>stats?._present?.[side+f]===true));
+  return [
+    `🧩 V3 Advanced: Tempo ${c.tempoLevel} (${fmt(c.tempo)}, ước lượng TB trận)`,
+    `🔥 Pressure ${fmt(c.pressure)} | 🎯 Quality ${fmt(c.quality)}`,
+    `⏱ Time x${fmt(c.timeFactor)} | ⚽ Game State x${fmt(c.stateFactor)} | 🟥 Red x${fmt(c.redFactor)}`,
+    `📡 Data Reliability: ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 nhóm | Thiếu: ${missing.join(', ')||'không'}`
+  ].join('\n');
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
   // AI Goal V2 is informational only. Current LIVE data is sufficient;
@@ -6818,7 +6859,12 @@ async function sendTelegramAlert(
     `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
     qualityAssessment,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
-    `🧠 V3 CHÍNH: ${percentage.toFixed(1)}% | V2 ĐỐI CHIẾU: ${item.ruleV2?.efficiency ?? '—'}%`,
+    v3TelegramDetail(item.ai, st, item.minute),
+    (()=>{const old=item.ruleV3Legacy;const delta=item.ruleV3Delta;
+      const oldTxt=old==null?'N/A':Number(old).toFixed(1)+'% ('+(Number(old)>70?'ĐẠT':'KHÔNG ĐẠT')+')';
+      const deltaTxt=delta==null?'N/A':(Number(delta)>0?'+':'')+Number(delta).toFixed(1)+' điểm';
+      return `📊 V3 CŨ: ${oldTxt} | 🚀 V3 ADVANCED: ${percentage.toFixed(1)}% (${percentage>70?'ĐẠT':'KHÔNG ĐẠT'}) | Δ ${deltaTxt}`;})(),
+    `🧠 V2 THAM KHẢO: ${item.ruleV2?.efficiency ?? '—'}% | Chỉ V3 Advanced quyết định Telegram`,
     `🎯 AI Goal (thử nghiệm): ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7366,6 +7412,8 @@ async function analyzeOneMatch(
   const postGoal=postGoalState.get(alertKey);
   const ruleV2 = evaluateMatchDynamicAI(stats, odds, momentum, minute, match.homeScore, match.awayScore);
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, ruleV2, windows);
+  const ruleV3Legacy = evaluateRuleV3Legacy(ruleV2, minute, match.homeScore, match.awayScore);
+  const ruleV3Delta = ai.efficiency==null||ruleV3Legacy==null?null:round1(ai.efficiency-ruleV3Legacy);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows);
 
 
@@ -7433,7 +7481,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats._present?.homeAttacks===true?stats.homeAttacks:'N/A'}-${stats._present?.awayAttacks===true?stats.awayAttacks:'N/A'} | DA ${stats._present?.homeDangerousAttacks===true?stats.homeDangerousAttacks:'N/A'}-${stats._present?.awayDangerousAttacks===true?stats.awayDangerousAttacks:'N/A'} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
@@ -7455,6 +7503,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     method:'multi-stat-evidence-v1'};
 }
 
+  console.log(`[V3 ADVANCED] ${match.homeName} vs ${match.awayName} | ${minute}' | ${formatV3Advanced(ai,stats,minute)}`);
   const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
   // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
   const followupState = alertState.get(alertKey);
@@ -7482,6 +7531,8 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     ai,
     ruleV2,
+    ruleV3Legacy,
+    ruleV3Delta,
     aiGoal,
 
     scorePrediction,
