@@ -2907,7 +2907,41 @@ function mergeMissingStats(target, source) {
 }
 
 
+// Deduplicate concurrent requests for the SAME provider-native match ID.
+// Keep providers independent; never reuse IDs between providers.
+const providerStatsRequests = new Map();
+const PROVIDER_STATS_CACHE_MS = STATS_CACHE_TTL;
+function providerStatsCacheCleanup() {
+  const now = Date.now();
+  for (const [key, value] of providerStatsRequests) {
+    if (now - value.time > PROVIDER_STATS_CACHE_MS) providerStatsRequests.delete(key);
+  }
+}
 async function fetchStatsForSourceMatch(sourceMatch) {
+  if (!sourceMatch || sourceMatch.id == null) return createEmptyStats();
+  providerStatsCacheCleanup();
+  const requestKey = `${sourceMatch.source}:${String(sourceMatch.id)}`;
+  const hit = providerStatsRequests.get(requestKey);
+  if (hit) {
+    console.log(`[API DEDUP] REUSE ${requestKey} | ${hit.promise ? 'IN_FLIGHT' : 'CACHE'}`);
+    return hit.promise || hit.data;
+  }
+  const entry = {time:Date.now(),promise:null,data:null};
+  const promise = fetchStatsForSourceMatchUncached(sourceMatch);
+  entry.promise = promise;
+  providerStatsRequests.set(requestKey,entry);
+  try {
+    const data = await promise;
+    entry.data=data;
+    entry.promise=null;
+    entry.time=Date.now();
+    return data;
+  } catch (err) {
+    providerStatsRequests.delete(requestKey);
+    throw err;
+  }
+}
+async function fetchStatsForSourceMatchUncached(sourceMatch) {
 
   if (!sourceMatch) {
     return createEmptyStats();
@@ -2946,7 +2980,7 @@ async function fetchMatchDetailStats(
   );
 
   const cacheKey =
-    `cross:${matchKey || `${match.source}:${match.id}`}:${resolverLeagueCountry(match)}:${String(match.league || "").toLowerCase()}`;
+    `cross:${resolverAliasTokens(match.homeName).join('')}:${resolverAliasTokens(match.awayName).join('')}:${matchKey || `${match.source}:${match.id}`}`;
 
   const cached = statsCache.get(cacheKey);
 
@@ -2965,7 +2999,7 @@ async function fetchMatchDetailStats(
   const sourceMatches = [...linked];
   for (const candidate of independentLiveSourceRegistry) {
     if (sourceMatches.some(m => m.source === candidate.source && String(m.id) === String(candidate.id))) continue;
-    if (resolverSameMatch(match, candidate)) sourceMatches.push(candidate);
+    if (resolverSameMatch(match, candidate) || resolverExactSameFixture(match, candidate)) sourceMatches.push(candidate);
   }
   if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
     console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | NO_CROSS_PROVIDER_MATCH | candidates=${independentLiveSourceRegistry.length}`);
@@ -5110,11 +5144,11 @@ function calculateTimeScore(
 // V3: independent scoring; V2 is retained ONLY for comparison.
 // Scores are heuristic signals, not calibrated probabilities.
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
-  // V3 ADVANCED: independent LIVE-only heuristic. Odds, V2 and post-goal
-  // snapshots do NOT gate or contribute to this score.
+  // V3 Advanced v2: de-saturate cumulative stats and make recent tempo honest.
+  // Historical post-goal snapshots and Rule V2 are never required by this model.
   const present=stats?._present||{};
-  const pair=(field)=>{
-    const h='home'+field,a='away'+field;
+  const pair=f=>{
+    const h='home'+f,a='away'+f;
     if(present[h]!==true||present[a]!==true)return null;
     const x=Number(stats[h]),y=Number(stats[a]);
     return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
@@ -5124,57 +5158,59 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const corners=pair('Corners'),chances=pair('BigChances');
   const inside=pair('ShotsInsideBox'),xg=pair('ExpectedGoals');
   const poss=pair('Possession'),red=pair('RedCards');
-  const elapsed=Math.max(1,Number(minute)||1);
+  const minuteNum=Number(minute),elapsed=Number.isFinite(minuteNum)?Math.max(1,minuteNum):75;
+  const groups=[shots,sot,corners,chances,inside,xg,poss,red].filter(Boolean).length;
+  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks']
+    .filter(f=>!['home','away'].every(side=>present[side+f]===true));
+  const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
+    label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
   if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {...(v2||{}),efficiency:null,model:'rule-v3-advanced',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  const clamp100=v=>clamp(v,0,100);
-  const rate=(p,ref)=>p?clamp100(sum(p)/elapsed*90/ref*100):null;
+    return {...(v2||{}),efficiency:null,model:'rule-v3-advanced-v2',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  // Smooth, saturating response: 100 is asymptotic, never reached by finite stats.
+  // Targets represent illustrative match-average reference rates, NOT fitted goal probabilities.
+  const smooth=(value,target)=>value===null?null:round1(100*(1-Math.exp(-Math.max(0,value)/target)));
+  const pace=(p,per90)=>p?smooth(sum(p)*90/elapsed,per90):null;
   const weighted=items=>{
-    const ok=items.filter(([v])=>v!==null&&Number.isFinite(v));
-    const w=ok.reduce((a,[,weight])=>a+weight,0);
-    return w?ok.reduce((a,[v,weight])=>a+v*weight,0)/w:null;
+    const valid=items.filter(([v])=>v!==null&&Number.isFinite(v));
+    const w=valid.reduce((n,[,weight])=>n+weight,0);
+    return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
   };
-  // Tempo is a match-average ESTIMATE, not a verified recent 5/10-minute trend.
-  // Verified recent tempo can be added only when event timestamps exist.
-  const tempo=weighted([[rate(shots,22),.38],[rate(sot,8),.42],[rate(corners,10),.20]]);
-  const pressure=weighted([[rate(shots,22),.29],[rate(sot,8),.36],
-    [rate(corners,10),.12],[rate(inside,12),.13],[rate(chances,4),.10]]);
-  const shotQuality=shots&&sot&&sum(shots)>0
-    ?clamp100((sum(sot)/sum(shots))/.42*100):null;
-  const quality=weighted([[shotQuality,.35],[rate(chances,4),.28],
-    [rate(xg,2.8),.25],[rate(inside,12),.12]]);
+  const sotRatio=shots&&sot&&sum(shots)>0?sum(sot)/sum(shots):null;
+  const shotQuality=sotRatio===null?null:round1(100*Math.min(1,sotRatio/.48));
+  const tempo=weighted([[pace(shots,22),.38],[pace(sot,8),.42],[pace(corners,10),.20]]);
+  const pressure=weighted([[pace(shots,23),.25],[pace(sot,9),.43],
+    [pace(corners,11),.10],[pace(inside,13),.12],[pace(chances,4.5),.10]]);
+  const quality=weighted([[shotQuality,.30],[pace(chances,4.5),.25],
+    [pace(xg,3.0),.28],[pace(inside,13),.17]]);
+  // Avoid assuming match-average tempo proves a current attacking surge.
+  const tempoEvidence='ESTIMATED_MATCH_AVERAGE';
+  const tempoLevel=tempo===null?'UNKNOWN':tempo>=70?'HIGH':tempo>=40?'MEDIUM':'LOW';
   const lead=Math.abs(Number(homeScore)-Number(awayScore));
   const remaining=Math.max(0,95-elapsed);
-  // Time is a soft penalty, not an automatic rejection of late chances.
-  const timeFactor=remaining<=3?.70:remaining<=6?.78:remaining<=10?.85:remaining<=15?.92:1;
-  const stateFactor=lead>=4?.78:lead===3?.85:lead===2?.93:lead===0?1.03:1;
-  const redFactor=red&&sum(red)>0?1.04:1;
-  const possessionBalance=poss?clamp100(50+Math.abs(poss[0]-poss[1])*.5):null;
-  const liveMomentum=momentum?.available&&Number.isFinite(Number(momentum.score))
-    ?clamp100(Number(momentum.score)):null;
-  const core=weighted([[pressure,.47],[quality,.35],[tempo,.12],
-    [liveMomentum,.04],[possessionBalance,.02]]);
-  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3-advanced',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor,0,95));
-  const groups=[shots,sot,corners,chances,inside,xg,poss,red].filter(Boolean).length;
-  return {...(v2||{}),efficiency,model:'rule-v3-advanced',
-    dataStatus:'OK',v3Components:{
-      pressure:pressure===null?null:round1(pressure),
-      quality:quality===null?null:round1(quality),
-      tempo:tempo===null?null:round1(tempo),
-      tempoLevel:tempo===null?'UNKNOWN':tempo>=70?'HIGH':tempo>=40?'MEDIUM':'LOW',
-      tempoEvidence:'ESTIMATED_MATCH_AVERAGE',
-      timeFactor,stateFactor,redFactor,availableGroups:groups,
-      remainingMinutesEstimate:remaining,
-      gameState:lead===0?'DRAW':lead===1?'ONE_GOAL_GAP':lead===2?'TWO_GOAL_GAP':'LARGE_GAP',
-      reliability:{availableGroups:groups,totalGroups:8,
-        coveragePercent:round1(groups/8*100),
-        missing:['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!['home','away'].every(side=>present[side+f]===true)),
-        label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'},
-      tempoMethod:'MATCH_AVERAGE_ONLY',
-      pressureMethod:'SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
-      qualityMethod:'SOT_RATIO_BIG_CHANCES_XG_BOX'
-    }};
+  // A gentle continuous time adjustment, including minutes 65-80.
+  const timeFactor=round1(Math.max(.55,Math.min(1.0,Math.pow(remaining/30,.36)))*100)/100;
+  const stateFactor=lead>=4?.78:lead===3?.84:lead===2?.91:lead===0?1.0:.98;
+  // A red card is contextual; do not award an unconditional goal bonus.
+  const redFactor=1;
+  const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.4):null;
+  // SOT volume and quality are more informative than raw shots alone.
+  const core=weighted([[pressure,.52],[quality,.39],[tempo,.06],[possessionBalance,.03]]);
+  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3-advanced-v2',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  // Soft confidence adjustment for absent primary evidence, not a Rule Confidence gate.
+  const primaryCount=[shots,sot].filter(Boolean).length;
+  const evidenceFactor=primaryCount===2?1:primaryCount===1?.89:.75;
+  const qualityFactor=(shots&&sot&&sum(shots)>=8&&sotRatio!==null&&sotRatio<.22)?.88:1;
+  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor*evidenceFactor*qualityFactor,0,95));
+  return {...(v2||{}),efficiency,model:'rule-v3-advanced-v2',dataStatus:'OK',v3Components:{
+    pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
+    tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'MATCH_AVERAGE_ONLY',
+    timeFactor,stateFactor,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
+    gameState:lead===0?'DRAW':lead===1?'ONE_GOAL_GAP':lead===2?'TWO_GOAL_GAP':'LARGE_GAP',
+    reliability,evidenceFactor,qualityFactor,shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
+    pressureMethod:'SMOOTH_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
+    qualityMethod:'SOT_RATIO_BIG_CHANCES_XG_BOX',
+    modelVersion:'ADVANCED_ANTI_SATURATION_V2'
+  }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
 // Comparison only; never used for Telegram or BIG BET decisions.
@@ -5194,7 +5230,7 @@ function formatV3Advanced(ai, stats, minute) {
   const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
   const available=(field)=>['home','away'].every(side=>stats?._present?.[side+field]===true);
   const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!available(f));
-  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (ESTIMATED match-average) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Time x${fmt(c.timeFactor)} (~${c.remainingMinutesEstimate}m) | 5.State ${c.gameState} x${fmt(c.stateFactor)} Red x${fmt(c.redFactor)} | 6.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Missing ${missing.join(',')||'none'}`;
+  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (ESTIMATED match-average) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Time x${fmt(c.timeFactor)} (~${c.remainingMinutesEstimate}m) | 5.State ${c.gameState} x${fmt(c.stateFactor)} Red x${fmt(c.redFactor)} | 6.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Missing ${missing.join(',')||'none'}`;
 }
 function v3TelegramDetail(ai,stats,minute){
   const c=ai?.v3Components;
@@ -5205,7 +5241,8 @@ function v3TelegramDetail(ai,stats,minute){
     `🧩 V3 Advanced: Tempo ${c.tempoLevel} (${fmt(c.tempo)}, ước lượng TB trận)`,
     `🔥 Pressure ${fmt(c.pressure)} | 🎯 Quality ${fmt(c.quality)}`,
     `⏱ Time x${fmt(c.timeFactor)} | ⚽ Game State x${fmt(c.stateFactor)} | 🟥 Red x${fmt(c.redFactor)}`,
-    `📡 Data Reliability: ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 nhóm | Thiếu: ${missing.join(', ')||'không'}`
+    `📡 Data Reliability: ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 nhóm | Thiếu: ${missing.join(', ')||'không'}` ,
+    `🔎 SOT/Shots ${fmt(c.shotAccuracyPercent)}% | Evidence x${fmt(c.evidenceFactor)} | Quality adjustment x${fmt(c.qualityFactor)}`
   ].join('\n');
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
@@ -6742,6 +6779,19 @@ async function sendTelegramAlert(
   }
 
 
+  // Defensive send-time alias lock: avoid duplicate FIRST alerts from different
+  // provider fixture IDs. Follow-ups remain governed by the existing BIG BET rule.
+  const equivalentPrior = [...alertState.entries()].find(([key, prior]) =>
+    key !== item.alertKey && prior && Number(prior.alertCount) > 0 &&
+    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL &&
+    resolverTeamScore(prior.homeName, item.homeName) >= .94 &&
+    resolverTeamScore(prior.awayName, item.awayName) >= .94 &&
+    (prior.lastMinute == null || item.minute == null || Math.abs(Number(prior.lastMinute)-Number(item.minute)) <= 20)
+  );
+  if (equivalentPrior) {
+    console.log(`[ALERT DEDUP] BLOCK_ALIAS_DUPLICATE ${item.homeName} vs ${item.awayName} | existing=${equivalentPrior[0]}`);
+    return false;
+  }
   if (sendingKeys.has(item.alertKey)) return false;
   sendingKeys.add(item.alertKey);
   const percentage =
@@ -7098,6 +7148,8 @@ function resolverTokens(name) {
 }
 // Provider spelling aliases. Apply only to matching, never overwrite display names.
 const RESOLVER_TEAM_ALIASES = [
+  // Hapoel Jerusalem FC is also known as Hapoel Katamon (same senior club).
+  [/\bhapoel\s+(?:jerusalem|katamon)(?:\s+fc)?\b/g, 'hapoel jerusalem'],
   [/\bpakhtakor\b(?:\s+tashkent)?/g, 'pakhtakor'],
   [/\bal[ -]?qad(?:s|h|ss)iy(?:ah|a)(?:\s+fc)?\b/g, 'al qadsiah'],
   [/\bal[ -]?qadsiah\b/g, 'al qadsiah'],
@@ -7162,12 +7214,36 @@ function resolverSameMatch(a, b) {
   }
   return true;
 }
+// A strict secondary check catches provider aliases where country/league metadata
+// conflicts or is stale, without linking teams solely by their score.
+function resolverExactSameFixture(a,b) {
+  if (!a || !b) return false;
+  const ah=resolverAliasTokens(a.homeName).join('');
+  const bh=resolverAliasTokens(b.homeName).join('');
+  const aa=resolverAliasTokens(a.awayName).join('');
+  const ba=resolverAliasTokens(b.awayName).join('');
+  if (!ah || !aa || ah!==bh || aa!==ba) return false;
+  const am=Number(a.minute),bm=Number(b.minute);
+  if (!Number.isFinite(am)||!Number.isFinite(bm)||am<=0||bm<=0||Math.abs(am-bm)>5) return false;
+  for (const field of ['homeScore','awayScore']) {
+    if (a[field]==null||b[field]==null||Number(a[field])!==Number(b[field])) return false;
+  }
+  // Do not merge two known different kickoffs.
+  const getKickoff=m=>m.kickoff || m.startTime || m.startTimestamp || m.raw?.startTimestamp || m.raw?.startTime;
+  const ak=getKickoff(a),bk=getKickoff(b);
+  if (ak && bk) {
+    const toMs=v=> { const n=Number(v); return Number.isFinite(n)&&n>1e9?(n<1e12?n*1000:n):Date.parse(v); };
+    const at=toMs(ak),bt=toMs(bk);
+    if (Number.isFinite(at)&&Number.isFinite(bt)&&Math.abs(at-bt)>30*60*1000) return false;
+  }
+  return true;
+}
 function deduplicateMatches(matches) {
   const SOURCE_PRIORITY = { sofascore: 4, 'live-football': 3, fotmob: 2, flashscore: 1, apisports: 0 };
   const groups = [];
   for (const match of matches) {
     if (!match || !match.homeName || !match.awayName) continue;
-    let group = groups.find(g => g.some(other => resolverSameMatch(other, match)));
+    let group = groups.find(g => g.some(other => resolverSameMatch(other, match) || resolverExactSameFixture(other, match)));
     if (!group) { group = []; groups.push(group); }
     // Each source's matchId/eventId is preserved for its OWN detail endpoint.
     if (!group.some(x => x.source === match.source && String(x.id) === String(match.id))) group.push(match);
@@ -7321,8 +7397,8 @@ async function analyzeOneMatch(
   // Alert key dùng tên đội để giữ chung
   // trạng thái nếu API nguồn thay đổi.
   const canonicalAlertKey = createMatchKey(
-    resolverTokens(match.homeName).join(' '),
-    resolverTokens(match.awayName).join(' ')
+    resolverAliasTokens(match.homeName).join(' '),
+    resolverAliasTokens(match.awayName).join(' ')
   );
   // Reuse an existing alert key even when providers spell the same team differently.
   // Only reuse when both teams are strongly matched; never match on score alone.
@@ -7723,12 +7799,19 @@ async function scanLiveMatches() {
     // ====================================================
 
     const results = [];
-
+    const processedFixtures = [];
+    let scanDuplicateCount = 0;
 
     for (
       const match of
       eligibleMatches
     ) {
+      if (processedFixtures.some(prev => resolverSameMatch(prev, match) || resolverExactSameFixture(prev, match))) {
+        scanDuplicateCount++;
+        console.log(`[API DEDUP] SKIP_FIXTURE ${match.homeName} vs ${match.awayName} | ${match.source}:${match.id}`);
+        continue;
+      }
+      processedFixtures.push(match);
 
       try {
 
@@ -7774,6 +7857,7 @@ async function scanLiveMatches() {
     console.log(
       '--------------- TOP RULE ---------------'
     );
+    console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount}`);
 
 
     for (
