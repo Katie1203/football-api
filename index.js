@@ -6972,8 +6972,22 @@ function resolverTokens(name) {
     .replace(/[^a-z0-9]+/g, ' ').trim();
   return value.split(/\s+/).filter(Boolean);
 }
+// Provider spelling aliases. Apply only to matching, never overwrite display names.
+const RESOLVER_TEAM_ALIASES = [
+  [/\bpakhtakor\b(?:\s+tashkent)?/g, 'pakhtakor'],
+  [/\bal[ -]?qad(?:s|h|ss)iy(?:ah|a)(?:\s+fc)?\b/g, 'al qadsiah'],
+  [/\bal[ -]?qadsiah\b/g, 'al qadsiah'],
+  [/\b(?:uzb|sau|ksa)\b/g, ' '],
+  [/\b(?:northeast|north east)\s+united\b/g, 'northeast united'],
+  [/\b(?:atk\s+)?mohun\s+bagan(?:\s+sg)?\b/g, 'mohun bagan'],
+];
+function resolverAliasTokens(name) {
+  let normalized = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  for (const [pattern, replacement] of RESOLVER_TEAM_ALIASES) normalized = normalized.replace(pattern, replacement);
+  return resolverTokens(normalized);
+}
 function resolverTeamScore(a, b) {
-  const x = resolverTokens(a), y = resolverTokens(b);
+  const x = resolverAliasTokens(a), y = resolverAliasTokens(b);
   if (!x.length || !y.length) return 0;
   const tags = /^(u\d{2}|women|woman|w|reserves|reserve|ii|iii|b)$/;
   const xt = x.filter(t => tags.test(t)).sort().join('|');
@@ -7050,6 +7064,7 @@ function deduplicateMatches(matches) {
     return primary;
   });
   const duplicates = matches.length - result.length;
+  if (duplicates) console.log(`[DEDUP PRE-STATS] skipped ${duplicates} redundant match records before detail/stat requests`);
   console.log(`[Cross-Source Resolver] ${matches.length} records -> ${result.length} unique matches | linked ${joined} cross-provider matches | removed ${duplicates} duplicate records | native IDs preserved`);
   if (duplicates && !joined) console.log('[Cross-Source Resolver] NOTE: duplicates may be same-source records; no cross-provider native IDs linked');
   return result;
