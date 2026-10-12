@@ -172,34 +172,41 @@ const snapshotState = new Map();
 const pressureHistory = new Map();
 const postGoalState = new Map();
 const PRESSURE_HISTORY_MAX = 40;
+// A counter delta is valid only when both readings came from the same provider.
 function pressureDelta(a,b,field) {
   if (!a || !b) return null;
   const keys=['home'+field,'away'+field];
   if (!keys.every(k=>a._present?.[k]===true && b._present?.[k]===true)) return null;
-  const n=keys.reduce((v,k)=>v+Number(b[k])-Number(a[k]),0);
-  return Number.isFinite(n)&&n>=0?n:null;
+  const providersA=a._fieldSources||{}, providersB=b._fieldSources||{};
+  if (!keys.every(k=>providersA[k] && providersB[k] && providersA[k]===providersB[k])) return null;
+  const diffs=keys.map(k=>Number(b[k])-Number(a[k]));
+  return diffs.every(x=>Number.isFinite(x)&&x>=0)?diffs[0]+diffs[1]:null;
 }
 function getPressureWindow(key,stats,minute,homeScore,awayScore) {
-  const now=makeMatchSnapshot(stats,minute,homeScore,awayScore);
+  const now={...makeMatchSnapshot(stats,minute,homeScore,awayScore),
+    time:Date.now(),_fieldSources:{...(stats?._fieldSources||stats?.fieldSources||{})}};
   const history=pressureHistory.get(key)||[];
   const last=history[history.length-1];
-  // Do not mix resets, backwards minutes or changing source-provenance.
-  const sourceTag=JSON.stringify(stats?.fieldSources||stats?._fieldSources||{});
-  if (last && (minute<last.minute || (last.sourceTag && sourceTag!==last.sourceTag))) history.length=0;
-  // Do not overwrite a complete same-minute snapshot with a partial API response.
+  // A backwards clock indicates a new timeline. Provider changes do not.
+  if(last && minute<last.minute-2) history.length=0;
   const validCount=x=>['TotalShots','ShotsOnTarget','Corners','BigChances'].reduce((n,f)=>n+(['home','away'].every(side=>x._present?.[side+f]===true)?1:0),0);
   if (!history.length || minute>history[history.length-1].minute) {
-    if(validCount(now)>=2) history.push({...now,sourceTag});
-  } else if (minute===history[history.length-1].minute && validCount(now)>=validCount(history[history.length-1])) history[history.length-1]={...now,sourceTag};
+    if(validCount(now)>=2)history.push(now);
+  } else if(minute===history[history.length-1].minute && validCount(now)>validCount(history[history.length-1])) {
+    history[history.length-1]=now;
+  }
   while(history.length>PRESSURE_HISTORY_MAX)history.shift();
   pressureHistory.set(key,history);
   const window=(size)=>{
-    const older=[...history].reverse().find(x=>x.minute<=minute-size);
+    // Nearest valid baseline at least 'size' minutes old; avoid very old stale windows.
+    const older=[...history].reverse().find(x=>x.minute<=minute-size && minute-x.minute<=size+5);
     if(!older)return {available:false,reason:'NEED_HISTORY'};
     const fields=['TotalShots','ShotsOnTarget','Corners','BigChances'];
     const delta=Object.fromEntries(fields.map(f=>[f,pressureDelta(older,now,f)]));
     const count=Object.values(delta).filter(v=>v!==null).length;
-    return {available:count>=2,reason:count>=2?'OK':'MISSING_OR_RESET_COUNTERS',minutes:minute-older.minute,delta,count};
+    // Must have either shot volume or on-target attempts, not just corners/chances.
+    const usable=count>=2 && (delta.TotalShots!==null || delta.ShotsOnTarget!==null);
+    return {available:usable,reason:usable?'OK':'MISSING_OR_CHANGED_SOURCE',minutes:minute-older.minute,delta,count};
   };
   return {five:window(5),ten:window(10),current:now,history};
 }
@@ -5105,21 +5112,25 @@ function calculateTimeScore(
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const recent5=pressureStrength(windows?.five), recent10=pressureStrength(windows?.ten);
   // No recent evidence => do not grant high Rule scores from lifetime totals.
-  if(recent5===null || recent10===null) return {...v2,efficiency:null,model:'rule-v3-dynamic-insufficient-data',v3Components:{recent5,recent10},dataStatus:'INSUFFICIENT_DATA'};
+  if(recent5===null && recent10===null) return {...v2,efficiency:null,model:'rule-v3-dynamic-insufficient-data',v3Components:{recent5,recent10},dataStatus:'INSUFFICIENT_DATA'};
   const scoreGap=Math.abs(Number(homeScore)-Number(awayScore));
   const gameState=scoreGap===0?65:scoreGap===1?60:40;
   const time=clamp((95-minute)/30*100,0,100);
-  const d=windows.five.delta||{};
+  const d=(windows.five.available?windows.five:windows.ten).delta||{};
   const quality=clamp(20*(d.ShotsOnTarget??0)+25*(d.BigChances??0)+5*(d.TotalShots??0),0,100);
   const base=clamp((Number(stats?.homeShotsOnTarget||0)+Number(stats?.awayShotsOnTarget||0))/12*100,0,100);
-  const efficiency=round1(clamp(recent5*.35+recent10*.25+quality*.20+time*.15+gameState*.03+base*.02,0,95));
-  return {...v2,efficiency,model:'rule-v3-dynamic-v1',v3Components:{recent5,recent10,quality,time,gameState,base}};
+  // Reweight only available pressure windows; do not score missing as zero.
+  const pressureCombined=(recent5!==null && recent10!==null)
+    ? (recent5*.35+recent10*.25)/.60 : (recent5??recent10);
+  const efficiency=round1(clamp(pressureCombined*.60+quality*.20+time*.15+gameState*.03+base*.02,0,95));
+  return {...v2,efficiency,model:'rule-v3-dynamic-v2',dataStatus:(recent5===null||recent10===null)?'PARTIAL_WINDOW':'OK',v3Components:{recent5,recent10,quality,time,gameState,base}};
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
   // Experimental, uncalibrated probability; informational only.
-  if(!windows?.five?.available || !windows?.ten?.available) return {percent:null,label:'Chưa đủ snapshot 5–10 phút',calibrated:false};
-  const d=windows.ten.delta||{};
-  const duration=Math.max(1,windows.ten.minutes||10);
+  const w=windows?.ten?.available?windows.ten:windows?.five?.available?windows.five:null;
+  if(!w)return {percent:null,label:'Chưa đủ snapshot hợp lệ',calibrated:false};
+  const d=w.delta||{};
+  const duration=Math.max(1,w.minutes||5);
   const sotRate=(d.ShotsOnTarget??0)/duration;
   const shotsRate=(d.TotalShots??0)/duration;
   const chanceRate=(d.BigChances??0)/duration;
@@ -5598,6 +5609,7 @@ function makeMatchSnapshot(stats, minute, homeScore, awayScore) {
     homeTotalShots: safeNumber(stats?.homeTotalShots),
     awayTotalShots: safeNumber(stats?.awayTotalShots),
     _present: {...(stats?._present || {})},
+    _fieldSources: {...(stats?._fieldSources || stats?.fieldSources || {})},
     homeScore: safeNumber(homeScore),
     awayScore: safeNumber(awayScore)
   };
@@ -5613,7 +5625,7 @@ function detectTenMinuteSpike(previous, current) {
     return {confirmed:false,score:0,reason:'INVALID_TIME_GAP'};
   const delta = (field) => {
     const keys = ['home'+field,'away'+field];
-    if (!keys.every(k => previous._present?.[k] === true && current._present?.[k] === true)) return null;
+    if (!keys.every(k => previous._present?.[k] === true && current._present?.[k] === true && previous._fieldSources?.[k] && previous._fieldSources?.[k] === current._fieldSources?.[k])) return null;
     const diffs = keys.map(k => Number(current[k]) - Number(previous[k]));
     if (diffs.some(x => !Number.isFinite(x) || x < 0)) return null;
     return diffs;
@@ -7276,7 +7288,7 @@ async function analyzeOneMatch(
   // ======================================================
 
   const windows=getPressureWindow(alertKey,stats,minute,match.homeScore,match.awayScore);
-  if (!windows.five.available || !windows.ten.available) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | no new alert until valid windows`);
+  if (!windows.five.available || !windows.ten.available) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | partial windows allowed; require valid provider-matched delta`);
   const lastGoal=postGoalState.get(alertKey);
   const currentTotal=Number(match.homeScore)+Number(match.awayScore);
   if(lastGoal && currentTotal>lastGoal.total && minute>=lastGoal.minute) {
@@ -7657,7 +7669,7 @@ async function scanLiveMatches() {
     ) {
 
       console.log(
-        `${item.minute}' | ${item.ai.efficiency}% | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}`
+        `${item.minute}' | ${item.ai.efficiency == null ? "N/A" : item.ai.efficiency+"%"} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}`
       );
     }
 
