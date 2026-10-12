@@ -5123,19 +5123,43 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   return {...v2,efficiency,model:'rule-v3-live-adjusted',dataStatus:'OK',v3Components:{base,lateFactor,gapFactor}};
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
-  // Experimental, uncalibrated probability; informational only.
-  const w=windows?.ten?.available?windows.ten:windows?.five?.available?windows.five:null;
-  if(!w)return {percent:null,label:'Chưa đủ snapshot hợp lệ',calibrated:false};
-  const d=w.delta||{};
-  const duration=Math.max(1,w.minutes||5);
-  const sotRate=(d.ShotsOnTarget??0)/duration;
-  const shotsRate=(d.TotalShots??0)/duration;
-  const chanceRate=(d.BigChances??0)/duration;
-  const remaining=Math.max(0,95-minute);
+  // AI Goal V2 is informational only. Current LIVE data is sufficient;
+  // snapshot history is NOT a prerequisite for this estimate.
+  const present=stats?._present||{};
+  const pair=(name)=>{
+    const h='home'+name, a='away'+name;
+    if(present[h]!==true || present[a]!==true) return null;
+    const x=Number(stats[h]), y=Number(stats[a]);
+    return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
+  };
+  const sot=pair('ShotsOnTarget');
+  const shots=pair('TotalShots');
+  const corners=pair('Corners');
+  const chances=pair('BigChances');
+  const reds=pair('RedCards');
+  const poss=pair('Possession');
+  const remaining=Math.max(0,95-Number(minute));
+  if(!Number.isFinite(remaining)||remaining===0) return {percent:0,label:'Hết thời gian ước tính (chưa hiệu chuẩn)',calibrated:false};
+  // Need at least one attacking volume signal, not merely possession.
+  if(!sot&&!shots&&!corners&&!chances)
+    return {percent:null,label:'Thiếu thống kê tấn công LIVE',calibrated:false};
+  const elapsed=Math.max(10,Math.min(95,Number(minute)||10));
+  const sum=p=>p?p[0]+p[1]:null;
+  // Conservative per-minute goal intensity proxy. Missing metrics add nothing,
+  // but are NOT treated as observed zeros. This is NOT a trained model.
+  let rate=0.012;
+  if(sot) rate+=0.19*sum(sot)/elapsed;
+  if(shots) rate+=0.035*sum(shots)/elapsed;
+  if(chances) rate+=0.15*sum(chances)/elapsed;
+  if(corners) rate+=0.012*sum(corners)/elapsed;
   const gap=Math.abs(Number(homeScore)-Number(awayScore));
-  const state=gap>=3?.72:gap===0?1.08:1;
-  const lambda=clamp(remaining*(.012+.06*sotRate+.018*shotsRate+.10*chanceRate)*state,0,4);
-  return {percent:round1((1-Math.exp(-lambda))*100),lambda:round1(lambda),label:'AI Goal V2 động (chưa hiệu chuẩn)',calibrated:false};
+  const gameState=gap>=4?0.72:gap===3?0.82:gap===0?1.06:1;
+  const redFactor=reds&&sum(reds)>0?1.07:1;
+  const lambda=clamp(remaining*rate*gameState*redFactor,0,4);
+  const available=[sot,shots,corners,chances,reds,poss].filter(Boolean).length;
+  return {percent:round1((1-Math.exp(-lambda))*100),lambda:round1(lambda),
+    label:`AI Goal V2 LIVE (${available}/6 nhóm, thử nghiệm chưa hiệu chuẩn)`,
+    calibrated:false,source:'current-live',availableGroups:available};
 }
 
 function evaluateMatchDynamicAI(
