@@ -5110,20 +5110,17 @@ function calculateTimeScore(
 // V3: independent scoring; V2 is retained ONLY for comparison.
 // Scores are heuristic signals, not calibrated probabilities.
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
-  const recent5=pressureStrength(windows?.five), recent10=pressureStrength(windows?.ten);
-  // No recent evidence => do not grant high Rule scores from lifetime totals.
-  if(recent5===null && recent10===null) return {...v2,efficiency:null,model:'rule-v3-dynamic-insufficient-data',v3Components:{recent5,recent10},dataStatus:'INSUFFICIENT_DATA'};
+  // The main V3 is ALWAYS computed from current verified match statistics.
+  // 5/10-minute snapshots are reserved for post-goal and BIG BET evidence gates.
+  const base=Number(v2?.efficiency);
+  if (!Number.isFinite(base)) return {...v2,efficiency:null,model:'rule-v3-live',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   const scoreGap=Math.abs(Number(homeScore)-Number(awayScore));
-  const gameState=scoreGap===0?65:scoreGap===1?60:40;
-  const time=clamp((95-minute)/30*100,0,100);
-  const d=(windows.five.available?windows.five:windows.ten).delta||{};
-  const quality=clamp(20*(d.ShotsOnTarget??0)+25*(d.BigChances??0)+5*(d.TotalShots??0),0,100);
-  const base=clamp((Number(stats?.homeShotsOnTarget||0)+Number(stats?.awayShotsOnTarget||0))/12*100,0,100);
-  // Reweight only available pressure windows; do not score missing as zero.
-  const pressureCombined=(recent5!==null && recent10!==null)
-    ? (recent5*.35+recent10*.25)/.60 : (recent5??recent10);
-  const efficiency=round1(clamp(pressureCombined*.60+quality*.20+time*.15+gameState*.03+base*.02,0,95));
-  return {...v2,efficiency,model:'rule-v3-dynamic-v2',dataStatus:(recent5===null||recent10===null)?'PARTIAL_WINDOW':'OK',v3Components:{recent5,recent10,quality,time,gameState,base}};
+  // Late match / large lead adjustment: don't interpret lifetime pressure as current certainty.
+  const remaining=Math.max(0,95-Number(minute));
+  const lateFactor=remaining<=5?0.68:remaining<=10?0.78:remaining<=20?0.9:1;
+  const gapFactor=scoreGap>=4?0.76:scoreGap===3?0.84:scoreGap===2?0.93:1;
+  const efficiency=round1(clamp(base*lateFactor*gapFactor,0,95));
+  return {...v2,efficiency,model:'rule-v3-live-adjusted',dataStatus:'OK',v3Components:{base,lateFactor,gapFactor}};
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
   // Experimental, uncalibrated probability; informational only.
@@ -7288,7 +7285,7 @@ async function analyzeOneMatch(
   // ======================================================
 
   const windows=getPressureWindow(alertKey,stats,minute,match.homeScore,match.awayScore);
-  if (!windows.five.available || !windows.ten.available) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | partial windows allowed; require valid provider-matched delta`);
+  if (false && (!windows.five.available || !windows.ten.available)) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | partial windows allowed; require valid provider-matched delta`);
   const lastGoal=postGoalState.get(alertKey);
   const currentTotal=Number(match.homeScore)+Number(match.awayScore);
   if(lastGoal && currentTotal>lastGoal.total && minute>=lastGoal.minute) {
@@ -7344,10 +7341,6 @@ async function analyzeOneMatch(
     if(!pressureEvidence(postWindow)) {
       alertDecision.send=false;alertDecision.reason='POST_GOAL_WAIT_FRESH_PRESSURE';
     }
-  }
-  // Prevent lifetime accumulated shots from authorizing a first alert.
-  if (!alertState.has(alertKey) && !pressureEvidence(windows.five) && !pressureEvidence(windows.ten)) {
-    alertDecision.send=false;alertDecision.reason='NO_VERIFIED_RECENT_PRESSURE';
   }
 
   const compactGoalTimeline =
