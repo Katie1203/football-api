@@ -186,8 +186,11 @@ function getPressureWindow(key,stats,minute,homeScore,awayScore) {
   // Do not mix resets, backwards minutes or changing source-provenance.
   const sourceTag=JSON.stringify(stats?.fieldSources||stats?._fieldSources||{});
   if (last && (minute<last.minute || (last.sourceTag && sourceTag!==last.sourceTag))) history.length=0;
-  if (!history.length || minute>history[history.length-1].minute) history.push({...now,sourceTag});
-  else if (minute===history[history.length-1].minute) history[history.length-1]={...now,sourceTag};
+  // Do not overwrite a complete same-minute snapshot with a partial API response.
+  const validCount=x=>['TotalShots','ShotsOnTarget','Corners','BigChances'].reduce((n,f)=>n+(['home','away'].every(side=>x._present?.[side+f]===true)?1:0),0);
+  if (!history.length || minute>history[history.length-1].minute) {
+    if(validCount(now)>=2) history.push({...now,sourceTag});
+  } else if (minute===history[history.length-1].minute && validCount(now)>=validCount(history[history.length-1])) history[history.length-1]={...now,sourceTag};
   while(history.length>PRESSURE_HISTORY_MAX)history.shift();
   pressureHistory.set(key,history);
   const window=(size)=>{
@@ -196,7 +199,7 @@ function getPressureWindow(key,stats,minute,homeScore,awayScore) {
     const fields=['TotalShots','ShotsOnTarget','Corners','BigChances'];
     const delta=Object.fromEntries(fields.map(f=>[f,pressureDelta(older,now,f)]));
     const count=Object.values(delta).filter(v=>v!==null).length;
-    return {available:count>=2,minutes:minute-older.minute,delta,count};
+    return {available:count>=2,reason:count>=2?'OK':'MISSING_OR_RESET_COUNTERS',minutes:minute-older.minute,delta,count};
   };
   return {five:window(5),ten:window(10),current:now,history};
 }
@@ -5102,7 +5105,7 @@ function calculateTimeScore(
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const recent5=pressureStrength(windows?.five), recent10=pressureStrength(windows?.ten);
   // No recent evidence => do not grant high Rule scores from lifetime totals.
-  if(recent5===null || recent10===null) return {...v2,efficiency:0,model:'rule-v3-dynamic-pending',v3Components:{recent5,recent10}};
+  if(recent5===null || recent10===null) return {...v2,efficiency:null,model:'rule-v3-dynamic-insufficient-data',v3Components:{recent5,recent10},dataStatus:'INSUFFICIENT_DATA'};
   const scoreGap=Math.abs(Number(homeScore)-Number(awayScore));
   const gameState=scoreGap===0?65:scoreGap===1?60:40;
   const time=clamp((95-minute)/30*100,0,100);
@@ -5642,10 +5645,11 @@ function detectTenMinuteSpike(previous, current) {
 }
 
 function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
-  const current = Number(currentPercentage);
+  const current = currentPercentage == null ? NaN : Number(currentPercentage);
   if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute > 92)
     return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
-  if (!Number.isFinite(current) || current <= MIN_SEND_PERCENTAGE)
+  if (!Number.isFinite(current)) return {send:false,bigBet:false,reason:'STATS_MISSING_DYNAMIC_WINDOW'};
+  if (current <= MIN_SEND_PERCENTAGE)
     return {send:false,bigBet:false,reason:`RULE_BELOW_${MIN_SEND_PERCENTAGE}`};
   const previous = alertState.get(matchId);
   if (!previous) return {send:true,bigBet:false,reason:'FIRST_ALERT'};
@@ -7257,6 +7261,7 @@ async function analyzeOneMatch(
   // ======================================================
 
   const windows=getPressureWindow(alertKey,stats,minute,match.homeScore,match.awayScore);
+  if (!windows.five.available || !windows.ten.available) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | no new alert until valid windows`);
   const lastGoal=postGoalState.get(alertKey);
   const currentTotal=Number(match.homeScore)+Number(match.awayScore);
   if(lastGoal && currentTotal>lastGoal.total && minute>=lastGoal.minute) {
@@ -7339,7 +7344,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency}% | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats.homeAttacks}-${stats.awayAttacks} | DA ${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
@@ -7369,7 +7374,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
      decisionReason.startsWith('MONITORING'));
   const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
-  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency}% | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
+  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
   const result = {
 
     ...match,
