@@ -5110,17 +5110,62 @@ function calculateTimeScore(
 // V3: independent scoring; V2 is retained ONLY for comparison.
 // Scores are heuristic signals, not calibrated probabilities.
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
-  // The main V3 is ALWAYS computed from current verified match statistics.
-  // 5/10-minute snapshots are reserved for post-goal and BIG BET evidence gates.
-  const base=Number(v2?.efficiency);
-  if (!Number.isFinite(base)) return {...v2,efficiency:null,model:'rule-v3-live',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  const scoreGap=Math.abs(Number(homeScore)-Number(awayScore));
-  // Late match / large lead adjustment: don't interpret lifetime pressure as current certainty.
-  const remaining=Math.max(0,95-Number(minute));
-  const lateFactor=remaining<=5?0.68:remaining<=10?0.78:remaining<=20?0.9:1;
-  const gapFactor=scoreGap>=4?0.76:scoreGap===3?0.84:scoreGap===2?0.93:1;
-  const efficiency=round1(clamp(base*lateFactor*gapFactor,0,95));
-  return {...v2,efficiency,model:'rule-v3-live-adjusted',dataStatus:'OK',v3Components:{base,lateFactor,gapFactor}};
+  // V3 ADVANCED: independent LIVE-only heuristic. Odds, V2 and post-goal
+  // snapshots do NOT gate or contribute to this score.
+  const present=stats?._present||{};
+  const pair=(field)=>{
+    const h='home'+field,a='away'+field;
+    if(present[h]!==true||present[a]!==true)return null;
+    const x=Number(stats[h]),y=Number(stats[a]);
+    return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
+  };
+  const sum=p=>p?p[0]+p[1]:null;
+  const shots=pair('TotalShots'),sot=pair('ShotsOnTarget');
+  const corners=pair('Corners'),chances=pair('BigChances');
+  const inside=pair('ShotsInsideBox'),xg=pair('ExpectedGoals');
+  const poss=pair('Possession'),red=pair('RedCards');
+  const elapsed=Math.max(1,Number(minute)||1);
+  if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
+    return {...(v2||{}),efficiency:null,model:'rule-v3-advanced',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  const clamp100=v=>clamp(v,0,100);
+  const rate=(p,ref)=>p?clamp100(sum(p)/elapsed*90/ref*100):null;
+  const weighted=items=>{
+    const ok=items.filter(([v])=>v!==null&&Number.isFinite(v));
+    const w=ok.reduce((a,[,weight])=>a+weight,0);
+    return w?ok.reduce((a,[v,weight])=>a+v*weight,0)/w:null;
+  };
+  // Tempo is a match-average ESTIMATE, not a verified recent 5/10-minute trend.
+  // Verified recent tempo can be added only when event timestamps exist.
+  const tempo=weighted([[rate(shots,22),.38],[rate(sot,8),.42],[rate(corners,10),.20]]);
+  const pressure=weighted([[rate(shots,22),.29],[rate(sot,8),.36],
+    [rate(corners,10),.12],[rate(inside,12),.13],[rate(chances,4),.10]]);
+  const shotQuality=shots&&sot&&sum(shots)>0
+    ?clamp100((sum(sot)/sum(shots))/.42*100):null;
+  const quality=weighted([[shotQuality,.35],[rate(chances,4),.28],
+    [rate(xg,2.8),.25],[rate(inside,12),.12]]);
+  const lead=Math.abs(Number(homeScore)-Number(awayScore));
+  const remaining=Math.max(0,95-elapsed);
+  // Time is a soft penalty, not an automatic rejection of late chances.
+  const timeFactor=remaining<=3?.70:remaining<=6?.78:remaining<=10?.85:remaining<=15?.92:1;
+  const stateFactor=lead>=4?.78:lead===3?.85:lead===2?.93:lead===0?1.03:1;
+  const redFactor=red&&sum(red)>0?1.04:1;
+  const possessionBalance=poss?clamp100(50+Math.abs(poss[0]-poss[1])*.5):null;
+  const liveMomentum=momentum?.available&&Number.isFinite(Number(momentum.score))
+    ?clamp100(Number(momentum.score)):null;
+  const core=weighted([[pressure,.47],[quality,.35],[tempo,.12],
+    [liveMomentum,.04],[possessionBalance,.02]]);
+  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3-advanced',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor,0,95));
+  const groups=[shots,sot,corners,chances,inside,xg,poss,red].filter(Boolean).length;
+  return {...(v2||{}),efficiency,model:'rule-v3-advanced',
+    dataStatus:'OK',v3Components:{
+      pressure:pressure===null?null:round1(pressure),
+      quality:quality===null?null:round1(quality),
+      tempo:tempo===null?null:round1(tempo),
+      tempoLevel:tempo===null?'UNKNOWN':tempo>=70?'HIGH':tempo>=40?'MEDIUM':'LOW',
+      tempoEvidence:'ESTIMATED_MATCH_AVERAGE',
+      timeFactor,stateFactor,redFactor,availableGroups:groups
+    }};
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
   // AI Goal V2 is informational only. Current LIVE data is sufficient;

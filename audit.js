@@ -170,22 +170,87 @@ async function fetchLiveFootballFT(r,key){
  }
  return null;
 }
+// FT discovery: batch by date, match provider-native IDs first, then strict name/time matching.
+const ftDateCache=new Map();
+function normTeam(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\b(fc|cf|sc|ac|club|football|the|u\d{2})\b/g,'').replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');}
+function ftMatchCandidate(r,home,away,kickoff){
+ const h=normTeam(home),a=normTeam(away),rh=normTeam(r.home),ra=normTeam(r.away);
+ if(!h||!a||!rh||!ra)return false;
+ const similar=(x,y)=>x===y || (x.length>=6&&y.length>=6&&(x.startsWith(y)||y.startsWith(x)));
+ if(!similar(h,rh)||!similar(a,ra))return false;
+ const t=Date.parse(kickoff||'');const rt=pendingMatchDate(r)?.getTime();
+ // No kickoff saved in legacy Audit: restrict to adjacent UTC days, never swap home/away.
+ return !Number.isFinite(t)||!Number.isFinite(rt)||Math.abs(t-rt)<=36*3600000;
+}
+function dateCandidates(r){const d=pendingMatchDate(r);return d?[-1,0,1].map(n=>new Date(d.getTime()+n*86400000).toISOString().slice(0,10)):[];}
+function apiFT(row){
+ const st=row?.fixture?.status?.short;
+ if(!['FT','AET','PEN'].includes(st))return null;
+ const score=row.score?.fulltime;
+ const h=score?.home,a=score?.away;
+ return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a,source:'apisports'}:null;
+}
+async function fetchApiDate(date){
+ const key=(process.env.APISPORTS_KEY||'').trim();if(!key)return [];
+ const cacheKey='api:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<120000)return c.rows;
+ try{const {data}=await axios.get('https://v3.football.api-sports.io/fixtures',{params:{date},headers:{'x-apisports-key':key},timeout:12000});
+ const rows=Array.isArray(data?.response)?data.response:[];ftDateCache.set(cacheKey,{rows,time:Date.now()});return rows;
+ }catch(e){console.warn('[FT API DATE]',date,e.response?.status||e.message);return [];}
+}
+async function fetchFlashDate(date,key){
+ const template=(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE||'').trim();if(!template||!key)return [];
+ const cacheKey='flash:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<120000)return c.rows;
+ try{const url=template.replace(/\{date\}/g,encodeURIComponent(date));const host=new URL(url).hostname;
+ const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':host},timeout:12000});
+ const raw=Array.isArray(data)?data:Array.isArray(data?.matches)?data.matches:Array.isArray(data?.data?.matches)?data.data.matches:[];
+ const rows=raw.flatMap(x=>Array.isArray(x?.matches)?x.matches:[x]);ftDateCache.set(cacheKey,{rows,time:Date.now()});return rows;
+ }catch(e){console.warn('[FT FLASH DATE]',date,e.response?.status||e.message);return [];}
+}
+function flashFT(m){
+ const status=String(m?.match_status?.status||m?.match_status?.name||m?.status?.short||m?.status||'').toUpperCase().trim();
+ if(!['FT','FULL TIME','FULLTIME','AET','PEN','FINISHED'].includes(status))return null;
+ const hs=m?.home_team?.score??m?.home?.score??m?.home_score;
+ const as=m?.away_team?.score??m?.away?.score??m?.away_score;
+ const h=Number(hs),a=Number(as);
+ return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a,source:'flashscore'}:null;
+}
 async function reconcile(){
  if(checking)return;checking=true;
- try{await init();const key=process.env.RAPIDAPI_KEY;if(!key && !process.env.APISPORTS_KEY)return;
+ try{
+  await init();const rapidKey=process.env.RAPIDAPI_KEY;
+  if(!rapidKey&&!process.env.APISPORTS_KEY)return;
   const now=Date.now();const pending=[...new Map(records.filter(r=>r.ftHome==null).map(r=>[r.matchKey,r])).values()]
-   .filter(r=>now-(lastFTCheck.get(r.matchKey)||0)>=FT_RETRY_MS).slice(0,FT_MAX_PER_CYCLE);
-  for(const r of pending){lastFTCheck.set(r.matchKey,Date.now());
-   const ids=r.sourceIds||{};const sofa=ids.sofascore||(r.source==='sofascore'?r.sourceId:null);
-   const fotmob=ids.fotmob||(r.source==='fotmob'?r.sourceId:null);
-   let ft=await fetchLiveFootballFT(r,key);
-   if(!ft&&sofa&&key&&/^\d+$/.test(String(sofa)))ft=await fetchSofaFT(sofa,key);
-   if(!ft&&fotmob&&key&&/^\d+$/.test(String(fotmob)))ft=await fetchFotmobFT(fotmob,key);
-    const apiId=ids.apisports||(r.source==='apisports'?r.sourceId:null);
-    if(!ft&&apiId)ft=await fetchApiSportsFT(apiId);
-   if(ft){const n=await settleMatch(r.matchKey,ft.h,ft.a);console.log(`[AUDIT FT] ${r.home} ${ft.h}-${ft.a} ${r.away} | updated ${n}`);}
-   else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | not confirmed finished`);
+    .filter(r=>now-(lastFTCheck.get(r.matchKey)||0)>=FT_RETRY_MS).slice(0,FT_MAX_PER_CYCLE);
+  if(!pending.length)return;
+  for(const r of pending)lastFTCheck.set(r.matchKey,now);
+  const dates=[...new Set(pending.flatMap(dateCandidates))];
+  const [lfPairs,apiPairs,flashPairs]=await Promise.all([
+   rapidKey?Promise.all(dates.map(async d=>[d,await fetchLiveFootballByDate(d.replace(/-/g,''),rapidKey)])):Promise.resolve([]),
+   process.env.APISPORTS_KEY?Promise.all(dates.map(async d=>[d,await fetchApiDate(d)])):Promise.resolve([]),
+   rapidKey&&process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?Promise.all(dates.map(async d=>[d,await fetchFlashDate(d,rapidKey)])):Promise.resolve([])
+  ]);
+  const lf=lfPairs.flatMap(x=>x[1]),api=apiPairs.flatMap(x=>x[1]),flash=flashPairs.flatMap(x=>x[1]);
+  console.log(`[FT BATCH] pending=${pending.length} dates=${dates.length} liveFootball=${lfPairs.length} apiSports=${apiPairs.length} flashScore=${flashPairs.length}`);
+  for(const r of pending){
+   const ids={...(r.sourceIds||{})};if(r.source&&r.sourceId&&!ids[r.source])ids[r.source]=String(r.sourceId);
+   const candidates=[];
+   const lfRow=lf.find(x=>String(x.id)===String(ids['live-football']||'') || ftMatchCandidate(r,x.home?.name,x.away?.name,x.status?.utcTime||x.utcTime));
+   if(lfRow){const ft=parseLiveFootballDateFT(lfRow);if(ft)candidates.push({...ft,source:'live-football'});if(!ids['live-football'])ids['live-football']=String(lfRow.id);}
+   const apiRow=api.find(x=>String(x.fixture?.id)===String(ids.apisports||'') || ftMatchCandidate(r,x.teams?.home?.name,x.teams?.away?.name,x.fixture?.date));
+   if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}
+   const flashRow=flash.find(x=>String(x.match_id||x.id)===String(ids.flashscore||'') || ftMatchCandidate(r,x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name,x.start_time||x.utcTime));
+   if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}
+   // ID lookups are a fallback when the date-index does not contain the fixture.
+   if(!candidates.length&&ids.apisports){const ft=await fetchApiSportsFT(ids.apisports);if(ft)candidates.push({...ft,source:'apisports'});}
+   if(!candidates.length&&ids.sofascore&&rapidKey){const ft=await fetchSofaFT(ids.sofascore,rapidKey);if(ft)candidates.push({...ft,source:'sofascore'});}
+   if(!candidates.length&&ids.fotmob&&rapidKey){const ft=await fetchFotmobFT(ids.fotmob,rapidKey);if(ft)candidates.push({...ft,source:'fotmob'});}
+   // Persist discovered cross-source IDs, even when still pending.
+   if(Object.keys(ids).some(k=>String(ids[k])!==String(r.sourceIds?.[k]||''))){for(const rec of records.filter(x=>x.matchKey===r.matchKey)){await save({...rec,sourceIds:{...rec.sourceIds,...ids}});}}
+   const distinct=new Set(candidates.map(x=>`${x.h}-${x.a}`));
+   if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${candidates.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
+   if(candidates.length){const ft=candidates[0],n=await settleMatch(r.matchKey,ft.h,ft.a);console.log(`[AUDIT FT] CONFIRMED | ${r.home} ${ft.h}-${ft.a} ${r.away} | ${ft.source} | updated ${n}`);}
+   else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | NOT_CONFIRMED`);
   }
- }catch(e){console.error('[AUDIT FT]',e.message);}finally{checking=false;}
+ }catch(e){console.error('[AUDIT FT]',e.stack||e.message);}finally{checking=false;}
 }
 module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates};
