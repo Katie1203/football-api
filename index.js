@@ -155,7 +155,8 @@ async function hydrateAlertState() {
       alertCount:Number(r.alertNumber), lastPercentage:Number(r.rule)||0,
       lastMinute:Number(r.minute)||0, bigBetSent:r.alertType==='BIG BET',
       alertSnapshot:null, updatedAt:Date.parse(r.createdAt) || Date.now(),
-      homeName:r.home, awayName:r.away, league:r.league
+      homeName:r.home, awayName:r.away, league:r.league,
+      source:r.source, sourceId:String(r.sourceId || '')
     });
   }
   auditHydrated = true;
@@ -167,6 +168,51 @@ const statsCache = new Map();
 
 // Lưu snapshot để tính Momentum
 const snapshotState = new Map();
+// Dynamic windows: keep snapshots even when DA/ATT are unavailable.
+const pressureHistory = new Map();
+const postGoalState = new Map();
+const PRESSURE_HISTORY_MAX = 40;
+function pressureDelta(a,b,field) {
+  if (!a || !b) return null;
+  const keys=['home'+field,'away'+field];
+  if (!keys.every(k=>a._present?.[k]===true && b._present?.[k]===true)) return null;
+  const n=keys.reduce((v,k)=>v+Number(b[k])-Number(a[k]),0);
+  return Number.isFinite(n)&&n>=0?n:null;
+}
+function getPressureWindow(key,stats,minute,homeScore,awayScore) {
+  const now=makeMatchSnapshot(stats,minute,homeScore,awayScore);
+  const history=pressureHistory.get(key)||[];
+  const last=history[history.length-1];
+  // Do not mix resets, backwards minutes or changing source-provenance.
+  const sourceTag=JSON.stringify(stats?.fieldSources||stats?._fieldSources||{});
+  if (last && (minute<last.minute || (last.sourceTag && sourceTag!==last.sourceTag))) history.length=0;
+  if (!history.length || minute>history[history.length-1].minute) history.push({...now,sourceTag});
+  else if (minute===history[history.length-1].minute) history[history.length-1]={...now,sourceTag};
+  while(history.length>PRESSURE_HISTORY_MAX)history.shift();
+  pressureHistory.set(key,history);
+  const window=(size)=>{
+    const older=[...history].reverse().find(x=>x.minute<=minute-size);
+    if(!older)return {available:false,reason:'NEED_HISTORY'};
+    const fields=['TotalShots','ShotsOnTarget','Corners','BigChances'];
+    const delta=Object.fromEntries(fields.map(f=>[f,pressureDelta(older,now,f)]));
+    const count=Object.values(delta).filter(v=>v!==null).length;
+    return {available:count>=2,minutes:minute-older.minute,delta,count};
+  };
+  return {five:window(5),ten:window(10),current:now,history};
+}
+function pressureEvidence(window) {
+  if(!window?.available)return false;
+  const d=window.delta||{};
+  return (d.ShotsOnTarget??0)>=1 || ((d.TotalShots??0)>=2 && ((d.Corners??0)>=1 || (d.BigChances??0)>=1));
+}
+function pressureStrength(w) {
+  if(!w?.available)return null;
+  const d=w.delta||{};
+  const duration=Math.max(1,w.minutes||5);
+  const five=5/duration;
+  return clamp(100*five*((d.TotalShots??0)/7+(d.ShotsOnTarget??0)/3+(d.Corners??0)/5+(d.BigChances??0)/2)/4,0,100);
+}
+
 
 let scanRunning = false;
 
@@ -201,6 +247,8 @@ function cleanupState() {
   }
 
 
+  for(const [id,arr] of pressureHistory.entries()) if(!arr.length || now-(arr[arr.length-1].time||0)>ALERT_STATE_TTL)pressureHistory.delete(id);
+  for(const [id,state] of postGoalState.entries())if(now-(state.updatedAt||0)>ALERT_STATE_TTL)postGoalState.delete(id);
   for (const [id, state] of statsCache.entries()) {
 
     if (
@@ -3491,6 +3539,7 @@ function createSnapshot(stats, minute) {
     awayCorners:
       stats.awayCorners,
     homeTotalShots: stats.homeTotalShots, awayTotalShots: stats.awayTotalShots,
+    homeBigChances:stats.homeBigChances, awayBigChances:stats.awayBigChances,
     homeRedCards: stats.homeRedCards, awayRedCards: stats.awayRedCards,
     _present: {...(stats._present || {})}
   };
@@ -5050,37 +5099,32 @@ function calculateTimeScore(
 
 // V3: independent scoring; V2 is retained ONLY for comparison.
 // Scores are heuristic signals, not calibrated probabilities.
-function evaluateRuleV3(stats, momentum, minute, homeScore, awayScore, v2) {
-  const rate = (field, target) => {
-    const keys=['home'+field,'away'+field];
-    if (!keys.some(k=>stats?._present?.[k]===true)) return null;
-    const total=keys.reduce((n,k)=>n+(stats._present?.[k]===true ? Number(stats[k])||0 : 0),0);
-    return clamp(total / Math.max(1,minute) * 90 / target * 100,0,100);
-  };
-  const avg = pairs => {const valid=pairs.filter(([v])=>v!==null && Number.isFinite(v)); const weight=valid.reduce((n,[,w])=>n+w,0);return weight ? valid.reduce((n,[v,w])=>n+v*w,0)/weight:null;};
-  const quality=avg([[rate('ExpectedGoals',1.8),.30],[rate('BigChances',3),.25],[rate('ShotsOnTarget',6),.25],[rate('ShotsInsideBox',9),.20]]);
-  const pressure=avg([[rate('DangerousAttacks',55),.35],[rate('Attacks',100),.20],[rate('TotalShots',18),.30],[rate('Corners',9),.15]]);
-  const momentumValue=momentum?.available ? clamp(Number(momentum.score)||0,0,100):null;
+function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
+  const recent5=pressureStrength(windows?.five), recent10=pressureStrength(windows?.ten);
+  // No recent evidence => do not grant high Rule scores from lifetime totals.
+  if(recent5===null || recent10===null) return {...v2,efficiency:0,model:'rule-v3-dynamic-pending',v3Components:{recent5,recent10}};
   const scoreGap=Math.abs(Number(homeScore)-Number(awayScore));
-  const state=scoreGap===0 ? 65 : scoreGap===1 ? 70 : 45;
-  // Time is a declining opportunity window, not a bonus for late minutes.
-  const time=clamp((95-minute)/35*100,0,100);
-  const parts=[[quality,.30],[momentumValue,.25],[pressure,.20],[state,.15],[time,.10]];
-  const value=avg(parts);
-  const efficiency=round1(clamp(value===null?0:value,0,95));
-  return {...v2,efficiency,v3Components:{quality,momentum:momentumValue,pressure,state,time},model:'rule-v3-shadow-v2'};
+  const gameState=scoreGap===0?65:scoreGap===1?60:40;
+  const time=clamp((95-minute)/30*100,0,100);
+  const d=windows.five.delta||{};
+  const quality=clamp(20*(d.ShotsOnTarget??0)+25*(d.BigChances??0)+5*(d.TotalShots??0),0,100);
+  const base=clamp((Number(stats?.homeShotsOnTarget||0)+Number(stats?.awayShotsOnTarget||0))/12*100,0,100);
+  const efficiency=round1(clamp(recent5*.35+recent10*.25+quality*.20+time*.15+gameState*.03+base*.02,0,95));
+  return {...v2,efficiency,model:'rule-v3-dynamic-v1',v3Components:{recent5,recent10,quality,time,gameState,base}};
 }
-function estimateRemainingGoalProbability(stats, momentum, minute, homeScore, awayScore) {
-  // Provisional Poisson baseline. Not trained/calibrated: NEVER used as an alert gate.
-  const sot=['home','away'].filter(x=>stats?._present?.[x+'ShotsOnTarget']===true)
-    .reduce((n,x)=>n+Number(stats[x+'ShotsOnTarget']||0),0);
-  const observed=['home','away'].some(x=>stats?._present?.[x+'ShotsOnTarget']===true);
-  if (!observed) return {percent:null,label:'Thiếu SOT, chưa thể ước lượng',calibrated:false};
+function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
+  // Experimental, uncalibrated probability; informational only.
+  if(!windows?.five?.available || !windows?.ten?.available) return {percent:null,label:'Chưa đủ snapshot 5–10 phút',calibrated:false};
+  const d=windows.ten.delta||{};
+  const duration=Math.max(1,windows.ten.minutes||10);
+  const sotRate=(d.ShotsOnTarget??0)/duration;
+  const shotsRate=(d.TotalShots??0)/duration;
+  const chanceRate=(d.BigChances??0)/duration;
   const remaining=Math.max(0,95-minute);
-  const sotRate=sot/Math.max(15,minute);
-  const momentumFactor=momentum?.available ? clamp(0.65+Number(momentum.score)/100,0.65,1.65):1;
-  const lambda=clamp((remaining/90)*(1.8+6*sotRate)*momentumFactor,0,3);
-  return {percent:round1((1-Math.exp(-lambda))*100),lambda:round1(lambda),label:'Ước lượng thử nghiệm, chưa hiệu chuẩn',calibrated:false};
+  const gap=Math.abs(Number(homeScore)-Number(awayScore));
+  const state=gap>=3?.72:gap===0?1.08:1;
+  const lambda=clamp(remaining*(.012+.06*sotRate+.018*shotsRate+.10*chanceRate)*state,0,4);
+  return {percent:round1((1-Math.exp(-lambda))*100),lambda:round1(lambda),label:'AI Goal V2 động (chưa hiệu chuẩn)',calibrated:false};
 }
 
 function evaluateMatchDynamicAI(
@@ -6756,6 +6800,7 @@ async function sendTelegramAlert(
 
         alertSnapshot: makeMatchSnapshot(item.stats, item.minute, item.homeScore, item.awayScore),
         homeName:item.homeName, awayName:item.awayName, league:item.league,
+        source:item.source, sourceId:String(item.id || ''),
         updatedAt:
           Date.now()
       }
@@ -7142,12 +7187,23 @@ async function analyzeOneMatch(
     prior.homeName && prior.awayName &&
     resolverTeamScore(prior.homeName, match.homeName) >= .90 &&
     resolverTeamScore(prior.awayName, match.awayName) >= .90 &&
-    (!prior.league || !match.league ||
-      String(prior.league).toLowerCase() === String(match.league).toLowerCase())
+    // League labels can change after cross-provider resolution. They are NOT identity.
+    // Limit name-based reuse to active match state to avoid confusing future rematches.
+    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL
   );
-  const alertKey = alertState.has(canonicalAlertKey)
-    ? canonicalAlertKey
-    : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
+  const sourceIdMatches = [...alertState.entries()].filter(([, prior]) =>
+    prior.source === match.source && prior.sourceId &&
+    String(prior.sourceId) === String(match.id) &&
+    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL
+  );
+  const alertKey = sourceIdMatches.length === 1
+    ? sourceIdMatches[0][0]
+    : alertState.has(canonicalAlertKey)
+      ? canonicalAlertKey
+      : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
+  if (alertKey !== canonicalAlertKey) {
+    console.log(`[ALERT DEDUP] ${match.homeName} vs ${match.awayName} | reused=${alertKey} | canonical=${canonicalAlertKey} | league=${match.league}`);
+  }
 
 
   const momentum =
@@ -7200,9 +7256,19 @@ async function analyzeOneMatch(
   // AI RULE
   // ======================================================
 
+  const windows=getPressureWindow(alertKey,stats,minute,match.homeScore,match.awayScore);
+  const lastGoal=postGoalState.get(alertKey);
+  const currentTotal=Number(match.homeScore)+Number(match.awayScore);
+  if(lastGoal && currentTotal>lastGoal.total && minute>=lastGoal.minute) {
+    postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current});
+    console.log(`[POST GOAL] ${match.homeName} vs ${match.awayName} | detected at ${minute}' | follow 10m`);
+  } else if (!lastGoal) {
+    postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current,unverified:true});
+  }
+  const postGoal=postGoalState.get(alertKey);
   const ruleV2 = evaluateMatchDynamicAI(stats, odds, momentum, minute, match.homeScore, match.awayScore);
-  const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, ruleV2);
-  const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore);
+  const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, ruleV2, windows);
+  const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows);
 
 
 
@@ -7237,6 +7303,20 @@ async function analyzeOneMatch(
       match.awayScore
     );
 
+
+  // After a verified score change, require fresh post-goal evidence before first alert.
+  if (!alertState.has(alertKey) && postGoal && !postGoal.unverified && minute-postGoal.minute<=10) {
+    const delta={};
+    for(const f of ['TotalShots','ShotsOnTarget','Corners','BigChances'])delta[f]=pressureDelta(postGoal.baseline,windows.current,f);
+    const postWindow={available:Object.values(delta).filter(v=>v!==null).length>=2,delta};
+    if(!pressureEvidence(postWindow)) {
+      alertDecision.send=false;alertDecision.reason='POST_GOAL_WAIT_FRESH_PRESSURE';
+    }
+  }
+  // Prevent lifetime accumulated shots from authorizing a first alert.
+  if (!alertState.has(alertKey) && !pressureEvidence(windows.five) && !pressureEvidence(windows.ten)) {
+    alertDecision.send=false;alertDecision.reason='NO_VERIFIED_RECENT_PRESSURE';
+  }
 
   const compactGoalTimeline =
     extractGoalTimeline(
