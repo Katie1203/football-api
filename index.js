@@ -47,6 +47,7 @@ const ODDS_REGION = process.env.ODDS_REGION || 'eu';
 const ODDS_MAX_SPORTS = Math.max(1, Math.min(40, Number(process.env.ODDS_MAX_SPORTS || 16)));
 const ODDS_SPORT_KEYS = (process.env.ODDS_SPORT_KEYS || '').split(',').map(x => x.trim()).filter(Boolean);
 let oddsSportsCache = {time: 0, keys: []};
+const oddsSportFailures = new Map(); // Per-sport temporary failure cache
 
 // API-Football direct provider (not RapidAPI). Set APISPORTS_KEY in Render.
 const APISPORTS_KEY = (process.env.APISPORTS_KEY || '').trim();
@@ -2998,8 +2999,15 @@ async function fetchMatchDetailStats(
     match.awayName
   );
 
-  const cacheKey =
-    `cross:${resolverAliasTokens(match.homeName).join('')}:${resolverAliasTokens(match.awayName).join('')}:${matchKey || `${match.source}:${match.id}`}`;
+  // Cross-provider aliases must share a cache key. The previous suffix
+  // `matchKey` used raw provider names and defeated alias-based reuse.
+  // Scope by fixture date (when kickoff is known) to avoid cross-day reuse.
+  const kickoffRaw=match.kickoff ?? match.startTime ?? match.startTimestamp ?? match.raw?.startTimestamp ?? match.raw?.startTime;
+  const kickoffNum=Number(kickoffRaw);
+  const kickoffMs=kickoffRaw==null?NaN:Number.isFinite(kickoffNum)&&kickoffNum>1e9
+    ? (kickoffNum<1e12?kickoffNum*1000:kickoffNum):Date.parse(kickoffRaw);
+  const fixtureDay=Number.isFinite(kickoffMs)?new Date(kickoffMs).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
+  const cacheKey = `cross:${fixtureDay}:${resolverAliasTokens(match.homeName).join('')}:${resolverAliasTokens(match.awayName).join('')}`;
 
   const cached = statsCache.get(cacheKey);
 
@@ -4231,7 +4239,10 @@ async function fetchAllLiveOdds() {
     }
   }
   // Keep the request budget bounded. Set ODDS_SPORT_KEYS for leagues you need.
-  const selected = keys.slice(0, ODDS_MAX_SPORTS);
+  const nowOdds=Date.now();
+  const selected = keys.filter(key => (oddsSportFailures.get(key)?.until||0) <= nowOdds).slice(0, ODDS_MAX_SPORTS);
+  const skipped=keys.filter(key => (oddsSportFailures.get(key)?.until||0)>nowOdds).length;
+  if(skipped) console.log(`[Odds API] cachedFailedSports=${skipped}`);
   const results = await Promise.allSettled(selected.map(async key => {
     const r = await axios.get(`${ODDS_BASE_URL}/sports/${encodeURIComponent(key)}/odds/`, {
       timeout: 12000,
@@ -4242,10 +4253,13 @@ async function fetchAllLiveOdds() {
   const data = [];
   let ok = 0, failed = 0;
   results.forEach((r, i) => {
-    if (r.status === 'fulfilled') {ok++; data.push(...r.value.events);}
+    if (r.status === 'fulfilled') {ok++; oddsSportFailures.delete(selected[i]); data.push(...r.value.events);}
     else {
       failed++;
       const e = r.reason;
+      const status=Number(e.response?.status||0);
+      const wait=status===429?15*60*1000:[400,401,403,404,422].includes(status)?60*60*1000:3*60*1000;
+      oddsSportFailures.set(selected[i],{until:Date.now()+wait,status});
       console.log(`[Odds API] ${selected[i]} HTTP ${e.response?.status || 'network'}: ${String(e.response?.data?.message || e.message).slice(0, 140)}`);
     }
   });
@@ -7193,6 +7207,11 @@ function resolverTokens(name) {
 }
 // Provider spelling aliases. Apply only to matching, never overwrite display names.
 const RESOLVER_TEAM_ALIASES = [
+  // CAHN is also called Cong An Nhan Dan by some live-data providers.
+  // This alias only participates in fixture matching; opponent/clock/score/kickoff are still checked.
+  [/\b(?:cong\s+an\s+(?:ha\s+noi|nhan\s+dan)|cahn)\b/g, 'cong an ha noi'],
+  // Shortened provider name for Kashima Antlers.
+  [/\bkashima(?:\s+antlers)?\b/g, 'kashima antlers'],
   // Hapoel Jerusalem FC is also known as Hapoel Katamon (same senior club).
   [/\bhapoel\s+(?:jerusalem|katamon)(?:\s+fc)?\b/g, 'hapoel jerusalem'],
   [/\bpakhtakor\b(?:\s+tashkent)?/g, 'pakhtakor'],
@@ -7250,6 +7269,16 @@ function resolverSameMatch(a, b) {
   if (ac && bc && ac !== bc && ac.length > 2 && bc.length > 2 && !([ac,bc].includes('rou') && [ac,bc].some(x=>x.includes('romania')))) return false;
   const am = Number(a.minute), bm = Number(b.minute);
   if (Number.isFinite(am) && Number.isFinite(bm) && am > 0 && bm > 0 && Math.abs(am-bm)>15) return false;
+  // Never merge distinct fixtures when both providers supply valid kickoffs.
+  const kickoffMs = m => {
+    const v=m.kickoff ?? m.startTime ?? m.startTimestamp ?? m.raw?.startTimestamp ?? m.raw?.startTime;
+    if (v == null || v === '') return null;
+    const n=Number(v);
+    const t=Number.isFinite(n)&&n>1e9?(n<1e12?n*1000:n):Date.parse(v);
+    return Number.isFinite(t)?t:null;
+  };
+  const ak=kickoffMs(a), bk=kickoffMs(b);
+  if (ak!==null && bk!==null && Math.abs(ak-bk)>30*60*1000) return false;
   // LIVE scores can temporarily differ between providers. Only tolerate a one-goal
   // difference when both teams match almost exactly and the clocks are close.
   const values=[a.homeScore,b.homeScore,a.awayScore,b.awayScore];

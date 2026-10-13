@@ -207,6 +207,24 @@ async function fetchFlashDate(date,key){
  const rows=raw.flatMap(x=>Array.isArray(x?.matches)?x.matches:[x]);ftDateCache.set(cacheKey,{rows,time:Date.now()});return rows;
  }catch(e){console.warn('[FT FLASH DATE]',date,e.response?.status||e.message);return [];}
 }
+// Direct native-ID lookup. Never infer FT from a score without final status.
+const flashIdCache=new Map();
+async function fetchFlashById(id,key){
+ if(!id||!key)return {row:null,reason:'FLASHSCORE_ID_OR_KEY_MISSING'};
+ const cached=flashIdCache.get(String(id));
+ if(cached&&Date.now()-cached.time<600000)return cached.result;
+ const host='flashscore4.p.rapidapi.com';
+ const url=`https://${host}/api/flashscore/v2/matches/match/summary`;
+ try{
+  const {data}=await axios.get(url,{params:{match_id:id},headers:{'x-rapidapi-key':key,'x-rapidapi-host':host},timeout:10000});
+  const row=data?.response?.match||data?.response?.summary||data?.response||data?.data?.match||data?.data||data;
+  const result={row,reason:'FLASHSCORE_ID_STATUS_NOT_FINAL_OR_SCHEMA_UNKNOWN'};
+  flashIdCache.set(String(id),{time:Date.now(),result});return result;
+ }catch(e){
+  const reason=`FLASHSCORE_ID_HTTP_${e.response?.status||'NETWORK'}`;
+  const result={row:null,reason};flashIdCache.set(String(id),{time:Date.now(),result});return result;
+ }
+}
 function flashFT(m){
  const status=String(m?.match_status?.status||m?.match_status?.name||m?.status?.short||m?.status||'').toUpperCase().trim();
  if(!['FT','FULL TIME','FULLTIME','AET','PEN','FINISHED'].includes(status))return null;
@@ -242,6 +260,12 @@ async function reconcile(){
    if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);else ftReasons.push('APISPORTS_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}else ftReasons.push('APISPORTS_NOT_FOUND');
    const flashRow=flash.find(x=>String(x.match_id||x.id)===String(ids.flashscore||'') || ftMatchCandidate(r,x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name,x.start_time||x.utcTime));
    if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);else ftReasons.push('FLASHSCORE_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}else ftReasons.push(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?'FLASHSCORE_NOT_FOUND':'FLASHSCORE_DATE_ENDPOINT_UNCONFIGURED');
+   if(!candidates.length&&ids.flashscore&&rapidKey){
+    const result=await fetchFlashById(ids.flashscore,rapidKey);
+    const ft=flashFT(result.row);
+    if(ft)candidates.push(ft);
+    else ftReasons.push(result.reason);
+   }
    // ID lookups are a fallback when the date-index does not contain the fixture.
    if(!candidates.length&&ids.apisports){const ft=await fetchApiSportsFT(ids.apisports);if(ft)candidates.push({...ft,source:'apisports'});}
    if(!candidates.length&&ids.sofascore&&rapidKey){const ft=await fetchSofaFT(ids.sofascore,rapidKey);if(ft)candidates.push({...ft,source:'sofascore'});}
