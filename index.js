@@ -5242,11 +5242,8 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
     [pace(xg,3.1),.27],[pace(inside,14),.13]]);
   const tempoEvidence='ESTIMATED_MATCH_AVERAGE';
   const tempoLevel=tempo===null?'UNKNOWN':tempo>=75?'HIGH':tempo>=48?'MEDIUM':'LOW';
-  const home=Number(homeScore),away=Number(awayScore);
-  const lead=Number.isFinite(home)&&Number.isFinite(away)?Math.abs(home-away):0;
   const remaining=Math.max(0,95-elapsed);
   const timeFactor=Math.max(.55,Math.min(1,Math.pow(remaining/30,.55)));
-  const stateFactor=lead>=4?.72:lead===3?.81:lead===2?.89:lead===0?1:.97;
   const redFactor=1; // A red card alone is not positive goal evidence.
   const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
   const core=weighted([[pressure,.54],[quality,.39],[tempo,.04],[possessionBalance,.03]]);
@@ -5258,12 +5255,11 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   // Penalize unverified current momentum; no extra snapshot polling required.
   // Cumulative data may still be used, but must not masquerade as a recent surge.
   const recentEvidenceFactor=.92;
-  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor*evidenceFactor*qualityFactor*recentEvidenceFactor,0,95));
+  const efficiency=round1(clamp(core*timeFactor*redFactor*evidenceFactor*qualityFactor*recentEvidenceFactor,0,95));
   return {...(v2||{}),efficiency,model:'rule-v3.1-evidence',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'MATCH_AVERAGE_ONLY',
-    timeFactor:Math.round(timeFactor*1000)/1000,stateFactor,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
-    gameState:lead===0?'DRAW':lead===1?'ONE_GOAL_GAP':lead===2?'TWO_GOAL_GAP':'LARGE_GAP',
+    timeFactor:Math.round(timeFactor*1000)/1000,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
     reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
     pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
@@ -5276,11 +5272,9 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
 function evaluateRuleV3Legacy(v2,minute,homeScore,awayScore){
   const base=Number(v2?.efficiency);
   if(v2?.efficiency==null||!Number.isFinite(base))return null;
-  const gap=Math.abs(Number(homeScore)-Number(awayScore));
   const remaining=Math.max(0,95-Number(minute));
   const lateFactor=remaining<=5?.68:remaining<=10?.78:remaining<=20?.9:1;
-  const gapFactor=gap>=4?.76:gap===3?.84:gap===2?.93:1;
-  return round1(clamp(base*lateFactor*gapFactor,0,95));
+  return round1(clamp(base*lateFactor,0,95));
 }
 // Display-only diagnostics: never used to gate alerts.
 function formatV3Advanced(ai, stats, minute) {
@@ -5289,7 +5283,7 @@ function formatV3Advanced(ai, stats, minute) {
   const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
   const available=(field)=>['home','away'].every(side=>stats?._present?.[side+field]===true);
   const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!available(f));
-  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (ESTIMATED match-average) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Time x${fmt(c.timeFactor)} (~${c.remainingMinutesEstimate}m) | 5.State ${c.gameState} x${fmt(c.stateFactor)} Red x${fmt(c.redFactor)} | 6.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Missing ${missing.join(',')||'none'}`;
+  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (ESTIMATED match-average) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Time x${fmt(c.timeFactor)} (~${c.remainingMinutesEstimate}m) | 5.Red x${fmt(c.redFactor)} | 6.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Missing ${missing.join(',')||'none'}`;
 }
 function v3TelegramDetail(ai,stats,minute){
   const c=ai?.v3Components;
@@ -5299,12 +5293,12 @@ function v3TelegramDetail(ai,stats,minute){
   return [
     `🧩 V3 Advanced: Tempo ${c.tempoLevel} (${fmt(c.tempo)}, ước lượng TB trận)`,
     `🔥 Pressure ${fmt(c.pressure)} | 🎯 Quality ${fmt(c.quality)}`,
-    `⏱ Time x${fmt(c.timeFactor)} | ⚽ Game State x${fmt(c.stateFactor)} | 🟥 Red x${fmt(c.redFactor)}`,
+    `⏱ Time x${fmt(c.timeFactor)} | 🟥 Red x${fmt(c.redFactor)}`,
     `📡 Data Reliability: ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 nhóm | Thiếu: ${missing.join(', ')||'không'}` ,
     `🔎 SOT/Shots ${fmt(c.shotAccuracyPercent)}% | Evidence x${fmt(c.evidenceFactor)} | Quality adjustment x${fmt(c.qualityFactor)}`
   ].join('\n');
 }
-function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows) {
+function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows,ruleV3) {
   // AI Goal V2 is informational only. Current LIVE data is sufficient;
   // snapshot history is NOT a prerequisite for this estimate.
   const present=stats?._present||{};
@@ -5334,14 +5328,30 @@ function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awaySc
   if(shots) rate+=0.035*sum(shots)/elapsed;
   if(chances) rate+=0.15*sum(chances)/elapsed;
   if(corners) rate+=0.012*sum(corners)/elapsed;
+  // V3-AWARE: Rule V3 is a read-only signal; never changes Rule or alert gating.
+  // Keep baseline AI Goal intensity and add a bounded, smooth Rule adjustment.
   const gap=Math.abs(Number(homeScore)-Number(awayScore));
   const gameState=gap>=4?0.72:gap===3?0.82:gap===0?1.06:1;
   const redFactor=reds&&sum(reds)>0?1.07:1;
-  const lambda=clamp(remaining*rate*gameState*redFactor,0,4);
+  const baseLambda=clamp(remaining*rate*gameState*redFactor,0,4);
+  const ruleScore=ruleV3?.efficiency==null?null:Number(ruleV3.efficiency);
+  const validRule=Number.isFinite(ruleScore)&&ruleScore>=0&&ruleScore<=100;
+  // Smooth multiplier: Rule 70 is neutral; 0..100 maps to ~0.75..1.19.
+  const ruleMultiplier=validRule?clamp(Math.exp((ruleScore-70)*0.003),0.75,1.20):1;
+  // Only verified recent snapshots can affect momentum. Avoid duplicating the
+  // cumulative shot/SOT signal already present in both baseline and Rule V3.
+  const verifiedMomentum=momentum?.available===true&&Number.isFinite(Number(momentum.score));
+  const momentumMultiplier=verifiedMomentum?clamp(Math.exp((Number(momentum.score)-50)*0.002),0.90,1.10):1;
+  const lambda=clamp(baseLambda*ruleMultiplier*momentumMultiplier,0,4);
   const available=[sot,shots,corners,chances,reds,poss].filter(Boolean).length;
-  return {percent:round1((1-Math.exp(-lambda))*100),lambda:round1(lambda),
-    label:`AI Goal V2 LIVE (${available}/6 nhóm, thử nghiệm chưa hiệu chuẩn)`,
-    calibrated:false,source:'current-live',availableGroups:available};
+  const percent=round1((1-Math.exp(-lambda))*100);
+  const baselinePercent=round1((1-Math.exp(-baseLambda))*100);
+  const divergence=validRule?round1(ruleScore-percent):null;
+  return {percent,lambda:round1(lambda),baselinePercent,ruleScore:validRule?ruleScore:null,
+    ruleMultiplier:round1(ruleMultiplier),momentumMultiplier:round1(momentumMultiplier),
+    divergence,divergenceFlag:validRule&&Math.abs(divergence)>=25,
+    label:`AI Goal V3-Aware (${available}/6 nhóm, thử nghiệm chưa hiệu chuẩn)`,
+    calibrated:false,source:'current-live-v3-aware',availableGroups:available};
 }
 
 function evaluateMatchDynamicAI(
@@ -7564,7 +7574,8 @@ async function analyzeOneMatch(
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, ruleV2, windows);
   const ruleV3Legacy = evaluateRuleV3Legacy(ruleV2, minute, match.homeScore, match.awayScore);
   const ruleV3Delta = ai.efficiency==null||ruleV3Legacy==null?null:round1(ai.efficiency-ruleV3Legacy);
-  const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows);
+  const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
+  if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
 
 
 
