@@ -2910,11 +2910,15 @@ function mergeMissingStats(target, source) {
 // Deduplicate concurrent requests for the SAME provider-native match ID.
 // Keep providers independent; never reuse IDs between providers.
 const providerStatsRequests = new Map();
+const providerStatsCounters = {network:0, reused:0, skippedUnavailable:0};
+// Avoid retrying a provider that has no useful stats for the same native fixture every scan.
+// This is a per-provider negative cache, NOT a quota circuit breaker.
+const EMPTY_PROVIDER_CACHE_MS = 10 * 60 * 1000;
 const PROVIDER_STATS_CACHE_MS = STATS_CACHE_TTL;
 function providerStatsCacheCleanup() {
   const now = Date.now();
   for (const [key, value] of providerStatsRequests) {
-    if (now - value.time > PROVIDER_STATS_CACHE_MS) providerStatsRequests.delete(key);
+    if (now - value.time > (value.empty ? EMPTY_PROVIDER_CACHE_MS : PROVIDER_STATS_CACHE_MS)) providerStatsRequests.delete(key);
   }
 }
 async function fetchStatsForSourceMatch(sourceMatch) {
@@ -2922,17 +2926,21 @@ async function fetchStatsForSourceMatch(sourceMatch) {
   providerStatsCacheCleanup();
   const requestKey = `${sourceMatch.source}:${String(sourceMatch.id)}`;
   const hit = providerStatsRequests.get(requestKey);
-  if (hit) {
+  if (hit && (Date.now()-hit.time < (hit.empty ? EMPTY_PROVIDER_CACHE_MS : PROVIDER_STATS_CACHE_MS))) {
+    providerStatsCounters.reused++;
+    if(hit.empty) providerStatsCounters.skippedUnavailable++;
     console.log(`[API DEDUP] REUSE ${requestKey} | ${hit.promise ? 'IN_FLIGHT' : 'CACHE'}`);
     return hit.promise || hit.data;
   }
-  const entry = {time:Date.now(),promise:null,data:null};
+  const entry = {time:Date.now(),promise:null,data:null,empty:false};
+  providerStatsCounters.network++;
   const promise = fetchStatsForSourceMatchUncached(sourceMatch);
   entry.promise = promise;
   providerStatsRequests.set(requestKey,entry);
   try {
     const data = await promise;
     entry.data=data;
+    entry.empty = getCoreStatsCoverage(data)===0 && !data?.hasData;
     entry.promise=null;
     entry.time=Date.now();
     return data;
@@ -3021,6 +3029,11 @@ async function fetchMatchDetailStats(
       continue;
     }
 
+    const clockA=Number(match.minute),clockB=Number(sourceMatch.minute);
+    if(Number.isFinite(clockA)&&Number.isFinite(clockB)&&clockA>0&&clockB>0&&Math.abs(clockA-clockB)>3){
+      console.log(`[STATS FRESHNESS] SKIP_RAW ${sourceMatch.source}:${sourceMatch.id} | minuteDelta=${Math.abs(clockA-clockB)}`);
+      continue;
+    }
     const rawStats = parseStatsFromRawMatch(sourceMatch.raw);
     mergeMissingStats(stats, rawStats);
   }
@@ -3049,6 +3062,11 @@ async function fetchMatchDetailStats(
         break;
       }
 
+      const clockA=Number(match.minute),clockB=Number(sourceMatch.minute);
+      if(Number.isFinite(clockA)&&Number.isFinite(clockB)&&clockA>0&&clockB>0&&Math.abs(clockA-clockB)>3){
+        console.log(`[STATS FRESHNESS] SKIP_DETAIL ${sourceMatch.source}:${sourceMatch.id} | minuteDelta=${Math.abs(clockA-clockB)}`);
+        continue;
+      }
       const extraStats =
         await fetchStatsForSourceMatch(sourceMatch);
 
@@ -5144,8 +5162,8 @@ function calculateTimeScore(
 // V3: independent scoring; V2 is retained ONLY for comparison.
 // Scores are heuristic signals, not calibrated probabilities.
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
-  // V3 Advanced v2: de-saturate cumulative stats and make recent tempo honest.
-  // Historical post-goal snapshots and Rule V2 are never required by this model.
+  // V3.1: conservative LIVE evidence scoring. This is NOT a calibrated goal probability.
+  // Historical post-goal snapshots remain independent and are never required here.
   const present=stats?._present||{};
   const pair=f=>{
     const h='home'+f,a='away'+f;
@@ -5165,51 +5183,53 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
     label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
   if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {...(v2||{}),efficiency:null,model:'rule-v3-advanced-v2',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  // Smooth, saturating response: 100 is asymptotic, never reached by finite stats.
-  // Targets represent illustrative match-average reference rates, NOT fitted goal probabilities.
-  const smooth=(value,target)=>value===null?null:round1(100*(1-Math.exp(-Math.max(0,value)/target)));
-  const pace=(p,per90)=>p?smooth(sum(p)*90/elapsed,per90):null;
+    return {...(v2||{}),efficiency:null,model:'rule-v3.1-evidence',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  // Monotonic non-clipping scale: no cumulative stat can alone produce 100 points.
+  // Constants are heuristic reference rates, not trained or calibrated parameters.
+  const soft=(value,reference)=>value===null?null:100*Math.max(0,value)/(Math.max(0,value)+reference*.48);
+  const pace=(p,per90)=>p?soft(sum(p)*90/elapsed,per90):null;
   const weighted=items=>{
     const valid=items.filter(([v])=>v!==null&&Number.isFinite(v));
     const w=valid.reduce((n,[,weight])=>n+weight,0);
     return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
   };
-  const sotRatio=shots&&sot&&sum(shots)>0?sum(sot)/sum(shots):null;
-  const shotQuality=sotRatio===null?null:round1(100*Math.min(1,sotRatio/.48));
-  const tempo=weighted([[pace(shots,22),.38],[pace(sot,8),.42],[pace(corners,10),.20]]);
-  const pressure=weighted([[pace(shots,23),.25],[pace(sot,9),.43],
-    [pace(corners,11),.10],[pace(inside,13),.12],[pace(chances,4.5),.10]]);
-  const quality=weighted([[shotQuality,.30],[pace(chances,4.5),.25],
-    [pace(xg,3.0),.28],[pace(inside,13),.17]]);
-  // Avoid assuming match-average tempo proves a current attacking surge.
+  const sotRatio=shots&&sot&&sum(shots)>0?Math.min(1,sum(sot)/sum(shots)):null;
+  // Shot accuracy must be supported by SOT volume; ratio alone is unreliable.
+  const shotQuality=sotRatio===null?null:100*(sotRatio/(sotRatio+.34))*(sum(sot)/(sum(sot)+3))*1.5;
+  const tempo=weighted([[pace(shots,23),.35],[pace(sot,9),.50],[pace(corners,11),.15]]);
+  const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
+    [pace(corners,12),.09],[pace(inside,14),.13],[pace(chances,5),.10]]);
+  const quality=weighted([[shotQuality,.38],[pace(chances,5),.22],
+    [pace(xg,3.1),.27],[pace(inside,14),.13]]);
   const tempoEvidence='ESTIMATED_MATCH_AVERAGE';
-  const tempoLevel=tempo===null?'UNKNOWN':tempo>=70?'HIGH':tempo>=40?'MEDIUM':'LOW';
-  const lead=Math.abs(Number(homeScore)-Number(awayScore));
+  const tempoLevel=tempo===null?'UNKNOWN':tempo>=75?'HIGH':tempo>=48?'MEDIUM':'LOW';
+  const home=Number(homeScore),away=Number(awayScore);
+  const lead=Number.isFinite(home)&&Number.isFinite(away)?Math.abs(home-away):0;
   const remaining=Math.max(0,95-elapsed);
-  // A gentle continuous time adjustment, including minutes 65-80.
-  const timeFactor=round1(Math.max(.55,Math.min(1.0,Math.pow(remaining/30,.36)))*100)/100;
-  const stateFactor=lead>=4?.78:lead===3?.84:lead===2?.91:lead===0?1.0:.98;
-  // A red card is contextual; do not award an unconditional goal bonus.
-  const redFactor=1;
-  const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.4):null;
-  // SOT volume and quality are more informative than raw shots alone.
-  const core=weighted([[pressure,.52],[quality,.39],[tempo,.06],[possessionBalance,.03]]);
-  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3-advanced-v2',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  // Soft confidence adjustment for absent primary evidence, not a Rule Confidence gate.
+  const timeFactor=Math.max(.55,Math.min(1,Math.pow(remaining/30,.55)));
+  const stateFactor=lead>=4?.72:lead===3?.81:lead===2?.89:lead===0?1:.97;
+  const redFactor=1; // A red card alone is not positive goal evidence.
+  const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
+  const core=weighted([[pressure,.54],[quality,.39],[tempo,.04],[possessionBalance,.03]]);
+  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3.1-evidence',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   const primaryCount=[shots,sot].filter(Boolean).length;
-  const evidenceFactor=primaryCount===2?1:primaryCount===1?.89:.75;
-  const qualityFactor=(shots&&sot&&sum(shots)>=8&&sotRatio!==null&&sotRatio<.22)?.88:1;
-  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor*evidenceFactor*qualityFactor,0,95));
-  return {...(v2||{}),efficiency,model:'rule-v3-advanced-v2',dataStatus:'OK',v3Components:{
+  const evidenceFactor=primaryCount===2?1:primaryCount===1?.82:.68;
+  const qualityFactor=shots&&sot&&sum(shots)>=8&&sotRatio!==null
+    ?(sotRatio<.18?.78:sotRatio<.26?.89:1):1;
+  // Penalize unverified current momentum; no extra snapshot polling required.
+  // Cumulative data may still be used, but must not masquerade as a recent surge.
+  const recentEvidenceFactor=.92;
+  const efficiency=round1(clamp(core*timeFactor*stateFactor*redFactor*evidenceFactor*qualityFactor*recentEvidenceFactor,0,95));
+  return {...(v2||{}),efficiency,model:'rule-v3.1-evidence',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'MATCH_AVERAGE_ONLY',
-    timeFactor,stateFactor,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
+    timeFactor:Math.round(timeFactor*1000)/1000,stateFactor,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
     gameState:lead===0?'DRAW':lead===1?'ONE_GOAL_GAP':lead===2?'TWO_GOAL_GAP':'LARGE_GAP',
-    reliability,evidenceFactor,qualityFactor,shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
-    pressureMethod:'SMOOTH_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
-    qualityMethod:'SOT_RATIO_BIG_CHANCES_XG_BOX',
-    modelVersion:'ADVANCED_ANTI_SATURATION_V2'
+    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,
+    shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
+    pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
+    qualityMethod:'VOLUME_ADJUSTED_SOT_RATIO_BIG_CHANCES_XG_BOX',
+    modelVersion:'V3_1_CONSERVATIVE_UNVERIFIED_TEMPO'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
@@ -7857,7 +7877,7 @@ async function scanLiveMatches() {
     console.log(
       '--------------- TOP RULE ---------------'
     );
-    console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount}`);
+    console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailRequests=${providerStatsCounters.network} | reused=${providerStatsCounters.reused} | emptyReused=${providerStatsCounters.skippedUnavailable}`);
 
 
     for (
