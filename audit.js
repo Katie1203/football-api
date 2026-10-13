@@ -34,7 +34,7 @@ function captureSpike(spike){if(!spike)return null;
  return {confirmed:spike.confirmed===true,score:safeNum(spike.score),groups:safeNum(spike.groups),cornerDensity:safeNum(spike.cornerDensity),reason:String(spike.reason||''),signals:spike.signals&&typeof spike.signals==='object'?{
  finishing:spike.signals.finishing===true,corners:spike.signals.corners===true,pressure:spike.signals.pressure===true,cards:spike.signals.cards===true}:null};
 }
-async function addAlert(item,number,messageId){const id=`${item.alertKey}|${number}|${messageId}`;const rec=scoreResults({id,matchKey:item.alertKey,source:item.source||'',sourceId:String(item.id||''),sourceIds:{...(item.sourceIds||{}),...((item.source && item.id)?{[item.source]:String(item.id)}:{})},home:item.homeName,away:item.awayName,league:item.league,alertNumber:number,alertType:item.alertDecision?.bigBet?'BIG BET':'ALERT',minute:Number(item.minute),homeScore:Number(item.homeScore),awayScore:Number(item.awayScore),rule:safeNum(item.ai?.efficiency),ruleV2:safeNum(item.ruleV2?.efficiency),ruleV3Legacy:item.ruleV3Legacy==null?null:safeNum(item.ruleV3Legacy),ruleV3Delta:item.ruleV3Delta==null?null:safeNum(item.ruleV3Delta),v3Components:item.ai?.v3Components?JSON.parse(JSON.stringify(item.ai.v3Components)):null,aiGoalProbability:item.aiGoal?.percent==null?null:safeNum(item.aiGoal.percent),aiGoalCalibrated:false,momentum:safeNum(item.momentum?.score),ruleConfidence:captureConfidence(item.ruleConfidence),spike:captureSpike(item.alertDecision?.spike),alertReason:String(item.alertDecision?.reason||""),liveStats:captureLiveStats(item.stats),overLine:item.odds?.found?safeNum(item.odds.point):null,overPrice:item.odds?.found?safeNum(item.odds.price):null,telegramMessageId:messageId,createdAt:new Date().toISOString(),ftHome:null,ftAway:null,settledAt:null});await save(rec);return rec;}
+async function addAlert(item,number,messageId){const id=`${item.alertKey}|${number}|${messageId}`;const rec=scoreResults({id,matchKey:item.alertKey,source:item.source||'',sourceId:String(item.id||''),sourceIds:{...(item.sourceIds||{}),...((item.source && item.id)?{[item.source]:String(item.id)}:{})},home:item.homeName,away:item.awayName,league:item.league,kickoffUTC:(()=>{const raw=item.kickoffUTC||item.kickoff||item.startTime||item.raw?.fixture?.date||item.raw?.startTime||item.raw?.startTimestamp;const n=typeof raw==='number'?(raw<1e12?raw*1000:raw):raw;const d=new Date(n);return raw&&Number.isFinite(d.getTime())?d.toISOString():null;})(),alertNumber:number,alertType:item.alertDecision?.bigBet?'BIG BET':'ALERT',minute:Number(item.minute),homeScore:Number(item.homeScore),awayScore:Number(item.awayScore),rule:safeNum(item.ai?.efficiency),ruleV2:safeNum(item.ruleV2?.efficiency),ruleV3Legacy:item.ruleV3Legacy==null?null:safeNum(item.ruleV3Legacy),ruleV3Delta:item.ruleV3Delta==null?null:safeNum(item.ruleV3Delta),v3Components:item.ai?.v3Components?JSON.parse(JSON.stringify(item.ai.v3Components)):null,aiGoalProbability:item.aiGoal?.percent==null?null:safeNum(item.aiGoal.percent),aiGoalCalibrated:false,momentum:safeNum(item.momentum?.score),ruleConfidence:captureConfidence(item.ruleConfidence),spike:captureSpike(item.alertDecision?.spike),alertReason:String(item.alertDecision?.reason||""),liveStats:captureLiveStats(item.stats),overLine:item.odds?.found?safeNum(item.odds.point):null,overPrice:item.odds?.found?safeNum(item.odds.price):null,telegramMessageId:messageId,createdAt:new Date().toISOString(),ftHome:null,ftAway:null,settledAt:null});await save(rec);return rec;}
 async function settleMatch(matchKey,h,a){await init();if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0)throw Error('FT must be nonnegative integers');let count=0;for(const r of records.filter(x=>x.matchKey===matchKey&&x.ftHome==null)){const next=scoreResults({...r,ftHome:h,ftAway:a,settledAt:new Date().toISOString()});await save(next);count++;}return count;}
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
 function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
@@ -147,7 +147,7 @@ async function fetchLiveFootballByDate(date,key){
  if(!template||!key)return [];
  const cacheKey=date;
  const cached=lfDateCache.get(cacheKey);
- if(cached&&Date.now()-cached.time<120000)return cached.matches;
+ if(cached&&Date.now()-cached.time<600000)return cached.matches;
  const url=template.replace(/\{date\}/g,encodeURIComponent(date));
  try{
   const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':LF_HOST},timeout:10000});
@@ -178,9 +178,10 @@ function ftMatchCandidate(r,home,away,kickoff){
  if(!h||!a||!rh||!ra)return false;
  const similar=(x,y)=>x===y || (x.length>=6&&y.length>=6&&(x.startsWith(y)||y.startsWith(x)));
  if(!similar(h,rh)||!similar(a,ra))return false;
- const t=Date.parse(kickoff||'');const rt=pendingMatchDate(r)?.getTime();
- // No kickoff saved in legacy Audit: restrict to adjacent UTC days, never swap home/away.
- return !Number.isFinite(t)||!Number.isFinite(rt)||Math.abs(t-rt)<=36*3600000;
+ const t=Date.parse(kickoff||'');const rt=r.kickoffUTC?Date.parse(r.kickoffUTC):NaN;
+ // Without a verified kickoff, only accept strong exact normalized names on the alert UTC date.
+ if(!Number.isFinite(rt))return h===rh&&a===ra&&Number.isFinite(t)&&Math.abs(t-Date.parse(r.createdAt||''))<=24*3600000;
+ return Number.isFinite(t)&&Math.abs(t-rt)<=3*3600000;
 }
 function dateCandidates(r){const d=pendingMatchDate(r);return d?[-1,0,1].map(n=>new Date(d.getTime()+n*86400000).toISOString().slice(0,10)):[];}
 function apiFT(row){
@@ -192,14 +193,14 @@ function apiFT(row){
 }
 async function fetchApiDate(date){
  const key=(process.env.APISPORTS_KEY||'').trim();if(!key)return [];
- const cacheKey='api:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<120000)return c.rows;
+ const cacheKey='api:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<600000)return c.rows;
  try{const {data}=await axios.get('https://v3.football.api-sports.io/fixtures',{params:{date},headers:{'x-apisports-key':key},timeout:12000});
  const rows=Array.isArray(data?.response)?data.response:[];ftDateCache.set(cacheKey,{rows,time:Date.now()});return rows;
  }catch(e){console.warn('[FT API DATE]',date,e.response?.status||e.message);return [];}
 }
 async function fetchFlashDate(date,key){
  const template=(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE||'').trim();if(!template||!key)return [];
- const cacheKey='flash:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<120000)return c.rows;
+ const cacheKey='flash:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<600000)return c.rows;
  try{const url=template.replace(/\{date\}/g,encodeURIComponent(date));const host=new URL(url).hostname;
  const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':host},timeout:12000});
  const raw=Array.isArray(data)?data:Array.isArray(data?.matches)?data.matches:Array.isArray(data?.data?.matches)?data.data.matches:[];
@@ -234,12 +235,13 @@ async function reconcile(){
   for(const r of pending){
    const ids={...(r.sourceIds||{})};if(r.source&&r.sourceId&&!ids[r.source])ids[r.source]=String(r.sourceId);
    const candidates=[];
+   const ftReasons=[];
    const lfRow=lf.find(x=>String(x.id)===String(ids['live-football']||'') || ftMatchCandidate(r,x.home?.name,x.away?.name,x.status?.utcTime||x.utcTime));
-   if(lfRow){const ft=parseLiveFootballDateFT(lfRow);if(ft)candidates.push({...ft,source:'live-football'});if(!ids['live-football'])ids['live-football']=String(lfRow.id);}
+   if(lfRow){const ft=parseLiveFootballDateFT(lfRow);if(ft)candidates.push({...ft,source:'live-football'});else ftReasons.push('LIVEFOOTBALL_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids['live-football'])ids['live-football']=String(lfRow.id);}else ftReasons.push('LIVEFOOTBALL_NOT_FOUND');
    const apiRow=api.find(x=>String(x.fixture?.id)===String(ids.apisports||'') || ftMatchCandidate(r,x.teams?.home?.name,x.teams?.away?.name,x.fixture?.date));
-   if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}
+   if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);else ftReasons.push('APISPORTS_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}else ftReasons.push('APISPORTS_NOT_FOUND');
    const flashRow=flash.find(x=>String(x.match_id||x.id)===String(ids.flashscore||'') || ftMatchCandidate(r,x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name,x.start_time||x.utcTime));
-   if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}
+   if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);else ftReasons.push('FLASHSCORE_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}else ftReasons.push(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?'FLASHSCORE_NOT_FOUND':'FLASHSCORE_DATE_ENDPOINT_UNCONFIGURED');
    // ID lookups are a fallback when the date-index does not contain the fixture.
    if(!candidates.length&&ids.apisports){const ft=await fetchApiSportsFT(ids.apisports);if(ft)candidates.push({...ft,source:'apisports'});}
    if(!candidates.length&&ids.sofascore&&rapidKey){const ft=await fetchSofaFT(ids.sofascore,rapidKey);if(ft)candidates.push({...ft,source:'sofascore'});}
@@ -249,7 +251,7 @@ async function reconcile(){
    const distinct=new Set(candidates.map(x=>`${x.h}-${x.a}`));
    if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${candidates.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
    if(candidates.length){const ft=candidates[0],n=await settleMatch(r.matchKey,ft.h,ft.a);console.log(`[AUDIT FT] CONFIRMED | ${r.home} ${ft.h}-${ft.a} ${r.away} | ${ft.source} | updated ${n}`);}
-   else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | NOT_CONFIRMED`);
+   else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | reason=${ftReasons.join(',')} | kickoff=${r.kickoffUTC||'UNKNOWN'} | no confirmed FT`);
   }
  }catch(e){console.error('[AUDIT FT]',e.stack||e.message);}finally{checking=false;}
 }

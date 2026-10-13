@@ -3,6 +3,11 @@ const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
 
+// Count actual outgoing HTTP calls (not merely detail resolver attempts).
+const httpMetrics={networkCalls:0,cacheHits:0,fallbackCalls:0,failedCalls:0,bySource:{}};
+function metricSource(url){try{const h=new URL(url).hostname;return h.includes('api-sports')?'apisports':h.includes('sofascore')?'sofascore':h.includes('flashscore')?'flashscore':h.includes('live-football')?'live-football':h.includes('fotmob')?'fotmob':h.includes('odds')?'odds':h.includes('telegram')?'telegram':'other';}catch{return 'other';}}
+axios.interceptors.request.use(config=>{const source=metricSource(axios.getUri(config));config._promaxMetricSource=source;httpMetrics.networkCalls++;(httpMetrics.bySource[source]??={networkCalls:0,failedCalls:0}).networkCalls++;return config;});
+axios.interceptors.response.use(r=>r,e=>{if(e.config?._promaxMetricSource){httpMetrics.failedCalls++;httpMetrics.bySource[e.config._promaxMetricSource].failedCalls++;}return Promise.reject(e);});
 const app = express();
 const PORT = process.env.PORT || 10000;
 app.use(express.json());
@@ -2914,6 +2919,11 @@ const providerStatsCounters = {network:0, reused:0, skippedUnavailable:0};
 // Avoid retrying a provider that has no useful stats for the same native fixture every scan.
 // This is a per-provider negative cache, NOT a quota circuit breaker.
 const EMPTY_PROVIDER_CACHE_MS = 10 * 60 * 1000;
+// Capability observations never block a provider from supplying missing CORE stats.
+// Only suppress optional-only retries when provider repeatedly lacks those fields.
+const providerOptionalUnsupported=new Map();
+const OPTIONAL_RECHECK_MS=30*60*1000;
+
 const PROVIDER_STATS_CACHE_MS = STATS_CACHE_TTL;
 function providerStatsCacheCleanup() {
   const now = Date.now();
@@ -2928,6 +2938,7 @@ async function fetchStatsForSourceMatch(sourceMatch) {
   const hit = providerStatsRequests.get(requestKey);
   if (hit && (Date.now()-hit.time < (hit.empty ? EMPTY_PROVIDER_CACHE_MS : PROVIDER_STATS_CACHE_MS))) {
     providerStatsCounters.reused++;
+    httpMetrics.cacheHits++;
     if(hit.empty) providerStatsCounters.skippedUnavailable++;
     console.log(`[API DEDUP] REUSE ${requestKey} | ${hit.promise ? 'IN_FLIGHT' : 'CACHE'}`);
     return hit.promise || hit.data;
@@ -3067,8 +3078,22 @@ async function fetchMatchDetailStats(
         console.log(`[STATS FRESHNESS] SKIP_DETAIL ${sourceMatch.source}:${sourceMatch.id} | minuteDelta=${Math.abs(clockA-clockB)}`);
         continue;
       }
+      const outstanding=missingFields();
+      const coreMissing=outstanding.some(f=>['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'].includes(f));
+      const nativeKey=`${sourceMatch.source}:${String(sourceMatch.id)}`;
+      const optionalNegative=providerOptionalUnsupported.get(nativeKey);
+      if(!coreMissing && optionalNegative && Date.now()-optionalNegative<OPTIONAL_RECHECK_MS){
+        console.log(`[API CAPABILITY] SKIP_OPTIONAL ${nativeKey} | cached missing ATT/DA`);
+        httpMetrics.cacheHits++;
+        continue;
+      }
+      httpMetrics.fallbackCalls++;
       const extraStats =
         await fetchStatsForSourceMatch(sourceMatch);
+      if(!coreMissing && !['Attacks','DangerousAttacks'].some(f=>['home','away'].every(side=>extraStats?._present?.[side+f]===true))){
+        providerOptionalUnsupported.set(nativeKey,Date.now());
+      } else if (coreMissing && getCoreStatsCoverage(extraStats)>0){providerOptionalUnsupported.delete(nativeKey);}
+
 
       const before = missingFields();
       mergeMissingStats(stats, extraStats);
@@ -7877,7 +7902,8 @@ async function scanLiveMatches() {
     console.log(
       '--------------- TOP RULE ---------------'
     );
-    console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailRequests=${providerStatsCounters.network} | reused=${providerStatsCounters.reused} | emptyReused=${providerStatsCounters.skippedUnavailable}`);
+    console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailAttemptsLifetime=${providerStatsCounters.network} | reusedLifetime=${providerStatsCounters.reused} | emptyReusedLifetime=${providerStatsCounters.skippedUnavailable}`);
+    console.log(`[API REQUEST METRICS] networkCalls=${httpMetrics.networkCalls} | cacheHits=${httpMetrics.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls} | failedCalls=${httpMetrics.failedCalls} | scope=PROCESS_LIFETIME | bySource=${JSON.stringify(httpMetrics.bySource)}`);
 
 
     for (
