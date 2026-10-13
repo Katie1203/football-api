@@ -5198,10 +5198,10 @@ function calculateTimeScore(
 //
 // ==========================================================
 
-// V3: independent scoring; V2 is retained ONLY for comparison.
+// V3: sole Rule scoring engine; legacy V2 is not evaluated.
 // Scores are heuristic signals, not calibrated probabilities.
-function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
-  // V3.1: conservative LIVE evidence scoring. This is NOT a calibrated goal probability.
+function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
+  // V3.4: LIVE evidence scoring. This is NOT a calibrated goal probability.
   // Historical post-goal snapshots remain independent and are never required here.
   const present=stats?._present||{};
   const pair=f=>{
@@ -5222,7 +5222,7 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
     label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
   if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {...(v2||{}),efficiency:null,model:'rule-v3.1-evidence',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+    return {efficiency:null,model:'rule-v3.4-coverage-neutral',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   // Monotonic non-clipping scale: no cumulative stat can alone produce 100 points.
   // Constants are heuristic reference rates, not trained or calibrated parameters.
   const soft=(value,reference)=>value===null?null:100*Math.max(0,value)/(Math.max(0,value)+reference*.48);
@@ -5234,7 +5234,8 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   };
   const sotRatio=shots&&sot&&sum(shots)>0?Math.min(1,sum(sot)/sum(shots)):null;
   // Shot accuracy must be supported by SOT volume; ratio alone is unreliable.
-  const shotQuality=sotRatio===null?null:100*(sotRatio/(sotRatio+.34))*(sum(sot)/(sum(sot)+3))*1.5;
+  // Confidence-aware shot accuracy: reward accuracy only when supported by real SOT volume.
+  const shotQuality=sotRatio===null?null:Math.min(95,100*(sotRatio/(sotRatio+.34))*(sum(sot)/(sum(sot)+1.8))*1.35);
   const tempo=weighted([[pace(shots,23),.35],[pace(sot,9),.50],[pace(corners,11),.15]]);
   const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
     [pace(corners,12),.09],[pace(inside,14),.13],[pace(chances,5),.10]]);
@@ -5246,36 +5247,36 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,v2,windows) {
   const timeFactor=Math.max(.55,Math.min(1,Math.pow(remaining/30,.55)));
   const redFactor=1; // A red card alone is not positive goal evidence.
   const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
-  const core=weighted([[pressure,.54],[quality,.39],[tempo,.04],[possessionBalance,.03]]);
-  if(core===null)return {...(v2||{}),efficiency:null,model:'rule-v3.1-evidence',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  // Pressure and Tempo share cumulative shot inputs; Tempo is diagnostic, not counted twice.
+  const core=weighted([[pressure,.57],[quality,.40],[possessionBalance,.03]]);
+  if(core===null)return {efficiency:null,model:'rule-v3.4-coverage-neutral',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   const primaryCount=[shots,sot].filter(Boolean).length;
-  const evidenceFactor=primaryCount===2?1:primaryCount===1?.82:.68;
-  const qualityFactor=shots&&sot&&sum(shots)>=8&&sotRatio!==null
-    ?(sotRatio<.18?.78:sotRatio<.26?.89:1):1;
-  // Penalize unverified current momentum; no extra snapshot polling required.
-  // Cumulative data may still be used, but must not masquerade as a recent surge.
-  const recentEvidenceFactor=.92;
-  const efficiency=round1(clamp(core*timeFactor*redFactor*evidenceFactor*qualityFactor*recentEvidenceFactor,0,95));
-  return {...(v2||{}),efficiency,model:'rule-v3.1-evidence',dataStatus:'OK',v3Components:{
+  // Missing data affects confidence, not inferred lack of attacking pressure.
+  const evidenceFactor=1;
+  // Shot accuracy already enters Quality; avoid counting the same weakness twice.
+  const qualityFactor=1;
+  // No blanket penalty for missing recent snapshots. Verified 5–10m momentum can
+  // contribute a bounded, independent signal; BIG BET spike logic is untouched.
+  const recentEvidenceFactor=1;
+  const recent=windows?.ten?.available===true?windows.ten:windows?.five?.available===true?windows.five:null;
+  const momentumVerified=!!recent && momentum?.available===true && Number.isFinite(Number(momentum.score));
+  const momentumScore=momentumVerified?clamp(Number(momentum.score),0,100):null;
+  const momentumContribution=momentumVerified?clamp((momentumScore-50)*0.10,-5,5):0;
+  const efficiency=round1(clamp(core*timeFactor*redFactor*evidenceFactor*qualityFactor+momentumContribution,0,95));
+  return {efficiency,model:'rule-v3.4-coverage-neutral',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'MATCH_AVERAGE_ONLY',
     timeFactor:Math.round(timeFactor*1000)/1000,redFactor,availableGroups:groups,remainingMinutesEstimate:remaining,
-    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,
+    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
     pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
     qualityMethod:'VOLUME_ADJUSTED_SOT_RATIO_BIG_CHANCES_XG_BOX',
-    modelVersion:'V3_1_CONSERVATIVE_UNVERIFIED_TEMPO'
+    modelVersion:'V3_4_COVERAGE_NEUTRAL_GOAL_SIGNAL'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
 // Comparison only; never used for Telegram or BIG BET decisions.
-function evaluateRuleV3Legacy(v2,minute,homeScore,awayScore){
-  const base=Number(v2?.efficiency);
-  if(v2?.efficiency==null||!Number.isFinite(base))return null;
-  const remaining=Math.max(0,95-Number(minute));
-  const lateFactor=remaining<=5?.68:remaining<=10?.78:remaining<=20?.9:1;
-  return round1(clamp(base*lateFactor,0,95));
-}
+
 // Display-only diagnostics: never used to gate alerts.
 function formatV3Advanced(ai, stats, minute) {
   const c=ai?.v3Components;
@@ -5354,431 +5355,7 @@ function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awaySc
     calibrated:false,source:'current-live-v3-aware',availableGroups:available};
 }
 
-function evaluateMatchDynamicAI(
-  stats,
-  oddsAnalysis,
-  momentum,
-  minute,
-  homeScore,
-  awayScore
-) {
 
-  const attackScore =
-    calculateAttackScore(
-      stats,
-      minute
-    );
-
-
-  const dangerousScore =
-    calculateDangerousAttackScore(
-      stats,
-      minute
-    );
-
-
-  const sotScore =
-    calculateSOTScore(
-      stats,
-      minute
-    );
-
-
-  const blockedScore =
-    calculateBlockedScore(
-      stats
-    );
-
-
-  const cornerScore =
-    calculateCornerScore(
-      stats
-    );
-
-
-  const possessionScore =
-    calculatePossessionPressureScore(
-      stats
-    );
-
-
-  const cardScore =
-    calculateCardScore(
-      stats
-    );
-
-
-  const style =
-    calculateMatchStyleScore(
-      stats
-    );
-
-
-  const scoreState =
-    calculateScoreStateScore(
-      homeScore,
-      awayScore,
-      minute
-    );
-
-
-  const timeScore =
-    calculateTimeScore(
-      minute
-    );
-
-
-  // Momentum lần scan đầu chưa có
-  // dùng 50 = trung tính
-  const momentumScore =
-    momentum?.available
-      ? momentum.score
-      : 50;
-
-
-  // Không có odds => trung tính 50
-  const oddsScore =
-    oddsAnalysis?.found
-      ? oddsAnalysis.score
-      : 50;
-
-
-  // ======================================================
-  // WEIGHTED SCORE
-  // ======================================================
-
-  // LIVE-only 0..100 metric normalization; reference rates are configurable heuristics,
-  // NOT empirical goal probabilities. Missing values do not become observed zero.
-  const normRate = (field, reference) => {
-    const hk='home'+field, ak='away'+field;
-    if (!(stats?._present?.[hk] && stats?._present?.[ak])) return null;
-    return clamp((Number(stats[hk])+Number(stats[ak])) / Math.max(1,minute) * 100 / reference * 100,0,100);
-  };
-  const normRatio = (numerator, denominator, reference) => {
-    if (!['home','away'].every(side => stats?._present?.[side+numerator] && stats?._present?.[side+denominator])) return null;
-    const n=Number(stats['home'+numerator])+Number(stats['away'+numerator]);
-    const d=Number(stats['home'+denominator])+Number(stats['away'+denominator]);
-    return d > 0 ? clamp((n/d)/reference*100,0,100) : null;
-  };
-  const weighted = parts => {
-    const valid=parts.filter(([v])=>v !== null && Number.isFinite(v));
-    const w=valid.reduce((sum,[,weight])=>sum+weight,0);
-    return w ? valid.reduce((sum,[v,weight])=>sum+v*weight,0)/w : null;
-  };
-  // Rule: use every available verified field; no 5/5 prerequisite.
-  // Rates use elapsed minutes in the observation window (46 onward).
-  const windowMinutes=Math.max(1,minute-45);
-  const rate=(field,ref)=>{
-    const keys=['home'+field,'away'+field];
-    const observed=keys.filter(k=>stats?._present?.[k]===true && Number.isFinite(Number(stats[k])));
-    if(!observed.length)return null;
-    return clamp(observed.reduce((n,k)=>n+Number(stats[k]),0)/windowMinutes*45/ref*100,0,100);
-  };
-  const possession=(()=>{
-    const keys=['homePossession','awayPossession'].filter(k=>stats?._present?.[k]===true);
-    if(keys.length!==2)return null;
-    return clamp(Math.abs(Number(stats.homePossession)-Number(stats.awayPossession))*1.3+45,0,100);
-  })();
-  // Correlated indicators are grouped before combining group scores.
-  const finishing=weighted([[rate('TotalShots',14),0.32],[rate('ShotsOnTarget',5),0.43],[rate('ShotsOffTarget',7),0.12],[rate('BlockedShots',5),0.13]]);
-  const attack=weighted([[rate('Attacks',65),0.25],[rate('DangerousAttacks',38),0.35],[rate('ShotsInsideBox',7),0.30],[rate('ShotsOutsideBox',7),0.10]]);
-  const chances=weighted([[rate('BigChances',3),0.40],[rate('ExpectedGoals',1.1),0.40],[rate('Corners',7),0.20]]);
-  const discipline=weighted([[rate('RedCards',1),0.65],[rate('YellowCards',5),0.35]]);
-  const groups=[[finishing,0.34],[attack,0.27],[chances,0.20],[possession,0.06],[discipline,0.03],
-    [momentum?.available ? momentumScore:null,0.10]];
-  const evidenceGroups=groups.filter(([v])=>v!==null&&Number.isFinite(v));
-  let finalScore=weighted(evidenceGroups);
-  if(finalScore===null)finalScore=0;
-
-  // ======================================================
-  // EXTRA LOGIC / PENALTIES
-  // ======================================================
-
-  const totals =
-    calculateTotals(
-      stats
-    );
-
-
-  const notes = [];
-
-
-  // Rất ít SOT cuối trận
-  if (
-    minute >= 70 &&
-    stats?._present?.homeShotsOnTarget && stats?._present?.awayShotsOnTarget &&
-    totals.totalShotsOnTarget <= 1
-  ) {
-
-    finalScore -= 8;
-
-    notes.push(
-      '⚠️ SOT quá thấp sau phút 70'
-    );
-  }
-
-
-  // Ít Dangerous Attack
-  if (
-    (stats?._present?.homeDangerousAttacks || stats?._present?.awayDangerousAttacks) &&
-    totals.totalDangerousAttacks > 0 &&
-    totals.totalDangerousAttacks < 30 &&
-    minute >= 65
-  ) {
-
-    finalScore -= 5;
-
-    notes.push(
-      '⚠️ Dangerous Attack thấp'
-    );
-  }
-
-
-  // Momentum cực mạnh
-  if (
-    momentum?.available &&
-    momentum.score >= 85
-  ) {
-
-    finalScore += 4;
-
-    notes.push(
-      '🔥 Momentum cực mạnh'
-    );
-  }
-
-
-  // Nhiều SOT + Dangerous
-  if (
-    stats?._present?.homeShotsOnTarget && stats?._present?.awayShotsOnTarget &&
-    stats?._present?.homeDangerousAttacks && stats?._present?.awayDangerousAttacks &&
-    totals.totalShotsOnTarget >= 8 &&
-    totals.totalDangerousAttacks >= 70
-  ) {
-
-    finalScore += 3;
-
-    notes.push(
-      '🔥 SOT + Dangerous Attack cao'
-    );
-  }
-
-
-  // Đôi công mạnh
-  if (
-    style.type ===
-    'END_TO_END'
-  ) {
-
-    finalScore += 3;
-
-    notes.push(
-      '⚔️ Hai đội đang đôi công'
-    );
-  }
-
-
-  // Một đội ép sân rõ
-  if (
-    style.type ===
-      'HOME_PRESSURE' ||
-    style.type ===
-      'AWAY_PRESSURE'
-  ) {
-
-    finalScore += 2;
-
-    notes.push(
-      '🔥 Có đội ép sân rõ rệt'
-    );
-  }
-
-
-  // Odds rất mạnh
-  if (
-    oddsAnalysis?.found &&
-    oddsAnalysis.score >= 85
-  ) {
-
-    // Odds chỉ tham khảo; không cộng điểm Rule.
-    notes.push(
-      '💰 Kèo Over đang mạnh'
-    );
-  }
-
-
-  // Clamp
-  finalScore =
-    clamp(
-      finalScore,
-      5,
-      95
-    );
-
-
-  finalScore =
-    round1(
-      finalScore
-    );
-
-
-  // ======================================================
-  // LEVEL
-  // ======================================================
-
-  let level =
-    'KHÔNG ĐỦ ĐIỀU KIỆN';
-
-
-  if (
-    finalScore >= 85
-  ) {
-
-    level =
-      '🔥🔥 BIG BET RẤT MẠNH';
-
-  } else if (
-    finalScore >=
-    BIG_BET_PERCENTAGE
-  ) {
-
-    level =
-      '🔥 BIG BET';
-
-  } else if (
-    finalScore >= 68
-  ) {
-
-    level =
-      '⚡ TÍN HIỆU MẠNH';
-
-  } else if (
-    finalScore >=
-    MIN_SEND_PERCENTAGE
-  ) {
-
-    level =
-      '🔔 CÓ TÍN HIỆU';
-  }
-
-
-  // ======================================================
-  // DETAIL TEXT
-  // ======================================================
-
-  const detailLines = [
-
-    `🔥 Dangerous Attack Score: ${round1(dangerousScore)}%`,
-
-    `⚡ Momentum Score: ${round1(momentumScore)}%`,
-
-    `🎯 SOT Score: ${round1(sotScore)}%`,
-
-    `⚔️ Đôi công/Ép sân: ${round1(style.score)}%`,
-
-    `🚀 Attack Score: ${round1(attackScore)}%`,
-
-    `📊 Possession Pressure: ${round1(possessionScore)}%`,
-
-    `🚩 Corner Score: ${round1(cornerScore)}%`,
-
-    `💰 Odds Score: ${round1(oddsScore)}%`
-  ];
-
-
-  if (notes.length) {
-
-    detailLines.push('');
-
-    detailLines.push(
-      ...notes
-    );
-  }
-
-
-  return {
-
-    efficiency:
-      finalScore,
-
-    shouldSend:
-      finalScore >=
-      MIN_SEND_PERCENTAGE,
-
-    isBigBet:
-      finalScore >=
-      BIG_BET_PERCENTAGE,
-
-    level,
-
-    attackScore:
-      round1(attackScore),
-
-    dangerousScore:
-      round1(
-        dangerousScore
-      ),
-
-    momentumScore:
-      round1(
-        momentumScore
-      ),
-
-    sotScore:
-      round1(
-        sotScore
-      ),
-
-    blockedScore:
-      round1(
-        blockedScore
-      ),
-
-    cornerScore:
-      round1(
-        cornerScore
-      ),
-
-    possessionScore:
-      round1(
-        possessionScore
-      ),
-
-    cardScore:
-      round1(
-        cardScore
-      ),
-
-    styleScore:
-      round1(
-        style.score
-      ),
-
-    oddsScore:
-      round1(
-        oddsScore
-      ),
-
-    scoreState:
-      round1(
-        scoreState
-      ),
-
-    timeScore:
-      round1(
-        timeScore
-      ),
-
-    styleType:
-      style.type,
-
-    styleText:
-      style.text,
-
-    detailText:
-      detailLines.join('\n')
-  };
-}
 
 
 // ==========================================================
@@ -6979,11 +6556,7 @@ async function sendTelegramAlert(
     qualityAssessment,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     v3TelegramDetail(item.ai, st, item.minute),
-    (()=>{const old=item.ruleV3Legacy;const delta=item.ruleV3Delta;
-      const oldTxt=old==null?'N/A':Number(old).toFixed(1)+'% ('+(Number(old)>70?'ĐẠT':'KHÔNG ĐẠT')+')';
-      const deltaTxt=delta==null?'N/A':(Number(delta)>0?'+':'')+Number(delta).toFixed(1)+' điểm';
-      return `📊 V3 CŨ: ${oldTxt} | 🚀 V3 ADVANCED: ${percentage.toFixed(1)}% (${percentage>70?'ĐẠT':'KHÔNG ĐẠT'}) | Δ ${deltaTxt}`;})(),
-    `🧠 V2 THAM KHẢO: ${item.ruleV2?.efficiency ?? '—'}% | Chỉ V3 Advanced quyết định Telegram`,
+    `🧠 RULE V3.4: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal (thử nghiệm): ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7570,10 +7143,7 @@ async function analyzeOneMatch(
     postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current,unverified:true});
   }
   const postGoal=postGoalState.get(alertKey);
-  const ruleV2 = evaluateMatchDynamicAI(stats, odds, momentum, minute, match.homeScore, match.awayScore);
-  const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, ruleV2, windows);
-  const ruleV3Legacy = evaluateRuleV3Legacy(ruleV2, minute, match.homeScore, match.awayScore);
-  const ruleV3Delta = ai.efficiency==null||ruleV3Legacy==null?null:round1(ai.efficiency-ruleV3Legacy);
+  const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
   if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
 
@@ -7642,7 +7212,7 @@ async function analyzeOneMatch(
 
 
   console.log(
-    `📊 ATT ${stats._present?.homeAttacks===true?stats.homeAttacks:'N/A'}-${stats._present?.awayAttacks===true?stats.awayAttacks:'N/A'} | DA ${stats._present?.homeDangerousAttacks===true?stats.homeDangerousAttacks:'N/A'}-${stats._present?.awayDangerousAttacks===true?stats.awayDangerousAttacks:'N/A'} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
+    `📊 ATT ${stats._present?.homeAttacks===true?stats.homeAttacks:'N/A'}-${stats._present?.awayAttacks===true?stats.awayAttacks:'N/A'} | DA ${stats._present?.homeDangerousAttacks===true?stats.homeDangerousAttacks:'N/A'}-${stats._present?.awayDangerousAttacks===true?stats.awayDangerousAttacks:'N/A'} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
   );
 
 
@@ -7673,7 +7243,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
      decisionReason.startsWith('MONITORING'));
   const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
-  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | RuleV2 ${ruleV2.efficiency}% | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
+  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
   const result = {
 
     ...match,
@@ -7691,9 +7261,6 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     odds,
 
     ai,
-    ruleV2,
-    ruleV3Legacy,
-    ruleV3Delta,
     aiGoal,
 
     scorePrediction,
