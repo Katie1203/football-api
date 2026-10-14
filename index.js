@@ -1418,7 +1418,7 @@ async function fetchFotMobStats(id) {
 async function fetchLiveFootballDetailStats(eventId) {
   if (!PAID_RAPIDAPI_KEY || !eventId) return createEmptyStats();
   try {
-    const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}/football-get-match-all-stats`, {
+    const response = await axios.get(`https://${LIVE_FOOTBALL_HOST}/football-get-match-event-all-stats`, {
       params: { eventid: eventId },
       headers: { 'x-rapidapi-key': PAID_RAPIDAPI_KEY.trim(), 'x-rapidapi-host': LIVE_FOOTBALL_HOST },
       timeout: 10000
@@ -5232,13 +5232,30 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
     const w=valid.reduce((n,[,weight])=>n+weight,0);
     return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
   };
-  const sotRatio=shots&&sot&&sum(shots)>0?Math.min(1,sum(sot)/sum(shots)):null;
-  // Shot accuracy must be supported by SOT volume; ratio alone is unreliable.
-  // Confidence-aware shot accuracy: reward accuracy only when supported by real SOT volume.
-  const shotQuality=sotRatio===null?null:Math.min(95,100*(sotRatio/(sotRatio+.34))*(sum(sot)/(sum(sot)+1.8))*1.35);
+  // Evidence-based shot quality: evaluate each team's shooting separately.
+  // A strong attacking team must not be diluted by the other team's inaccurate shots.
+  // Never interpret impossible SOT > shots or absent values as good shooting.
+  const shotQualityByTeam=(team)=>{
+    if(!shots||!sot)return null;
+    const attempts=shots[team],onTarget=sot[team];
+    if(attempts<=0||onTarget<0||onTarget>attempts)return null;
+    // Wilson lower bound: prevents a single lucky on-target shot from looking like
+    // sustained high shot accuracy. No bonus/penalty percentages are injected.
+    const n=attempts,k=onTarget,z=1.96,p=k/n;
+    const lower=(p+z*z/(2*n)-z*Math.sqrt((p*(1-p)+z*z/(4*n))/n))/(1+z*z/n);
+    return {accuracy:100*lower,attempts,onTarget};
+  };
+  const hShot=shotQualityByTeam(0),aShot=shotQualityByTeam(1);
+  const shotEvidence=[hShot,aShot].filter(Boolean);
+  const sotRatio=shots&&sot&&sum(shots)>0&&sot.every((v,i)=>v<=shots[i])?sum(sot)/sum(shots):null;
+  // Evidence for either team scoring: use the stronger supported shooting signal.
+  // Wilson confidence bounds are calculated from observed attempts, not arbitrary bonuses.
+  const shotQuality=shotEvidence.length?Math.max(...shotEvidence.map(t=>t.accuracy)):null;
   const tempo=weighted([[pace(shots,23),.35],[pace(sot,9),.50],[pace(corners,11),.15]]);
   const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
     [pace(corners,12),.09],[pace(inside,14),.13],[pace(chances,5),.10]]);
+  // The raw SOT ratio is not used as a second volume score: shot accuracy and
+  // SOT count are distinct evidence, while xG/chances/box shots describe quality.
   const quality=weighted([[shotQuality,.38],[pace(chances,5),.22],
     [pace(xg,3.1),.27],[pace(inside,14),.13]]);
   const tempoEvidence='CUMULATIVE_STAT_SIGNAL';
@@ -5253,29 +5270,22 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const evidenceFactor=1;
   // Shot accuracy already enters Quality; avoid counting the same weakness twice.
   const qualityFactor=1;
-  // V3.4 verified recent pressure: only source-matched, nondecreasing 5/10m snapshots.
-  // Tempo remains AI Goal-only. BIG BET retains its independent spike calculation.
-  const verifiedWindow=windows?.five?.available===true?windows.five:
-    windows?.ten?.available===true?windows.ten:null;
-  const recentStrength=verifiedWindow?pressureStrength(verifiedWindow):null;
-  const momentumVerified=recentStrength!==null&&Number.isFinite(recentStrength);
-  const momentumScore=momentumVerified?round1(recentStrength):null;
-  // No verified history means neutral, never a fabricated boost or penalty.
-  const recentEvidenceFactor=momentumVerified?
-    clamp(1+(recentStrength-50)*0.0016,0.92,1.08):1;
-  const recentEvidenceSource=momentumVerified?
-    (verifiedWindow===windows.five?'VERIFIED_5M':'VERIFIED_10M'):'UNVERIFIED_NEUTRAL';
-  const momentumContribution=round1(core*(recentEvidenceFactor-1));
-  const efficiency=round1(clamp(core*redFactor*evidenceFactor*qualityFactor*recentEvidenceFactor,0,95));
+  // Tempo and Momentum are diagnostic inputs for AI Goal only, NEVER Rule score.
+  // BIG BET keeps its own independent 5–10 minute spike detection.
+  const recentEvidenceFactor=1;
+  const momentumVerified=false;
+  const momentumScore=null;
+  const momentumContribution=0;
+  const efficiency=round1(clamp(core*redFactor*evidenceFactor*qualityFactor,0,95));
   return {efficiency,model:'rule-v3.4-coverage-neutral',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'CUMULATIVE_COUNTS_ONLY',
     redFactor,availableGroups:groups,
-    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,recentEvidenceSource,momentumVerified,momentumScore,momentumContribution,
+    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
     pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
-    qualityMethod:'VOLUME_ADJUSTED_SOT_RATIO_BIG_CHANCES_XG_BOX',
-    modelVersion:'V3_4_COVERAGE_NEUTRAL_GOAL_SIGNAL'
+    qualityMethod:'PER_TEAM_WILSON_SOT_ACCURACY_BIG_CHANCES_XG_BOX',
+    modelVersion:'V3_4_PER_TEAM_SHOT_EVIDENCE_EXPERIMENTAL'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
@@ -5288,7 +5298,7 @@ function formatV3Advanced(ai, stats, minute) {
   const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
   const available=(field)=>['home','away'].every(side=>stats?._present?.[side+field]===true);
   const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!available(f));
-  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (cumulative stats) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Red x${fmt(c.redFactor)} | 5.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Recent ${c.recentEvidenceSource||'N/A'} ${fmt(c.momentumScore)} x${fmt(c.recentEvidenceFactor)} | Missing ${missing.join(',')||'none'}`;
+  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (cumulative stats) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Red x${fmt(c.redFactor)} | 5.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Missing ${missing.join(',')||'none'}`;
 }
 function v3TelegramDetail(ai,stats,minute){
   const c=ai?.v3Components;
@@ -7202,12 +7212,6 @@ async function analyzeOneMatch(
     if(!pressureEvidence(postWindow)) {
       alertDecision.send=false;alertDecision.reason='POST_GOAL_WAIT_FRESH_PRESSURE';
     }
-  }
-
-  // Diagnostic only: retain the original alert decision and post-goal guard.
-  if (!alertDecision.send && ai.efficiency!=null && Number(ai.efficiency)<=MIN_SEND_PERCENTAGE &&
-      alertDecision.reason==='POST_GOAL_WAIT_FRESH_PRESSURE') {
-    console.log(`[ALERT DIAGNOSTIC] ${match.homeName} vs ${match.awayName} | ${minute}' | RULE_BELOW_${MIN_SEND_PERCENTAGE} + POST_GOAL_WAIT_FRESH_PRESSURE | NO_CHANGE_TO_GATE`);
   }
 
   const compactGoalTimeline =
