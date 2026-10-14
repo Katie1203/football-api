@@ -5219,8 +5219,8 @@ function calculateTimeScore(
 // V3: sole Rule scoring engine; legacy V2 is not evaluated.
 // Scores are heuristic signals, not calibrated probabilities.
 function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
-  // V3.4: LIVE evidence scoring. This is NOT a calibrated goal probability.
-  // Historical post-goal snapshots remain independent and are never required here.
+  // Rule V3: only live match statistics. No minute, time remaining, score gap,
+  // arbitrary uplift/penalty, or momentum modifier to the Rule score.
   const present=stats?._present||{};
   const pair=f=>{
     const h='home'+f,a='away'+f;
@@ -5233,74 +5233,68 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const corners=pair('Corners'),chances=pair('BigChances');
   const inside=pair('ShotsInsideBox'),xg=pair('ExpectedGoals');
   const poss=pair('Possession'),red=pair('RedCards');
+  const attacks=pair('Attacks');
   const groups=[shots,sot,corners,chances,inside,xg,poss,red].filter(Boolean).length;
-  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks']
+  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks']
     .filter(f=>!['home','away'].every(side=>present[side+f]===true));
   const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
     label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
   if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {efficiency:null,model:'rule-v3.4-coverage-neutral',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  // Monotonic non-clipping scale: no cumulative stat can alone produce 100 points.
-  // Constants are heuristic reference rates, not trained or calibrated parameters.
+    return {efficiency:null,model:'rule-v3.4-sot-pressure-quality',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  // Existing normalization retained: no invented scoring bonus, fixed uplift or
+  // penalty. Reuse only measured quantities and normalize weights over present data.
   const soft=(value,reference)=>value===null?null:100*Math.max(0,value)/(Math.max(0,value)+reference*.48);
-  // Rule V3 is based on observed statistical counts, never match minute or time remaining.
   const pace=(p,reference)=>p?soft(sum(p),reference):null;
   const weighted=items=>{
     const valid=items.filter(([v])=>v!==null&&Number.isFinite(v));
     const w=valid.reduce((n,[,weight])=>n+weight,0);
     return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
   };
-  // Estimate observed shot accuracy from BOTH teams, rather than selecting
-  // the maximum of two noisy estimates. Selecting the maximum systematically
-  // overstates quality, especially with tiny shot samples.
-  // Wilson lower confidence bound (95%) quantifies observed evidence without
-  // inserting an arbitrary score bonus. Invalid shot/SOT pairs are excluded.
-  const validShooting=shots&&sot&&shots.every((n,i)=>
-    Number.isFinite(n)&&n>=0&&Number.isFinite(sot[i])&&sot[i]>=0&&sot[i]<=n);
-  const attempts=validShooting?sum(shots):0;
-  const onTarget=validShooting?sum(sot):0;
-  const sotRatio=attempts>0?onTarget/attempts:null;
-  const wilsonLower=(k,n)=>{
-    if(!(n>0)||k<0||k>n)return null;
-    const z=1.96,p=k/n,z2=z*z;
-    return 100*(p+z2/(2*n)-z*Math.sqrt((p*(1-p)+z2/(4*n))/n))/(1+z2/n);
-  };
-  const shotQuality=attempts>0?wilsonLower(onTarget,attempts):null;
-  const tempo=weighted([[pace(shots,23),.35],[pace(sot,9),.50],[pace(corners,11),.15]]);
+  // Reject inconsistent SOT>shots or box shots>total shots rather than
+  // treating contradictory provider data as quality evidence.
+  const validShooting=!!(shots&&sot&&shots.every((n,i)=>sot[i]<=n));
+  const validInside=!!(inside&&(!shots||shots.every((n,i)=>inside[i]<=n)));
+  const sotRatio=validShooting&&sum(shots)>0?sum(sot)/sum(shots):null;
+  const insideRatio=validInside&&shots&&sum(shots)>0?sum(inside)/sum(shots):null;
+  const sotVolume=pace(sot,9);
+  const shotVolume=pace(shots,23);
+  const cornerVolume=pace(corners,11);
+  const boxVolume=validInside?pace(inside,14):null;
+  const chanceVolume=pace(chances,5);
+  const xgVolume=pace(xg,3.1);
+  // A percentage alone cannot override the number of shots: evidence of
+  // finishing danger comes from actual on-target attempts and box attempts.
+  // Correlated features (SOT and shot accuracy, box count and box share) are
+  // not counted separately as independent bonuses.
+  const quality=weighted([[sotVolume,.38],[chanceVolume,.22],[xgVolume,.27],[boxVolume,.13]]);
+  // Pressure uses shot volume, SOT, corners and box/chance evidence. A corner
+  // is pressure evidence but never proof of a high-quality shot by itself.
   const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
-    [pace(corners,12),.09],[pace(inside,14),.13],[pace(chances,5),.10]]);
-  // The raw SOT ratio is not used as a second volume score: shot accuracy and
-  // SOT count are distinct evidence, while xG/chances/box shots describe quality.
-  const quality=weighted([[shotQuality,.38],[pace(chances,5),.22],
-    [pace(xg,3.1),.27],[pace(inside,14),.13]]);
+    [pace(corners,12),.09],[boxVolume,.13],[chanceVolume,.10]]);
+  // Tempo is a diagnostic derived from live counts; it is not a second score
+  // or a match-time factor, and is not multiplied into Rule.
+  const tempo=weighted([[shotVolume,.35],[sotVolume,.50],[cornerVolume,.15]]);
   const tempoEvidence='CUMULATIVE_STAT_SIGNAL';
   const tempoLevel=tempo===null?'UNKNOWN':tempo>=75?'HIGH':tempo>=48?'MEDIUM':'LOW';
-  const redFactor=1; // A red card alone is not positive goal evidence.
-  const possessionBalance=poss?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
-  // Pressure and Tempo share cumulative shot inputs; Tempo is diagnostic, not counted twice.
+  // Possession by itself does not demonstrate a scoring chance. Only count
+  // measured territorial control when paired with observed attacking activity.
+  const hasAttackingEvidence=!!(shots||sot||corners||inside||chances||xg);
+  const possessionBalance=poss&&hasAttackingEvidence?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
   const core=weighted([[pressure,.57],[quality,.40],[possessionBalance,.03]]);
-  if(core===null)return {efficiency:null,model:'rule-v3.4-coverage-neutral',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  const primaryCount=[shots,sot].filter(Boolean).length;
-  // Missing data affects confidence, not inferred lack of attacking pressure.
-  const evidenceFactor=1;
-  // Shot accuracy already enters Quality; avoid counting the same weakness twice.
-  const qualityFactor=1;
-  // Tempo and Momentum are diagnostic inputs for AI Goal only, NEVER Rule score.
-  // BIG BET keeps its own independent 5–10 minute spike detection.
-  const recentEvidenceFactor=1;
-  const momentumVerified=false;
-  const momentumScore=null;
-  const momentumContribution=0;
-  const efficiency=round1(clamp(core*redFactor*evidenceFactor*qualityFactor,0,95));
-  return {efficiency,model:'rule-v3.4-coverage-neutral',dataStatus:'OK',v3Components:{
+  if(core===null)return {efficiency:null,model:'rule-v3.4-sot-pressure-quality',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  const redFactor=1,evidenceFactor=1,qualityFactor=1,recentEvidenceFactor=1;
+  const momentumVerified=false,momentumScore=null,momentumContribution=0;
+  const efficiency=round1(clamp(core,0,95));
+  return {efficiency,model:'rule-v3.4-sot-pressure-quality',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'CUMULATIVE_COUNTS_ONLY',
     redFactor,availableGroups:groups,
     reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
-    pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
-    qualityMethod:'POOLED_WILSON_SOT_ACCURACY_BIG_CHANCES_XG_BOX',
-    modelVersion:'V3_4_POOLED_SHOT_EVIDENCE_EXPERIMENTAL'
+    boxShotPercent:insideRatio===null?null:round1(insideRatio*100),
+    pressureMethod:'SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
+    qualityMethod:'SOT_VOLUME_BIG_CHANCES_XG_BOX',
+    modelVersion:'V3_4_SOT_PRESSURE_QUALITY'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
