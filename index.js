@@ -2989,6 +2989,7 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
 }
 
 
+const crossStatsInFlight = new Map();
 async function fetchMatchDetailStats(
   match
 ) {
@@ -3018,6 +3019,16 @@ async function fetchMatchDetailStats(
     return cached.data;
   }
 
+
+  // Share an unfinished cross-source resolution for the same fixture.
+  // This does NOT extend the 90s stats cache or suppress fresh scans.
+  const pending = crossStatsInFlight.get(cacheKey);
+  if (pending) {
+    httpMetrics.cacheHits++;
+    console.log(`[API DEDUP] CROSS_IN_FLIGHT ${cacheKey}`);
+    return pending;
+  }
+  const resolvePromise = (async () => {
 
   // Danh sách cùng một trận từ cả 3 nguồn đã được deduplicateMatches giữ lại.
   // Resolve native IDs independently from the LIVE discovery pool even if
@@ -3167,6 +3178,13 @@ async function fetchMatchDetailStats(
   );
 
   return stats;
+  })();
+  crossStatsInFlight.set(cacheKey, resolvePromise);
+  try {
+    return await resolvePromise;
+  } finally {
+    if (crossStatsInFlight.get(cacheKey) === resolvePromise) crossStatsInFlight.delete(cacheKey);
+  }
 }
 
 
@@ -5232,25 +5250,22 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
     const w=valid.reduce((n,[,weight])=>n+weight,0);
     return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
   };
-  // Evidence-based shot quality: evaluate each team's shooting separately.
-  // A strong attacking team must not be diluted by the other team's inaccurate shots.
-  // Never interpret impossible SOT > shots or absent values as good shooting.
-  const shotQualityByTeam=(team)=>{
-    if(!shots||!sot)return null;
-    const attempts=shots[team],onTarget=sot[team];
-    if(attempts<=0||onTarget<0||onTarget>attempts)return null;
-    // Wilson lower bound: prevents a single lucky on-target shot from looking like
-    // sustained high shot accuracy. No bonus/penalty percentages are injected.
-    const n=attempts,k=onTarget,z=1.96,p=k/n;
-    const lower=(p+z*z/(2*n)-z*Math.sqrt((p*(1-p)+z*z/(4*n))/n))/(1+z*z/n);
-    return {accuracy:100*lower,attempts,onTarget};
+  // Estimate observed shot accuracy from BOTH teams, rather than selecting
+  // the maximum of two noisy estimates. Selecting the maximum systematically
+  // overstates quality, especially with tiny shot samples.
+  // Wilson lower confidence bound (95%) quantifies observed evidence without
+  // inserting an arbitrary score bonus. Invalid shot/SOT pairs are excluded.
+  const validShooting=shots&&sot&&shots.every((n,i)=>
+    Number.isFinite(n)&&n>=0&&Number.isFinite(sot[i])&&sot[i]>=0&&sot[i]<=n);
+  const attempts=validShooting?sum(shots):0;
+  const onTarget=validShooting?sum(sot):0;
+  const sotRatio=attempts>0?onTarget/attempts:null;
+  const wilsonLower=(k,n)=>{
+    if(!(n>0)||k<0||k>n)return null;
+    const z=1.96,p=k/n,z2=z*z;
+    return 100*(p+z2/(2*n)-z*Math.sqrt((p*(1-p)+z2/(4*n))/n))/(1+z2/n);
   };
-  const hShot=shotQualityByTeam(0),aShot=shotQualityByTeam(1);
-  const shotEvidence=[hShot,aShot].filter(Boolean);
-  const sotRatio=shots&&sot&&sum(shots)>0&&sot.every((v,i)=>v<=shots[i])?sum(sot)/sum(shots):null;
-  // Evidence for either team scoring: use the stronger supported shooting signal.
-  // Wilson confidence bounds are calculated from observed attempts, not arbitrary bonuses.
-  const shotQuality=shotEvidence.length?Math.max(...shotEvidence.map(t=>t.accuracy)):null;
+  const shotQuality=attempts>0?wilsonLower(onTarget,attempts):null;
   const tempo=weighted([[pace(shots,23),.35],[pace(sot,9),.50],[pace(corners,11),.15]]);
   const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
     [pace(corners,12),.09],[pace(inside,14),.13],[pace(chances,5),.10]]);
@@ -5284,8 +5299,8 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
     reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
     pressureMethod:'SOFT_SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
-    qualityMethod:'PER_TEAM_WILSON_SOT_ACCURACY_BIG_CHANCES_XG_BOX',
-    modelVersion:'V3_4_PER_TEAM_SHOT_EVIDENCE_EXPERIMENTAL'
+    qualityMethod:'POOLED_WILSON_SOT_ACCURACY_BIG_CHANCES_XG_BOX',
+    modelVersion:'V3_4_POOLED_SHOT_EVIDENCE_EXPERIMENTAL'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
@@ -6885,12 +6900,15 @@ function resolverSameMatch(a, b) {
   };
   const ak=kickoffMs(a), bk=kickoffMs(b);
   if (ak!==null && bk!==null && Math.abs(ak-bk)>30*60*1000) return false;
-  // LIVE scores can temporarily differ between providers. Only tolerate a one-goal
-  // difference when both teams match almost exactly and the clocks are close.
+  // A score is a changing observation, not a fixture identity. Providers can
+  // disagree by several goals in the SAME scan. For near-exact team names and
+  // clocks within five minutes, do not split the fixture on its live score.
+  // Retain the stricter score check for fuzzy team-name matches.
   const values=[a.homeScore,b.homeScore,a.awayScore,b.awayScore];
   if (values.every(v=>v!==null && v!==undefined && v!=='' && Number.isFinite(Number(v)))) {
     const delta=Math.abs(Number(a.homeScore)-Number(b.homeScore))+Math.abs(Number(a.awayScore)-Number(b.awayScore));
-    if (delta>0 && !(delta===1 && home>=.94 && away>=.94 && am>0 && bm>0 && Math.abs(am-bm)<=5)) return false;
+    const sameLiveFixture=home>=.94 && away>=.94 && am>0 && bm>0 && Math.abs(am-bm)<=5;
+    if (delta>0 && !sameLiveFixture) return false;
   }
   return true;
 }
@@ -6905,9 +6923,7 @@ function resolverExactSameFixture(a,b) {
   if (!ah || !aa || ah!==bh || aa!==ba) return false;
   const am=Number(a.minute),bm=Number(b.minute);
   if (!Number.isFinite(am)||!Number.isFinite(bm)||am<=0||bm<=0||Math.abs(am-bm)>5) return false;
-  for (const field of ['homeScore','awayScore']) {
-    if (a[field]==null||b[field]==null||Number(a[field])!==Number(b[field])) return false;
-  }
+  // Score must not be part of the identity check: live feeds can disagree.
   // Do not merge two known different kickoffs.
   const getKickoff=m=>m.kickoff || m.startTime || m.startTimestamp || m.raw?.startTimestamp || m.raw?.startTime;
   const ak=getKickoff(a),bk=getKickoff(b);
@@ -7336,7 +7352,7 @@ async function scanLiveMatches() {
 
 
   scanRunning = true;
-
+  const scanHttpStart = {networkCalls:httpMetrics.networkCalls, cacheHits:httpMetrics.cacheHits, fallbackCalls:httpMetrics.fallbackCalls, failedCalls:httpMetrics.failedCalls};
 
   const startedAt =
     Date.now();
@@ -7534,6 +7550,7 @@ async function scanLiveMatches() {
     );
     console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailAttemptsLifetime=${providerStatsCounters.network} | reusedLifetime=${providerStatsCounters.reused} | emptyReusedLifetime=${providerStatsCounters.skippedUnavailable}`);
     console.log(`[API REQUEST METRICS] networkCalls=${httpMetrics.networkCalls} | cacheHits=${httpMetrics.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls} | failedCalls=${httpMetrics.failedCalls} | scope=PROCESS_LIFETIME | bySource=${JSON.stringify(httpMetrics.bySource)}`);
+    console.log(`[API REQUEST THIS SCAN] networkCalls=${httpMetrics.networkCalls-scanHttpStart.networkCalls} | cacheHits=${httpMetrics.cacheHits-scanHttpStart.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls-scanHttpStart.fallbackCalls} | failedCalls=${httpMetrics.failedCalls-scanHttpStart.failedCalls}`);
 
 
     for (
