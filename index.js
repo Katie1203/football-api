@@ -2903,24 +2903,35 @@ function getCoreStatsCoverage(stats) {
   )).length;
 }
 
-function mergeMissingStats(target, source) {
+function mergeMissingStats(target, source, freshness = {}) {
   if (!target || !source) return target;
   target._present ||= {};
+  target._fieldSources ||= {};
+  target._fieldFreshness ||= {};
+  const sourceMinute = Number(freshness.minute);
+  const validMinute = Number.isFinite(sourceMinute) && sourceMinute > 0 ? sourceMinute : null;
+  const sourcePriority = Number(freshness.priority) || 0;
+  const sourceName = freshness.source || source.source || 'fallback';
   for (const key of Object.keys(createEmptyStats())) {
-    if (['hasData','source','_present'].includes(key)) continue;
+    if (['hasData','source','_present'].includes(key) || key.startsWith('_')) continue;
     const present = source._present?.[key] === true || Number(source[key]) > 0;
+    if (!present || !Number.isFinite(Number(source[key]))) continue;
     const oldPresent = target._present[key] === true || Number(target[key]) > 0;
-    if (!oldPresent && present) {
+    const old = target._fieldFreshness[key];
+    // Never choose the largest value. Replace only when the fixture clock is
+    // demonstrably newer, or when a same-minute detail source is more reliable.
+    const newer = oldPresent && old && validMinute !== null && old.minute !== null && validMinute > old.minute;
+    const sameMinuteBetter = oldPresent && old && validMinute !== null && old.minute === validMinute && sourcePriority > old.priority;
+    if (!oldPresent || newer || sameMinuteBetter) {
       target[key] = Number(source[key]);
       target._present[key] = true;
-      target._fieldSources ||= {};
-      target._fieldSources[key] = source.source || 'fallback';
+      target._fieldSources[key] = sourceName;
+      target._fieldFreshness[key] = {minute:validMinute, priority:sourcePriority};
     }
   }
   if (source.hasData) target.hasData = true;
   return target;
 }
-
 
 // Deduplicate concurrent requests for the SAME provider-native match ID.
 // Keep providers independent; never reuse IDs between providers.
@@ -3019,11 +3030,13 @@ async function fetchMatchDetailStats(
   const fixtureDay=Number.isFinite(kickoffMs)?new Date(kickoffMs).toISOString().slice(0,10):new Date().toISOString().slice(0,10);
   const cacheKey = `cross:${fixtureDay}:${resolverAliasTokens(match.homeName).join('')}:${resolverAliasTokens(match.awayName).join('')}`;
 
+  // Keep live merged stats short-lived; provider caches are refreshed below.
+  const LIVE_STATS_MAX_AGE_MS = 30000;
   const cached = statsCache.get(cacheKey);
 
   if (
     cached &&
-    Date.now() - cached.time < (getCoreStatsCoverage(cached.data) === 0 ? Math.min(STATS_CACHE_TTL, 15000) : STATS_CACHE_TTL)
+    Date.now() - cached.time < (getCoreStatsCoverage(cached.data) === 0 ? Math.min(LIVE_STATS_MAX_AGE_MS, 15000) : LIVE_STATS_MAX_AGE_MS)
   ) {
     return cached.data;
   }
@@ -3058,6 +3071,16 @@ async function fetchMatchDetailStats(
 
   // BƯỚC 1: ghép RAW của tất cả nguồn trước — không tốn thêm API call.
   let stats = parseStatsFromRawMatch(match.raw);
+  // Seed provenance for the primary raw snapshot (without changing its values).
+  stats._fieldFreshness ||= {};
+  stats._fieldSources ||= {};
+  for (const key of Object.keys(createEmptyStats())) {
+    if (key.startsWith('_') || ['hasData','source'].includes(key)) continue;
+    if (stats._present?.[key] === true || Number(stats[key]) > 0) {
+      stats._fieldFreshness[key] = {minute:Number(match.minute) > 0 ? Number(match.minute) : null, priority:0};
+      stats._fieldSources[key] = match.source || 'raw-match';
+    }
+  }
 
   for (const sourceMatch of sourceMatches) {
 
@@ -3074,7 +3097,7 @@ async function fetchMatchDetailStats(
       continue;
     }
     const rawStats = parseStatsFromRawMatch(sourceMatch.raw);
-    mergeMissingStats(stats, rawStats);
+    mergeMissingStats(stats, rawStats, {minute:sourceMatch.minute, priority:0, source:sourceMatch.source});
   }
 
 
@@ -3093,13 +3116,11 @@ async function fetchMatchDetailStats(
 
   const desiredFields = ['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget','DangerousAttacks','Attacks'];
   const missingFields = () => desiredFields.filter(f => !['home','away'].every(side => stats._present?.[side+f] === true));
-  if (missingFields().length) {
+  // Recheck available CORE stats as well: an already-populated field may be stale.
+  // Never refresh optional-only sources solely for this verification.
+  if (missingFields().length || orderedSources.some(m => m.id != null)) {
 
     for (const sourceMatch of orderedSources) {
-
-      if (!missingFields().length) {
-        break;
-      }
 
       const clockA=Number(match.minute),clockB=Number(sourceMatch.minute);
       if(Number.isFinite(clockA)&&Number.isFinite(clockB)&&clockA>0&&clockB>0&&Math.abs(clockA-clockB)>3){
@@ -3108,12 +3129,21 @@ async function fetchMatchDetailStats(
       }
       const outstanding=missingFields();
       const coreMissing=outstanding.some(f=>['TotalShots','ShotsOnTarget','Corners','ShotsInsideBox','ShotsOffTarget'].includes(f));
+      const coreRefresh=true; // Verify present CORE fields too, not just missing fields.
       const nativeKey=`${sourceMatch.source}:${String(sourceMatch.id)}`;
       const optionalNegative=providerOptionalUnsupported.get(nativeKey);
-      if(!coreMissing && optionalNegative && Date.now()-optionalNegative<OPTIONAL_RECHECK_MS){
+      if(!coreMissing && !coreRefresh && optionalNegative && Date.now()-optionalNegative<OPTIONAL_RECHECK_MS){
         console.log(`[API CAPABILITY] SKIP_OPTIONAL ${nativeKey} | cached missing ATT/DA`);
         httpMetrics.cacheHits++;
         continue;
+      }
+      // Refresh successful provider snapshots after 30s without touching in-flight
+      // requests or negative-cache behavior. FlashScore has a separate inner cache.
+      const providerHit=providerStatsRequests.get(nativeKey);
+      if(providerHit && !providerHit.promise && !providerHit.empty && Date.now()-providerHit.time >= LIVE_STATS_MAX_AGE_MS) providerStatsRequests.delete(nativeKey);
+      if(sourceMatch.source === 'flashscore') {
+        const flashHit=flashScoreStatsCache.get(String(sourceMatch.id));
+        if(flashHit && Date.now()-flashHit.time >= LIVE_STATS_MAX_AGE_MS) flashScoreStatsCache.delete(String(sourceMatch.id));
       }
       httpMetrics.fallbackCalls++;
       const extraStats =
@@ -3124,7 +3154,7 @@ async function fetchMatchDetailStats(
 
 
       const before = missingFields();
-      mergeMissingStats(stats, extraStats);
+      mergeMissingStats(stats, extraStats, {minute:sourceMatch.minute, priority:10 + (sourcePriority[sourceMatch.source] || 0), source:sourceMatch.source});
       const supplied = before.filter(f => !missingFields().includes(f));
       console.log(`[DETAIL RESULT] ${sourceMatch.source}:${sourceMatch.id} | supplied=${supplied.join(',') || 'NONE'} | rawHasData=${!!extraStats?.hasData} | missing=${missingFields().join(',') || 'none'}`);
       console.log(`[DA/ATT SOURCE] ${sourceMatch.source}:${sourceMatch.id} | DA=${stats._present?.homeDangerousAttacks && stats._present?.awayDangerousAttacks ? `${stats.homeDangerousAttacks}-${stats.awayDangerousAttacks}` : 'MISSING'} | ATT=${stats._present?.homeAttacks && stats._present?.awayAttacks ? `${stats.homeAttacks}-${stats.awayAttacks}` : 'MISSING'}`);
