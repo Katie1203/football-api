@@ -2,7 +2,15 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
-const ruleV4 = require('./rule_v4_probability');
+// Optional V4 module: preserve V3.5 operation if V4 was not deployed.
+let ruleV4;
+try {
+  ruleV4 = require('./rule_v4_probability');
+} catch (error) {
+  if (error.code !== 'MODULE_NOT_FOUND' || !String(error.message).includes("'./rule_v4_probability'")) throw error;
+  console.warn('[RULE V4] rule_v4_probability.js missing; using existing Rule V3.5 fallback. Deploy the module next to index.js to enable V4.');
+  ruleV4 = { predict: () => null };
+}
 
 // Count actual outgoing HTTP calls (not merely detail resolver attempts).
 const httpMetrics={networkCalls:0,cacheHits:0,fallbackCalls:0,failedCalls:0,bySource:{}};
