@@ -2,6 +2,7 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
+const ruleV4 = require('./rule_v4_probability');
 
 // Count actual outgoing HTTP calls (not merely detail resolver attempts).
 const httpMetrics={networkCalls:0,cacheHits:0,fallbackCalls:0,failedCalls:0,bySource:{}};
@@ -5240,7 +5241,7 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
     label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
   if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {efficiency:null,model:'rule-v3.4-sot-pressure-quality',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+    return {efficiency:null,model:'rule-v3.5-independent-evidence-candidate',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   // Existing normalization retained: no invented scoring bonus, fixed uplift or
   // penalty. Reuse only measured quantities and normalize weights over present data.
   const soft=(value,reference)=>value===null?null:100*Math.max(0,value)/(Math.max(0,value)+reference*.48);
@@ -5262,15 +5263,14 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const boxVolume=validInside?pace(inside,14):null;
   const chanceVolume=pace(chances,5);
   const xgVolume=pace(xg,3.1);
-  // A percentage alone cannot override the number of shots: evidence of
-  // finishing danger comes from actual on-target attempts and box attempts.
-  // Correlated features (SOT and shot accuracy, box count and box share) are
-  // not counted separately as independent bonuses.
+  // Independent evidence families: do not count the same SOT/box/chance
+  // observation once in Pressure and again in Quality. Pressure is volume
+  // and territory; Quality is the observed ability to threaten the goal.
+  // Missing values are excluded, never silently treated as zero.
   const quality=weighted([[sotVolume,.38],[chanceVolume,.22],[xgVolume,.27],[boxVolume,.13]]);
-  // Pressure uses shot volume, SOT, corners and box/chance evidence. A corner
-  // is pressure evidence but never proof of a high-quality shot by itself.
-  const pressure=weighted([[pace(shots,25),.20],[pace(sot,10),.48],
-    [pace(corners,12),.09],[boxVolume,.13],[chanceVolume,.10]]);
+  // Shots and corners are separate pressure observations. Possession alone
+  // cannot create pressure, and is assessed separately below.
+  const pressure=weighted([[shotVolume,.75],[cornerVolume,.25]]);
   // Tempo is a diagnostic derived from live counts; it is not a second score
   // or a match-time factor, and is not multiplied into Rule.
   const tempo=weighted([[shotVolume,.35],[sotVolume,.50],[cornerVolume,.15]]);
@@ -5281,20 +5281,21 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const hasAttackingEvidence=!!(shots||sot||corners||inside||chances||xg);
   const possessionBalance=poss&&hasAttackingEvidence?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
   const core=weighted([[pressure,.57],[quality,.40],[possessionBalance,.03]]);
-  if(core===null)return {efficiency:null,model:'rule-v3.4-sot-pressure-quality',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
+  if(core===null)return {efficiency:null,model:'rule-v3.5-independent-evidence-candidate',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
   const redFactor=1,evidenceFactor=1,qualityFactor=1,recentEvidenceFactor=1;
   const momentumVerified=false,momentumScore=null,momentumContribution=0;
-  const efficiency=round1(clamp(core,0,95));
-  return {efficiency,model:'rule-v3.4-sot-pressure-quality',dataStatus:'OK',v3Components:{
+  const candidateProbability=ruleV4.predict(stats);
+  const efficiency=candidateProbability===null?round1(clamp(core,0,95)):candidateProbability;
+  return {efficiency,model:candidateProbability===null?'rule-v3.5-independent-evidence-candidate':'rule-v4-validated-logistic',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'CUMULATIVE_COUNTS_ONLY',
     redFactor,availableGroups:groups,
     reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
     shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
     boxShotPercent:insideRatio===null?null:round1(insideRatio*100),
-    pressureMethod:'SHOTS_SOT_CORNERS_BOX_BIG_CHANCES',
+    pressureMethod:'INDEPENDENT_SHOTS_CORNERS',
     qualityMethod:'SOT_VOLUME_BIG_CHANCES_XG_BOX',
-    modelVersion:'V3_4_SOT_PRESSURE_QUALITY'
+    modelVersion:candidateProbability===null?'V3_5_INDEPENDENT_EVIDENCE_CANDIDATE':'V4_VALIDATED_LOGISTIC'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
