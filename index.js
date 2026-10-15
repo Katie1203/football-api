@@ -7224,7 +7224,9 @@ async function analyzeOneMatch(
 
 
   // After a verified score change, require fresh post-goal evidence before first alert.
-  if (!alertState.has(alertKey) && postGoal && !postGoal.unverified && minute-postGoal.minute<=10) {
+  // POST GOAL only gates sending for the first 10 minutes; it never changes Rule scores.
+  // At exactly minute +10, the normal Rule/Telegram decision applies again.
+  if (!alertState.has(alertKey) && postGoal && !postGoal.unverified && minute>=postGoal.minute && minute-postGoal.minute<10) {
     const delta={};
     for(const f of ['TotalShots','ShotsOnTarget','Corners','BigChances'])delta[f]=pressureDelta(postGoal.baseline,windows.current,f);
     const postWindow={available:Object.values(delta).filter(v=>v!==null).length>=2,delta};
