@@ -172,16 +172,32 @@ async function fetchLiveFootballFT(r,key){
 }
 // FT discovery: batch by date, match provider-native IDs first, then strict name/time matching.
 const ftDateCache=new Map();
-function normTeam(s){return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\b(fc|cf|sc|ac|club|football|the|u\d{2})\b/g,'').replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');}
+function normTeam(s){
+ // Preserve age/reserve/women markers: removing U21 could match a different fixture.
+ return String(s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase()
+  .replace(/\b(fc|cf|sc|ac|club|football|the)\b/g,'')
+  .replace(/[^a-z0-9]+/g,' ').trim().replace(/\s+/g,' ');
+}
 function ftMatchCandidate(r,home,away,kickoff){
  const h=normTeam(home),a=normTeam(away),rh=normTeam(r.home),ra=normTeam(r.away);
  if(!h||!a||!rh||!ra)return false;
  const similar=(x,y)=>x===y || (x.length>=6&&y.length>=6&&(x.startsWith(y)||y.startsWith(x)));
  if(!similar(h,rh)||!similar(a,ra))return false;
  const t=Date.parse(kickoff||'');const rt=r.kickoffUTC?Date.parse(r.kickoffUTC):NaN;
- // Without a verified kickoff, only accept strong exact normalized names on the alert UTC date.
- if(!Number.isFinite(rt))return h===rh&&a===ra&&Number.isFinite(t)&&Math.abs(t-Date.parse(r.createdAt||''))<=24*3600000;
- return Number.isFinite(t)&&Math.abs(t-rt)<=3*3600000;
+ if(Number.isFinite(rt))return Number.isFinite(t)&&Math.abs(t-rt)<=3*3600000;
+ // No kickoff in old audit records: permit exact names within the alert's UTC day
+ // (plus adjacent calendar day for timezone boundaries), never a loose name match.
+ if(h!==rh||a!==ra||!Number.isFinite(t))return false;
+ const alert=Date.parse(r.createdAt||'');
+ return Number.isFinite(alert)&&t<=alert+3*3600000&&t>=alert-48*3600000;
+}
+function uniqueFTFixture(rows,r,idOf,namesOf,timeOf,nativeId){
+ // Native IDs are authoritative only within the same provider; otherwise require
+ // a unique team/time match. Never settle ambiguous same-name fixtures.
+ if(nativeId){const byId=rows.filter(x=>String(idOf(x)||'')===String(nativeId));
+  if(byId.length===1)return byId[0];if(byId.length>1)return null;}
+ const matches=rows.filter(x=>{const [h,a]=namesOf(x);return ftMatchCandidate(r,h,a,timeOf(x));});
+ return matches.length===1?matches[0]:null;
 }
 function dateCandidates(r){const d=pendingMatchDate(r);return d?[-1,0,1].map(n=>new Date(d.getTime()+n*86400000).toISOString().slice(0,10)):[];}
 function apiFT(row){
@@ -200,17 +216,21 @@ async function fetchApiDate(date){
 }
 async function fetchFlashDate(date,key){
  const template=(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE||'').trim();if(!template||!key)return [];
+ if(Date.now()<flashRateLimitedUntil)return [];
  const cacheKey='flash:'+date;const c=ftDateCache.get(cacheKey);if(c&&Date.now()-c.time<600000)return c.rows;
  try{const url=template.replace(/\{date\}/g,encodeURIComponent(date));const host=new URL(url).hostname;
  const {data}=await axios.get(url,{headers:{'x-rapidapi-key':key,'x-rapidapi-host':host},timeout:12000});
  const raw=Array.isArray(data)?data:Array.isArray(data?.matches)?data.matches:Array.isArray(data?.data?.matches)?data.data.matches:[];
  const rows=raw.flatMap(x=>Array.isArray(x?.matches)?x.matches:[x]);ftDateCache.set(cacheKey,{rows,time:Date.now()});return rows;
- }catch(e){console.warn('[FT FLASH DATE]',date,e.response?.status||e.message);return [];}
+ }catch(e){if(e.response?.status===429)flashRateLimitedUntil=Date.now()+FLASH_429_BACKOFF_MS;console.warn('[FT FLASH DATE]',date,e.response?.status||e.message);return [];}
 }
 // Direct native-ID lookup. Never infer FT from a score without final status.
 const flashIdCache=new Map();
+let flashRateLimitedUntil=0;
+const FLASH_429_BACKOFF_MS=Math.max(600000,Number(process.env.AUDIT_FLASH_429_BACKOFF_MS)||1800000);
 async function fetchFlashById(id,key){
  if(!id||!key)return {row:null,reason:'FLASHSCORE_ID_OR_KEY_MISSING'};
+ if(Date.now()<flashRateLimitedUntil)return {row:null,reason:'FLASHSCORE_RATE_LIMIT_BACKOFF'};
  const cached=flashIdCache.get(String(id));
  if(cached&&Date.now()-cached.time<600000)return cached.result;
  const host='flashscore4.p.rapidapi.com';
@@ -221,6 +241,7 @@ async function fetchFlashById(id,key){
   const result={row,reason:'FLASHSCORE_ID_STATUS_NOT_FINAL_OR_SCHEMA_UNKNOWN'};
   flashIdCache.set(String(id),{time:Date.now(),result});return result;
  }catch(e){
+  if(e.response?.status===429)flashRateLimitedUntil=Date.now()+FLASH_429_BACKOFF_MS;
   const reason=`FLASHSCORE_ID_HTTP_${e.response?.status||'NETWORK'}`;
   const result={row:null,reason};flashIdCache.set(String(id),{time:Date.now(),result});return result;
  }
@@ -238,7 +259,7 @@ async function reconcile(){
  try{
   await init();const rapidKey=process.env.RAPIDAPI_KEY;
   if(!rapidKey&&!process.env.APISPORTS_KEY)return;
-  const now=Date.now();const pending=[...new Map(records.filter(r=>r.ftHome==null).map(r=>[r.matchKey,r])).values()]
+  const now=Date.now();const pending=[...new Map(records.filter(r=>r.ftHome==null).slice().reverse().map(r=>[r.matchKey,r])).values()]
     .filter(r=>now-(lastFTCheck.get(r.matchKey)||0)>=FT_RETRY_MS).slice(0,FT_MAX_PER_CYCLE);
   if(!pending.length)return;
   for(const r of pending)lastFTCheck.set(r.matchKey,now);
@@ -254,11 +275,11 @@ async function reconcile(){
    const ids={...(r.sourceIds||{})};if(r.source&&r.sourceId&&!ids[r.source])ids[r.source]=String(r.sourceId);
    const candidates=[];
    const ftReasons=[];
-   const lfRow=lf.find(x=>String(x.id)===String(ids['live-football']||'') || ftMatchCandidate(r,x.home?.name,x.away?.name,x.status?.utcTime||x.utcTime));
+   const lfRow=uniqueFTFixture(lf,r,x=>x.id,x=>[x.home?.name,x.away?.name],x=>x.status?.utcTime||x.utcTime,ids['live-football']);
    if(lfRow){const ft=parseLiveFootballDateFT(lfRow);if(ft)candidates.push({...ft,source:'live-football'});else ftReasons.push('LIVEFOOTBALL_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids['live-football'])ids['live-football']=String(lfRow.id);}else ftReasons.push('LIVEFOOTBALL_NOT_FOUND');
-   const apiRow=api.find(x=>String(x.fixture?.id)===String(ids.apisports||'') || ftMatchCandidate(r,x.teams?.home?.name,x.teams?.away?.name,x.fixture?.date));
+   const apiRow=uniqueFTFixture(api,r,x=>x.fixture?.id,x=>[x.teams?.home?.name,x.teams?.away?.name],x=>x.fixture?.date,ids.apisports);
    if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);else ftReasons.push('APISPORTS_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}else ftReasons.push('APISPORTS_NOT_FOUND');
-   const flashRow=flash.find(x=>String(x.match_id||x.id)===String(ids.flashscore||'') || ftMatchCandidate(r,x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name,x.start_time||x.utcTime));
+   const flashRow=uniqueFTFixture(flash,r,x=>x.match_id||x.id,x=>[x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name],x=>x.start_time||x.utcTime,ids.flashscore);
    if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);else ftReasons.push('FLASHSCORE_STATUS_NOT_FINAL_OR_SCORE_MISSING');if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}else ftReasons.push(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?'FLASHSCORE_NOT_FOUND':'FLASHSCORE_DATE_ENDPOINT_UNCONFIGURED');
    if(!candidates.length&&ids.flashscore&&rapidKey){
     const result=await fetchFlashById(ids.flashscore,rapidKey);
