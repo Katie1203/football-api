@@ -692,7 +692,7 @@ function isFilteredLeague(
 // ==========================================================
 // 5. MINUTE
 // GIỮ LOGIC ĐA NGUỒN
-// CHỈ QUÉT 46 -> 92
+// CHỈ QUÉT 46 -> 88
 // ==========================================================
 
 function parseMinuteValue(value) {
@@ -1349,7 +1349,7 @@ async function fetchLiveMatchesFromFotMob() {
       for (const raw of league.matches || []) {
         if (!raw.status?.ongoing || raw.status?.finished || raw.status?.cancelled) continue;
         const minute = fotmobMinute(raw.status);
-        if (minute === null || minute < 46 || minute > 92) continue;
+        if (minute === null || minute < 46 || minute > 88) continue;
         matches.push({ ...raw, _fotmobLeagueName: league.name, _fotmobCountry: league.ccode });
       }
     }
@@ -5519,7 +5519,7 @@ function detectTenMinuteSpike(previous, current) {
 
 function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
   const current = currentPercentage == null ? NaN : Number(currentPercentage);
-  if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute > 92)
+  if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute >= 89)
     return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
   if (!Number.isFinite(current)) return {send:false,bigBet:false,reason:'STATS_MISSING_DYNAMIC_WINDOW'};
   if (current <= MIN_SEND_PERCENTAGE)
@@ -6483,6 +6483,12 @@ async function sendTelegramAlert(
   alertDecision
 ) {
 
+  // Telegram only: never send at 89' or later.
+  if (!Number.isFinite(Number(item.minute)) || Number(item.minute) >= 89) {
+    console.log(`[Telegram BLOCK] MINUTE_89_OR_LATER | ${item.homeName} vs ${item.awayName} | ${item.minute}'`);
+    return false;
+  }
+
   if (
     !TELEGRAM_BOT_TOKEN ||
     !TELEGRAM_CHAT_ID
@@ -7076,13 +7082,13 @@ async function analyzeOneMatch(
 
 
   // ======================================================
-  // CHỈ QUÉT 46 -> 92
+  // CHỈ QUÉT 46 -> 88
   // ======================================================
 
   if (
     !Number.isFinite(minute) ||
     minute < 46 ||
-    minute > 92
+    minute > 88
   ) {
 
     return null;
@@ -7454,7 +7460,7 @@ async function scanLiveMatches() {
 
 
     // ====================================================
-    // PRE FILTER 46 -> 92
+    // PRE FILTER 46 -> 88
     // ====================================================
 
     const eligibleMatches = [];
@@ -7490,7 +7496,7 @@ async function scanLiveMatches() {
       if (
         !Number.isFinite(minute) ||
         minute < 46 ||
-        minute > 92
+        minute > 88
       ) {
         continue;
       }
@@ -7514,7 +7520,7 @@ async function scanLiveMatches() {
 
 
     console.log(
-      `[Live] Đủ điều kiện phút 46-92: ${eligibleMatches.length}`
+      `[Live] Đủ điều kiện phút 46-88: ${eligibleMatches.length}`
     );
 
 
@@ -7653,7 +7659,7 @@ app.get(
         'Football Live AI Rule Bot',
 
       scanMinutes:
-        '46-92',
+        '46-88',
 
       telegramThreshold:
         MIN_SEND_PERCENTAGE,
@@ -7821,7 +7827,7 @@ app.listen(
 
 
     console.log(
-      'Scan minute: 46 -> 92'
+      'Scan minute: 46 -> 88'
     );
 
 
