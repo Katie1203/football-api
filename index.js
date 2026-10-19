@@ -12,6 +12,16 @@ try {
   ruleV4 = { predict: () => null };
 }
 
+// Goal AI V4 is informational; it never changes Rule or Telegram decisions.
+let aiGoalV4;
+try {
+  aiGoalV4 = require('./ai_goal_v4');
+} catch (error) {
+  if (error.code !== 'MODULE_NOT_FOUND' || !String(error.message).includes("'./ai_goal_v4'")) throw error;
+  console.warn('[AI GOAL V4] ai_goal_v4.js missing; using legacy AI Goal fallback.');
+  aiGoalV4 = { predict: () => null };
+}
+
 // Count actual outgoing HTTP calls (not merely detail resolver attempts).
 const httpMetrics={networkCalls:0,cacheHits:0,fallbackCalls:0,failedCalls:0,bySource:{}};
 function metricSource(url){try{const h=new URL(url).hostname;return h.includes('api-sports')?'apisports':h.includes('sofascore')?'sofascore':h.includes('flashscore')?'flashscore':h.includes('live-football')?'live-football':h.includes('fotmob')?'fotmob':h.includes('odds')?'odds':h.includes('telegram')?'telegram':'other';}catch{return 'other';}}
@@ -5362,16 +5372,16 @@ function v3TelegramDetail(ai,stats,minute){
   ].join('\n');
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows,ruleV3) {
-  // AI Goal V4: use the SAME event probability as Rule V4, not an
-  // independently invented Poisson intensity or contradictory percentage.
-  // Rule's probability is P(at least one further goal before FT).
+  // Rule V4 is the statistical prior; AI Goal V4 independently learns a
+  // conditional correction from settled WIN/LOSS data. No arbitrary uplift.
   if (ruleV3?.model === 'rule-v4-audit-logistic' &&
       Number.isFinite(Number(ruleV3.efficiency))) {
-    const percent=Number(ruleV3.efficiency);
-    return {percent,ruleScore:percent,lambda:null,baselinePercent:null,
-      divergence:0,divergenceFlag:false,calibrated:false,
-      label:'AI Goal V4 (đồng bộ Rule; hiệu chuẩn đang kiểm nghiệm)',
-      source:'rule-v4-audit-logistic',availableGroups:0};
+    const prediction=aiGoalV4.predict(stats,Number(ruleV3.efficiency));
+    if(prediction) return {...prediction,divergence:round1(Number(ruleV3.efficiency)-prediction.percent),
+      divergenceFlag:false};
+    return {percent:null,ruleScore:Number(ruleV3.efficiency),calibrated:false,
+      label:'AI Goal V4 thiếu mô hình hoặc dữ liệu phân tích',
+      source:'ai-goal-v4-unavailable',divergenceFlag:false};
   }
   // AI Goal V3-Aware is informational only. Current LIVE data is sufficient;
   // snapshot history is NOT a prerequisite for this estimate.
@@ -6646,6 +6656,7 @@ async function sendTelegramAlert(
     v3TelegramDetail(item.ai, st, item.minute),
     `🧠 RULE: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
+    ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];

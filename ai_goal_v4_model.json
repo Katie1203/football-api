@@ -1,0 +1,41 @@
+{
+  "type": "ai_goal_v4_rule_conditional",
+  "features": [
+    "sot_quality",
+    "shot_balance",
+    "sot_balance",
+    "corner_pressure",
+    "shot_quality_alignment",
+    "big_chances_total"
+  ],
+  "bias": 0.008660920786138726,
+  "weights": [
+    -0.07787805502996807,
+    0.0027161276649485195,
+    -0.10926662717669203,
+    0.2010016750930107,
+    -0.1690212984560468,
+    0.04332080951633793
+  ],
+  "means": [
+    0.3783467995661527,
+    0.2966255540765906,
+    0.3601674444958027,
+    0.3652276558991126,
+    0.16999303980789957,
+    0.22388059701492538
+  ],
+  "stds": [
+    0.10917283088903498,
+    0.2052848512897508,
+    0.26880900534828156,
+    0.12132349987371915,
+    0.12476474987397929,
+    0.7883649341041348
+  ],
+  "training": {
+    "count": 134,
+    "regularization": 4.0,
+    "note": "Rule V4 log odds offset + regularized conditional model; 45 chronological holdout"
+  }
+}
