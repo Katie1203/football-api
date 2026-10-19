@@ -1,59 +1,29 @@
-'use strict';
-// Data-trained Rule V4. No match minute, score gap, odds, or arbitrary score modifiers.
-const fs = require('fs');
-const path = require('path');
-const FEATURES = [
-  'sot_total','sot_max','shots_total','shots_max','corners_total','corners_max',
-  'inside_total','inside_max','xg_total','xg_max','chances_total','chances_max',
-  'possession_dominance','sot_per_shot','inside_per_shot','corners_per_shot',
-  'sot_present','shots_present','corners_present','inside_present','xg_present',
-  'chances_present','possession_present'
-];
-function features(stats) {
-  const p = stats?._present || {};
-  const pair = name => {
-    if (p['home'+name] !== true || p['away'+name] !== true) return null;
-    const a=Number(stats['home'+name]), b=Number(stats['away'+name]);
-    return Number.isFinite(a)&&Number.isFinite(b)&&a>=0&&b>=0 ? [a,b] : null;
+ 'use strict';
+// Rule V4: regularized logistic probability fitted on settled historical alert snapshots.
+// No odds, match minute, time remaining, score margin, ATT/DA or arbitrary Rule boosts.
+const fs=require('fs'),path=require('path');
+const FEATURES=['log_shots','log_sot','log_corners','shot_accuracy','sot_concentration','corner_per_shot','possession_imbalance','log_big_chances','big_chances_present'];
+function features(stats){
+  const present=stats?._present||{};
+  const pair=name=>{
+    const h='home'+name,a='away'+name;
+    if(present[h]!==true||present[a]!==true)return null;
+    const x=Number(stats[h]),y=Number(stats[a]);
+    return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
   };
-  const shots=pair('TotalShots'), sot=pair('ShotsOnTarget'), corners=pair('Corners');
-  const inside=pair('ShotsInsideBox'), xg=pair('ExpectedGoals'), chances=pair('BigChances'), poss=pair('Possession');
-  const sum=x=>x?x[0]+x[1]:0, max=x=>x?Math.max(...x):0;
-  const goodSot=!!(sot&&(!shots||sot.every((v,i)=>v<=shots[i])));
-  const goodInside=!!(inside&&(!shots||inside.every((v,i)=>v<=shots[i])));
-  const s=goodSot?sot:null, ib=goodInside?inside:null;
-  const totalShots=sum(shots);
-  return [sum(s),max(s),sum(shots),max(shots),sum(corners),max(corners),
-    sum(ib),max(ib),sum(xg),max(xg),sum(chances),max(chances),
-    poss?Math.abs(poss[0]-poss[1]):0,
-    shots&&s&&totalShots>0?sum(s)/totalShots:0,
-    shots&&ib&&totalShots>0?sum(ib)/totalShots:0,
-    shots&&corners&&totalShots>0?sum(corners)/totalShots:0,
-    Number(!!s),Number(!!shots),Number(!!corners),Number(!!ib),
-    Number(!!xg),Number(!!chances),Number(!!poss)];
+  const sh=pair('TotalShots'),so=pair('ShotsOnTarget'),co=pair('Corners'),po=pair('Possession'),bc=pair('BigChances');
+  if(!sh||!so||so.some((v,i)=>v>sh[i]))return null;
+  const n=sh[0]+sh[1],t=so[0]+so[1],c=co?co[0]+co[1]:0;
+  return [Math.log1p(n),Math.log1p(t),Math.log1p(c),t/Math.max(n,1),Math.max(...so)/Math.max(t,1),c/Math.max(n,1),po?Math.abs(po[0]-po[1])/100:0,bc?Math.log1p(bc[0]+bc[1]):0,bc?1:0];
 }
-function validateModel(m) {
-  return !!(m && m.type==='rule_v4_logistic' && m.validation?.accepted===true &&
-    JSON.stringify(m.features)===JSON.stringify(FEATURES) &&
-    Array.isArray(m.weights)&&m.weights.length===FEATURES.length &&
-    Array.isArray(m.means)&&m.means.length===FEATURES.length &&
-    Array.isArray(m.stds)&&m.stds.length===FEATURES.length &&
-    Number.isFinite(m.bias) && [...m.weights,...m.means,...m.stds].every(Number.isFinite) &&
-    m.stds.every(v=>v>0));
-}
-function loadModel() {
-  try {
-    const m=JSON.parse(fs.readFileSync(path.join(__dirname,'rule_v4_model.json'),'utf8'));
-    return validateModel(m)?m:null;
-  } catch {return null;}
-}
-const model=loadModel();
-function predict(stats) {
+function valid(m){return !!(m&&m.type==='rule_v4_audit_logistic'&&JSON.stringify(m.features)===JSON.stringify(FEATURES)&&Number.isFinite(m.bias)&&['weights','means','stds'].every(k=>Array.isArray(m[k])&&m[k].length===FEATURES.length&&m[k].every(Number.isFinite))&&m.stds.every(v=>v>0));}
+let model=null;
+try{const m=JSON.parse(fs.readFileSync(path.join(__dirname,'rule_v4_model.json'),'utf8'));if(valid(m))model=m;}catch(e){console.warn('[RULE V4] model unavailable:',e.message);}
+function predict(stats){
   if(!model)return null;
-  const f=features(stats);
-  if(!(f[16]&&f[17]))return null; // require valid SOT and Total Shots
-  const z=model.weights.reduce((v,w,i)=>v+w*(f[i]-model.means[i])/model.stds[i],model.bias);
-  const probability=1/(1+Math.exp(-Math.max(-35,Math.min(35,z))));
-  return Number.isFinite(probability)?Math.round(probability*1000)/10:null;
+  const f=features(stats);if(!f)return null;
+  const z=model.weights.reduce((s,w,i)=>s+w*(f[i]-model.means[i])/model.stds[i],model.bias);
+  const p=1/(1+Math.exp(-Math.max(-35,Math.min(35,z))));
+  return Number.isFinite(p)?Math.round(p*1000)/10:null;
 }
-module.exports={FEATURES,features,validateModel,predict,modelLoaded:!!model};
+module.exports={FEATURES,features,predict,modelLoaded:!!model};

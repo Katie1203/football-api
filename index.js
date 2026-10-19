@@ -5324,7 +5324,7 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
   const momentumVerified=false,momentumScore=null,momentumContribution=0;
   const candidateProbability=ruleV4.predict(stats);
   const efficiency=candidateProbability===null?round1(clamp(core,0,95)):candidateProbability;
-  return {efficiency,model:candidateProbability===null?'rule-v3.5-independent-evidence-candidate':'rule-v4-validated-logistic',dataStatus:'OK',v3Components:{
+  return {efficiency,model:candidateProbability===null?'rule-v3.5-independent-evidence-candidate':'rule-v4-audit-logistic',dataStatus:'OK',v3Components:{
     pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
     tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'CUMULATIVE_COUNTS_ONLY',
     redFactor,availableGroups:groups,
@@ -5333,7 +5333,7 @@ function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
     boxShotPercent:insideRatio===null?null:round1(insideRatio*100),
     pressureMethod:'INDEPENDENT_SHOTS_CORNERS',
     qualityMethod:'SOT_VOLUME_BIG_CHANCES_XG_BOX',
-    modelVersion:candidateProbability===null?'V3_5_INDEPENDENT_EVIDENCE_CANDIDATE':'V4_VALIDATED_LOGISTIC'
+    modelVersion:candidateProbability===null?'V3_5_INDEPENDENT_EVIDENCE_CANDIDATE':'V4_AUDIT_LOGISTIC'
   }};
 }
 // Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
@@ -5362,6 +5362,17 @@ function v3TelegramDetail(ai,stats,minute){
   ].join('\n');
 }
 function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows,ruleV3) {
+  // AI Goal V4: use the SAME event probability as Rule V4, not an
+  // independently invented Poisson intensity or contradictory percentage.
+  // Rule's probability is P(at least one further goal before FT).
+  if (ruleV3?.model === 'rule-v4-audit-logistic' &&
+      Number.isFinite(Number(ruleV3.efficiency))) {
+    const percent=Number(ruleV3.efficiency);
+    return {percent,ruleScore:percent,lambda:null,baselinePercent:null,
+      divergence:0,divergenceFlag:false,calibrated:false,
+      label:'AI Goal V4 (đồng bộ Rule; hiệu chuẩn đang kiểm nghiệm)',
+      source:'rule-v4-audit-logistic',availableGroups:0};
+  }
   // AI Goal V3-Aware is informational only. Current LIVE data is sufficient;
   // snapshot history is NOT a prerequisite for this estimate.
   const present=stats?._present||{};
@@ -6633,8 +6644,8 @@ async function sendTelegramAlert(
     qualityAssessment,
     `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
     v3TelegramDetail(item.ai, st, item.minute),
-    `🧠 RULE V3.4: ${percentage.toFixed(1)}%`,
-    `🎯 AI Goal (thử nghiệm): ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
+    `🧠 RULE: ${percentage.toFixed(1)}%`,
+    `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
   ];
