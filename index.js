@@ -608,6 +608,61 @@ function isFilteredLeague(
       .toLowerCase();
 
 
+  // Explicitly allow U20/U21 competitions, including European U20/U21.
+  // Also allow the European U19 competitions requested by the user.
+  // Keep all other league exclusions unchanged.
+  const leagueText = String(leagueName || '').toLowerCase();
+  const teamText = `${homeName || ''} ${awayName || ''}`.toLowerCase();
+  const normalizedLeague = leagueText.replace(/[–—_]/g, '-');
+  const normalizedTeams = teamText.replace(/[–—_]/g, '-');
+  const age20or21 = /\b(?:u-?2[01]|under-?2[01]|sub-?2[01])\b/i;
+  const age19 = /\b(?:u-?19|under-?19|sub-?19)\b/i;
+  const europeanU19Names = [
+    'uefa youth league',
+    'youth league',
+    'european championship u19',
+    'u19 euro qualification',
+    "u19 women's championship",
+    'uefa european under-19',
+    'uefa under-19',
+    'uefa u19',
+    'euro u19'
+  ];
+  const allowedYouthLeague =
+    age20or21.test(normalizedLeague) ||
+    age20or21.test(normalizedTeams) ||
+    europeanU19Names.some(k => normalizedLeague.includes(k)) ||
+    ((age19.test(normalizedLeague) || age19.test(normalizedTeams)) &&
+      /\b(?:uefa|europe|european|euro)\b/i.test(normalizedLeague));
+
+  if (allowedYouthLeague) return false;
+
+  // Other youth competitions remain excluded as before (including U17/U18).
+  if (/\b(?:u-?1[0-9]|sub-?1[0-9]|under-?1[0-9])\b/i.test(text)) {
+    return true;
+  }
+
+  // Explicitly allow senior UEFA/AFC continental competitions at club and
+  // national-team level. The youth exclusion above still applies; U20/U21
+  // and the previously approved European U19 competitions are handled above.
+  // Restrict the match to recognized confederation competition names rather
+  // than the generic words 'europe' or 'asia' (which can occur in other labels).
+  const continentalCompetition = [
+    /\buefa\b/i,
+    /\bafc\b/i,
+    /\beuro(?:pean)?\s+(?:championship|qualif(?:ication|iers|ying)|nations\s+league)\b/i,
+    /\basian\s+(?:cup|qualif(?:ication|iers|ying)|champions\s+league|challenge\s+league)\b/i,
+    /\b(?:champions|europa|conference)\s+league\b.*\b(?:europe|asia)\b/i
+  ].some(pattern => pattern.test(normalizedLeague));
+  if (continentalCompetition) {
+    const excludedContinental = [
+      'simulated', 'srl', 'esports', 'e-soccer', 'ncaa', 'amateur',
+      'semi-pro', 'regional', 'reserve', 'state league', 'local',
+      'college', 'university'
+    ];
+    return excludedContinental.some(k => text.includes(k));
+  }
+
   const professionalWomenKeywords = [
 
     'womens champions league',
@@ -649,16 +704,6 @@ function isFilteredLeague(
   ) {
 
     return false;
-  }
-
-
-  // Loại U17/U18/U19/U20...
-  if (
-    /\b(u-?1[0-9]|u-?20|sub-?1[0-9]|sub-?20|under-?1[0-9]|under-?20)\b/i
-      .test(text)
-  ) {
-
-    return true;
   }
 
 
@@ -7290,6 +7335,20 @@ async function analyzeOneMatch(
     const postWindow={available:Object.values(delta).filter(v=>v!==null).length>=2,delta};
     if(!pressureEvidence(postWindow)) {
       alertDecision.send=false;alertDecision.reason='POST_GOAL_WAIT_FRESH_PRESSURE';
+    }
+  }
+
+  // Both Rule and AI Goal must pass the Telegram threshold.
+  // Preserve the existing Rule, BIG BET and POST GOAL calculations.
+  if (alertDecision.send) {
+    const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
+    if (!Number.isFinite(aiGoalPercent) || aiGoalPercent < MIN_SEND_PERCENTAGE) {
+      alertDecision.send = false;
+      alertDecision.bigBet = false;
+      alertDecision.reason = Number.isFinite(aiGoalPercent)
+        ? `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`
+        : 'AI_GOAL_PROBABILITY_UNAVAILABLE';
+      console.log(`[AI GOAL GATE] ${match.homeName} vs ${match.awayName} | Rule=${ai.efficiency}% | AI Goal=${Number.isFinite(aiGoalPercent) ? aiGoalPercent+'%' : 'N/A'} | BLOCK TELEGRAM`);
     }
   }
 
