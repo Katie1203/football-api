@@ -131,6 +131,16 @@ async function fetchApiSportsStats(id, fixtureNames = {}) {
     const homeName = norm(fixtureNames.homeName);
     const awayName = norm(fixtureNames.awayName);
     let recognized = 0;
+    // Provider names may differ by FC, United, accents or transliteration.
+    // Accept alias matching only when exactly one fixture side matches strongly.
+    const aliasSide = (candidateName) => {
+      if (!candidateName || !fixtureNames.homeName || !fixtureNames.awayName) return -1;
+      const h = resolverTeamScore(candidateName, fixtureNames.homeName);
+      const a = resolverTeamScore(candidateName, fixtureNames.awayName);
+      if (h >= 0.93 && a < 0.75) return 0;
+      if (a >= 0.93 && h < 0.75) return 1;
+      return -1;
+    };
     for (let i=0;i<teams.length;i++) {
       const team = teams[i] || {};
       const teamId = String(team.team?.id ?? '');
@@ -140,7 +150,8 @@ async function fetchApiSportsStats(id, fixtureNames = {}) {
       else if (awayId && teamId === awayId) side = 1;
       else if (homeName && teamName === homeName) side = 0;
       else if (awayName && teamName === awayName) side = 1;
-      else if (teams.length === 2 && i < 2 && !homeId && !awayId && !homeName && !awayName) side = i;
+      else if (team.team?.name) side = aliasSide(team.team.name);
+      if (side < 0 && teams.length === 2 && i < 2 && !homeId && !awayId && !homeName && !awayName) side = i;
       if (side < 0) continue; // Never guess the side for an incomplete response.
       for (const row of (Array.isArray(team.statistics) ? team.statistics : [])) {
         const suffix = fieldMap[norm(row?.type)];
@@ -1447,7 +1458,11 @@ async function fetchLiveMatchesFromFotMob() {
 
 function parseFotMobTeamStats(data) {
   const result = createEmptyStats();
-  const sections = data?.content?.stats?.Periods?.All?.stats || [];
+  const periodStats = data?.content?.stats?.Periods?.All?.stats ??
+    data?.content?.stats?.Periods?.all?.stats ??
+    data?.stats?.Periods?.All?.stats ??
+    data?.stats?.Periods?.all?.stats ?? [];
+  const sections = Array.isArray(periodStats) ? periodStats : [];
   const names = {
     'BallPossesion': ['homePossession', 'awayPossession'],
     'total_shots': ['homeTotalShots', 'awayTotalShots'],
@@ -1473,12 +1488,21 @@ function parseFotMobTeamStats(data) {
         yellowcards: 'yellow_cards', redcards: 'red_cards'
       };
       const keys = names[item.key] || names[aliases[normalizedKey]];
-      if (!keys || !Array.isArray(item.stats)) continue;
+      if (!keys) continue;
+      const pairs = Array.isArray(item.stats) ? item.stats :
+        item.stats && typeof item.stats === 'object'
+          ? [item.stats.home ?? item.stats.homeValue, item.stats.away ?? item.stats.awayValue]
+          : [item.home ?? item.homeValue, item.away ?? item.awayValue];
       for (let i = 0; i < 2; i++) {
-        const raw = item.rawStats?.[i]?.value ?? item.stats[i];
-        if (raw !== null && raw !== undefined && raw !== '') {
-          const value = safeNumber(raw);
-          if (Number.isFinite(value)) { result[keys[i]] = value; result._present[keys[i]] = true; }
+        const raw = item.rawStats?.[i]?.value ?? item.rawStats?.[i] ?? pairs[i];
+        const numeric = typeof raw === 'object' && raw !== null ? (raw.value ?? raw.displayValue) : raw;
+        if (numeric === null || numeric === undefined || numeric === '') continue;
+        const cleaned = String(numeric).replace('%','').replace(',','.').trim();
+        if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(cleaned)) continue;
+        const value = Number(cleaned);
+        if (Number.isFinite(value) && value >= 0) {
+          result[keys[i]] = value;
+          result._present[keys[i]] = true;
         }
       }
     }
@@ -1518,10 +1542,12 @@ async function fetchLiveFootballDetailStats(eventId) {
       timeout: 10000
     });
     const parsed = parseVerifiedProviderStats(response.data, 'live-football');
-    if (parsed.hasData) return parsed;
     const fallback = parseStatsFromRawMatch(response.data);
-    if (!fallback.hasData) console.log(`[STATS DIAG] live-football:${eventId} | HTTP_OK | JSON keys=${Object.keys(response.data || {}).slice(0,12).join(',') || 'none'} | mappedFields=0`);
-    return fallback;
+    // Each parser can recognize different legitimate fields in the same response.
+    // Only fill genuinely missing fields; never fabricate statistics.
+    mergeMissingStats(parsed, fallback, {source:'live-football-raw'});
+    if (!parsed.hasData) console.log(`[STATS DIAG] live-football:${eventId} | HTTP_OK | JSON keys=${Object.keys(response.data || {}).slice(0,12).join(',') || 'none'} | mappedFields=0`);
+    return parsed;
   } catch (error) {
     logSourceError('LiveFootball', 'DETAIL', error);
     return createEmptyStats();
@@ -7490,6 +7516,16 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     console.log(`[Telegram BLOCK] BEFORE_65 | ${match.homeName} vs ${match.awayName}`);
   }
 
+  // Per-match status: show the green icon only when Telegram delivery
+  // has been recorded in alertState (this scan or an earlier scan).
+  // Do not confuse passing the thresholds with an actual sent alert.
+  if (result.alertKey && alertState.has(result.alertKey)) {
+    const ruleText = result.ai?.efficiency == null || !Number.isFinite(Number(result.ai.efficiency))
+      ? 'N/A' : `${result.ai.efficiency}%`;
+    const goalText = result.aiGoal?.percent == null || !Number.isFinite(Number(result.aiGoal.percent))
+      ? 'N/A' : `${result.aiGoal.percent}%`;
+    console.log(`[MATCH ALERT STATUS] ${minute}' | Rule ${ruleText} | AI Goal ${goalText} | ${match.homeName} ${match.homeScore}-${match.awayScore} ${match.awayName} | 🟢 ĐÃ GỬI CẢNH BÁO`);
+  }
 
   return result;
 }
@@ -7706,7 +7742,7 @@ async function scanLiveMatches() {
 
     console.log('');
     console.log(
-      '--------------- TOP RULE ---------------'
+      '--------------- TOP RULE + AI GOAL ---------------'
     );
     console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailAttemptsLifetime=${providerStatsCounters.network} | reusedLifetime=${providerStatsCounters.reused} | emptyReusedLifetime=${providerStatsCounters.skippedUnavailable}`);
     console.log(`[API REQUEST METRICS] networkCalls=${httpMetrics.networkCalls} | cacheHits=${httpMetrics.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls} | failedCalls=${httpMetrics.failedCalls} | scope=PROCESS_LIFETIME | bySource=${JSON.stringify(httpMetrics.bySource)}`);
@@ -7718,8 +7754,19 @@ async function scanLiveMatches() {
       ranked.slice(0, 10)
     ) {
 
+      const ruleText = item.ai?.efficiency == null || !Number.isFinite(Number(item.ai.efficiency))
+        ? 'N/A'
+        : `${item.ai.efficiency}%`;
+      const aiGoalText = item.aiGoal?.percent == null || !Number.isFinite(Number(item.aiGoal.percent))
+        ? 'N/A'
+        : `${item.aiGoal.percent}%`;
+      // Mark only alerts that were successfully recorded after Telegram sending.
+      // A passing probability threshold alone must never show as sent.
+      const sentIcon = item.alertKey && alertState.has(item.alertKey)
+        ? ' | 🟢 ĐÃ GỬI CẢNH BÁO'
+        : '';
       console.log(
-        `${item.minute}' | ${item.ai.efficiency == null ? "N/A" : item.ai.efficiency+"%"} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}`
+        `${item.minute}' | Rule ${ruleText} | AI Goal ${aiGoalText} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentIcon}`
       );
     }
 
