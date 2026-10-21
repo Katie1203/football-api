@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
 const ruleV4Scenarios = require('./rule_v4_scenarios');
+const v4ScenarioParallel = require('./v4_scenario_parallel');
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
 let ruleV4;
 try {
@@ -6761,6 +6762,7 @@ async function sendTelegramAlert(
     v3TelegramDetail(item.ai, st, item.minute),
     `🧠 RULE: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
+    ...(alertNumber === 1 ? ['🔔 Tín hiệu RUNG lần 1: AI Goal >65% (Rule chỉ tham khảo)'] : []),
     ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7380,16 +7382,27 @@ async function analyzeOneMatch(
   // ALERT DECISION
   // ======================================================
 
-  const alertDecision =
-    shouldSendAlert(
-      alertKey,
-      ai.efficiency,
-      minute,
-      momentum,
-      stats,
-      match.homeScore,
-      match.awayScore
-    );
+  // AI GOAL RUNG (first alert only): use AI Goal >65% as the primary
+  // probability gate. Existing Rule-based second-alert/BIG BET logic stays intact.
+  const hasPriorAlert = alertState.has(alertKey);
+  const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
+  const alertDecision = shouldSendAlert(
+    alertKey,
+    hasPriorAlert ? ai.efficiency : aiGoalPercent,
+    minute,
+    momentum,
+    stats,
+    match.homeScore,
+    match.awayScore
+  );
+  if (!hasPriorAlert) {
+    if (alertDecision.reason === `RULE_BELOW_${MIN_SEND_PERCENTAGE}`)
+      alertDecision.reason = `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`;
+    else if (alertDecision.reason === 'STATS_MISSING_DYNAMIC_WINDOW')
+      alertDecision.reason = 'AI_GOAL_UNAVAILABLE';
+    else if (alertDecision.send)
+      alertDecision.reason = 'AI_GOAL_FIRST_ALERT';
+  }
 
 
   // After a verified score change, require fresh post-goal evidence before first alert.
@@ -7407,6 +7420,8 @@ async function analyzeOneMatch(
   // AI Goal is display-only: do not block an otherwise eligible Rule alert.
   // Rule threshold, post-goal evidence and BIG BET checks remain unchanged.
   console.log(`[V4 SHADOW] ${match.homeName} vs ${match.awayName} | ${minute}' | Rule=${ai.efficiency == null ? 'N/A' : ai.efficiency+'%'} | Model=${ai.model || 'N/A'} | Scenario=${scenarioV4.groups.join(',') || 'NONE'} | Coverage=${JSON.stringify(scenarioV4.coverage)} | Decision=${alertDecision.reason || 'UNKNOWN'} | Send=${alertDecision.send}`);
+  // Observation-only parallel dataset; does not affect Rule, AI Goal, Telegram or BIG BET.
+  try { v4ScenarioParallel.observe({key:alertKey,match,minute,stats,rule:ai.efficiency,aiGoal:aiGoal.percent,scenario:scenarioV4,decision:alertDecision}); } catch (e) { console.warn('[V4 PARALLEL DATA ERROR]', e.message); }
 
   const compactGoalTimeline =
     extractGoalTimeline(
