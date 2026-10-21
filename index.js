@@ -2,6 +2,7 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
+const ruleV4Scenarios = require('./rule_v4_scenarios');
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
 let ruleV4;
 try {
@@ -7352,6 +7353,7 @@ async function analyzeOneMatch(
     postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current,unverified:true});
   }
   const postGoal=postGoalState.get(alertKey);
+  const scenarioV4 = ruleV4Scenarios.detect(stats, windows);
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
   if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
@@ -7402,19 +7404,9 @@ async function analyzeOneMatch(
     }
   }
 
-  // Both Rule and AI Goal must pass the Telegram threshold.
-  // Preserve the existing Rule, BIG BET and POST GOAL calculations.
-  if (alertDecision.send) {
-    const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
-    if (!Number.isFinite(aiGoalPercent) || aiGoalPercent < MIN_SEND_PERCENTAGE) {
-      alertDecision.send = false;
-      alertDecision.bigBet = false;
-      alertDecision.reason = Number.isFinite(aiGoalPercent)
-        ? `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`
-        : 'AI_GOAL_PROBABILITY_UNAVAILABLE';
-      console.log(`[AI GOAL GATE] ${match.homeName} vs ${match.awayName} | Rule=${ai.efficiency}% | AI Goal=${Number.isFinite(aiGoalPercent) ? aiGoalPercent+'%' : 'N/A'} | BLOCK TELEGRAM`);
-    }
-  }
+  // AI Goal is display-only: do not block an otherwise eligible Rule alert.
+  // Rule threshold, post-goal evidence and BIG BET checks remain unchanged.
+  console.log(`[V4 SHADOW] ${match.homeName} vs ${match.awayName} | ${minute}' | Rule=${ai.efficiency == null ? 'N/A' : ai.efficiency+'%'} | Model=${ai.model || 'N/A'} | Scenario=${scenarioV4.groups.join(',') || 'NONE'} | Coverage=${JSON.stringify(scenarioV4.coverage)} | Decision=${alertDecision.reason || 'UNKNOWN'} | Send=${alertDecision.send}`);
 
   const compactGoalTimeline =
     extractGoalTimeline(
@@ -7474,6 +7466,8 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     ...match,
 
     ruleConfidence,
+
+    scenarioV4,
 
     alertKey,
 
