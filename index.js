@@ -2284,6 +2284,15 @@ function recursivelyParseStats(
     }
   }
 
+  // Verified two-sided provider row variants: rawStats:[{value}, {value}],
+  // statistics:[{home,away}], or values:[home,away]. No synthetic zeroes.
+  if (Array.isArray(node.rawStats) && node.rawStats.length === 2) {
+    const kind = detectStatType(node.key || node.title || node.name || node.type || '');
+    if (kind) {
+      const unpack = x => x && typeof x === 'object' ? (x.value ?? x.rawValue ?? null) : x;
+      applyStat(stats, kind, unpack(node.rawStats[0]), unpack(node.rawStats[1]));
+    }
+  }
   parseGenericStatObject(
     node,
     stats
@@ -2912,7 +2921,9 @@ function parseStatsFromRawMatch(
     raw.liveStats,
 
     raw.live_stats,
-    raw.content?.stats, raw.data?.statistics, raw.data?.stats, raw.response?.statistics, raw.response?.stats
+    raw.content?.stats, raw.data?.statistics, raw.data?.stats, raw.response?.statistics, raw.response?.stats,
+    raw.data?.match?.statistics, raw.data?.match?.stats, raw.response?.match?.statistics,
+    raw.event?.statistics, raw.event?.stats, raw.match?.statistics, raw.match?.stats
 
   ];
 
@@ -3133,7 +3144,11 @@ async function fetchMatchDetailStats(
   const sourceMatches = [...linked];
   for (const candidate of independentLiveSourceRegistry) {
     if (sourceMatches.some(m => m.source === candidate.source && String(m.id) === String(candidate.id))) continue;
-    if (resolverSameMatch(match, candidate) || resolverExactSameFixture(match, candidate)) sourceMatches.push(candidate);
+    if (resolverSameMatch(match, candidate) || resolverExactSameFixture(match, candidate) || resolverStatsMatch(match, candidate)) {
+      if (resolverStatsMatch(match,candidate) && !resolverSameMatch(match,candidate) && !resolverExactSameFixture(match,candidate))
+        console.log(`[STATS MATCH RESCUE] ${match.homeName} vs ${match.awayName} | ${candidate.source}:${candidate.id} | verified sides/score/minute`);
+      sourceMatches.push(candidate);
+    }
   }
   // A provider's live list can be incomplete or use an alternate team alias.
   // Report the strongest unmatched candidates for debugging; do NOT attach
@@ -3147,6 +3162,7 @@ async function fetchMatchDetailStats(
       near.map(x=>`${x.m.source}:${x.m.id} home=${x.h.toFixed(2)} away=${x.a.toFixed(2)} minute=${x.m.minute} accepted=${resolverSameMatch(match,x.m)||resolverExactSameFixture(match,x.m)}`).join(' | '));
   }
   if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
+    console.log(`[STATS SOURCE COVERAGE] ${match.homeName} vs ${match.awayName} | only=${match.source}:${match.id} | provider alternatives unavailable or unverified`);
     console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | NO_CROSS_PROVIDER_MATCH | candidates=${independentLiveSourceRegistry.length}`);
   }
   if (sourceMatches.length > linked.length) {
@@ -7018,6 +7034,9 @@ const RESOLVER_TEAM_ALIASES = [
   [/\bmadura\s+(?:united|utd)\b/g, 'madura united'],
   [/\b(?:cong\s+an\s+ha\s+noi|cong\s+an\s+hn|cahn)\b/g, 'cong an ha noi'],
   [/\b(?:atk\s+)?mohun\s+bagan(?:\s+sg)?\b/g, 'mohun bagan'],
+  [/\b(?:ofk\s+)?mladost\s+(?:donja\s+gorica|dg)\b/g, 'mladost donja gorica'],
+  [/\b(?:al\s+)?nass?r\s+(?:sc|fc)\b/g, 'al nasr'],
+  [/\b(?:utd|untd)\b/g, 'united'],
 ];
 function resolverAliasTokens(name) {
   let normalized = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -7054,6 +7073,29 @@ function resolverTeamScore(a, b) {
   const fuzzy = left.length>=6 && right.length>=6
     ? 1-editDistance(left,right)/Math.max(left.length,right.length) : 0;
   return Math.max(dice,fuzzy);
+}
+// Additional match recognition ONLY for statistics, never for alert deduplication.
+// Require matching sides, close clocks, equal known score and compatible kickoff.
+function resolverStatsMatch(a,b) {
+  if (!a || !b || a.source === b.source) return false;
+  const h=resolverTeamScore(a.homeName,b.homeName), w=resolverTeamScore(a.awayName,b.awayName);
+  if (h < .74 || w < .74 || (h+w)/2 < .86) return false;
+  const am=Number(a.minute),bm=Number(b.minute);
+  if (!Number.isFinite(am)||!Number.isFinite(bm)||am<=0||bm<=0||Math.abs(am-bm)>3) return false;
+  const scoreKeys=['homeScore','awayScore'];
+  for (const k of scoreKeys) {
+    if (a[k] == null || b[k] == null || Number(a[k])!==Number(b[k])) return false;
+  }
+  const getKickoff=m=>m.kickoff ?? m.startTime ?? m.startTimestamp ?? m.raw?.startTimestamp ?? m.raw?.startTime;
+  const ak=getKickoff(a),bk=getKickoff(b);
+  if (ak && bk) {
+    const toMs=v=>{const n=Number(v);return Number.isFinite(n)&&n>1e9?(n<1e12?n*1000:n):Date.parse(v);};
+    const x=toMs(ak),y=toMs(bk);
+    if (!Number.isFinite(x)||!Number.isFinite(y)||Math.abs(x-y)>10*60*1000) return false;
+  }
+  const ac=resolverLeagueCountry(a),bc=resolverLeagueCountry(b);
+  if (ac && bc && ac!==bc && !ac.includes(bc) && !bc.includes(ac)) return false;
+  return true;
 }
 function resolverLeagueCountry(m) {
   const raw = m.raw || {};
