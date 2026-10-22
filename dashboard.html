@@ -343,6 +343,14 @@ main>.tabs button{white-space:nowrap}
 .match-card>.ai-overview .ai-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}
 }
 </style>
+
+<style>
+/* FT score directly under WIN/LOSS/PENDING; remove duplicate FT footer */
+.match-ft-metric .match-ft-score{display:block;margin-top:6px;font-size:14px;font-weight:700;line-height:1.35;color:#eaf9f2;white-space:nowrap}
+.match-ft-metric .match-ft-score b{font-size:16px;color:#fff;letter-spacing:.2px}
+.match-ft-metric .match-result{margin-bottom:0!important}
+@media(max-width:600px){.match-ft-metric .match-ft-score{font-size:12px}.match-ft-metric .match-ft-score b{font-size:14px}}
+</style>
 </head><body><main><div class="promax-topbar">
   <div class="promax-brand"><span>PROMAX</span> L18</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -377,10 +385,10 @@ const bigBetSignalCell=x=>{if(String(x?.alertType||'').trim().toUpperCase()!=='B
  '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.homeScore)+' – '+esc(x.awayScore)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
  '<div class="match-status-inline"><span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span> '+signalStrengthCell(x)+bigBetSignalCell(x)+'</div>'+
  '<div class="match-scenarios"><div class="match-scenarios-title">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div></div></div>'+
- '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong></div></div>'+
+ '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong><div class="match-ft-score">FT: <b>'+(x.ftHome==null||x.ftAway==null?'Đang chờ':esc(x.ftHome)+' – '+esc(x.ftAway))+'</b></div></div></div>'+
  '<div class="match-actions"><button type="button" class="match-btn-stats" data-stats-index="'+idx+'">▥ Chi tiết thống kê</button><button type="button" class="ai-detail-button match-btn-ai" data-ai-index="'+idx+'">✧ Chi tiết AI</button></div></div>'+
  '<div class="match-interpretation"><b>Diễn giải:</b> '+esc(signalExplanation(x))+' · Rule V4 '+scoreCell(x.rule)+' · AI Goal '+scoreCell(x.aiGoalProbability)+' · '+esc(verdict)+'. '+(x.aiGoalCalibrated===true?'Trạng thái hiệu chuẩn theo Audit.':'Chưa xác nhận mô hình hiệu chuẩn; không suy diễn độ chính xác thực tế.')+'</div>'+
- '<div class="match-bottom"><span>Kết quả FT: <b>'+(x.ftHome==null?'Đang chờ':esc(x.ftHome)+'-'+esc(x.ftAway))+'</b> · '+pill(x.goalResult)+' · '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine))+'</span><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
+ '<div class="match-bottom"><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
  '<details class="match-stats-details" data-stats-detail="'+idx+'"><summary hidden>Thống kê</summary><div class="match-stats-content">'+detail+'</div></details>'+
  '</article></td></tr>';
  }).join('')||'<tr><td class="match-card-cell">Chưa có cảnh báo Telegram được xác nhận gửi thành công.</td></tr>' ;el('checkPage').checked=visible.length>0&&visible.every(x=>selected.has(x.id));el('deleteSelected').textContent='Xóa đã chọn ('+selected.size+')';el('deleteSelected').disabled=!selected.size;el('pageInfo').textContent='Trang '+currentPage+'/'+pages+' · '+allRecords.length+' bản ghi';let buttons='';for(let i=Math.max(1,currentPage-2);i<=Math.min(pages,Math.max(5,currentPage+2));i++)buttons+='<button '+(i===currentPage?'disabled':'')+' onclick="goPage('+i+')">'+i+'</button>';el('pagination').innerHTML='<button '+(currentPage===1?'disabled':'')+' onclick="goPage('+(currentPage-1)+')">Trước</button>'+buttons+'<button '+(currentPage===pages?'disabled':'')+' onclick="goPage('+(currentPage+1)+')">Sau</button>'; }function goPage(p){currentPage=p;renderPage()}function toggleId(cb){if(cb.checked)selected.add(cb.dataset.id);else selected.delete(cb.dataset.id);renderPage()}function togglePage(yes){for(const x of allRecords.slice((currentPage-1)*pageSize,currentPage*pageSize)){if(yes)selected.add(x.id);else selected.delete(x.id)}renderPage()}async function deleteSelected(){const ids=[...selected];if(!ids.length||!confirm('Xóa vĩnh viễn '+ids.length+' bản ghi Audit đã chọn?'))return;try{const r=await fetch('/api/audit/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'HTTP '+r.status);selected.clear();await load();el('notice').textContent='Đã xóa '+d.deleted+'/'+ids.length+' bản ghi. Audit còn '+d.remaining+' bản ghi, trong đó '+d.pending+' PENDING.'}catch(e){el('notice').textContent='Xóa thất bại: '+e.message}}

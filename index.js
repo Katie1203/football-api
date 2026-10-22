@@ -114,7 +114,10 @@ async function fetchApiSportsStats(id) {
   try {
     const data = await apiSportsGet('/fixtures/statistics',{fixture:id});
     const teams = data?.response;
-    if (!Array.isArray(teams) || teams.length !== 2) return result;
+    if (!Array.isArray(teams) || teams.length !== 2) {
+      console.log(`[API SPORTS STATS] fixture=${id} | responseTeams=${Array.isArray(teams)?teams.length:'invalid'} | no stats payload`);
+      return result;
+    }
     const fieldMap = {'Shots on Goal':'ShotsOnTarget','Total Shots':'TotalShots',
       'Corner Kicks':'Corners','Ball Possession':'Possession',
       'Attacks':'Attacks','Dangerous Attacks':'DangerousAttacks','Dangerous attacks':'DangerousAttacks',
@@ -123,15 +126,24 @@ async function fetchApiSportsStats(id) {
       'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves','Expected Goals':'ExpectedGoals','expected_goals':'ExpectedGoals','xG':'ExpectedGoals'};
     for (let side=0;side<2;side++) {
       for (const row of teams[side].statistics || []) {
-        const suffix=fieldMap[row.type];
+        const suffix=fieldMap[row.type] || fieldMap[String(row.type||'').trim()] || ({
+          'shots on target':'ShotsOnTarget','shots on goal':'ShotsOnTarget',
+          'shots off target':'ShotsOffTarget','shots off goal':'ShotsOffTarget',
+          'shots inside box':'ShotsInsideBox','shots insidebox':'ShotsInsideBox',
+          'total shots':'TotalShots','corner kicks':'Corners',
+          'dangerous attacks':'DangerousAttacks','attacks':'Attacks'
+        })[String(row.type||'').trim().toLowerCase()];
         if (!suffix || row.value === null || row.value === undefined || row.value === '') continue;
         const n=Number(String(row.value).replace('%','').trim());
         if (Number.isFinite(n) && n>=0) { const field = `${side===0?'home':'away'}${suffix}`; result[field]=n; result._present[field]=true; }
       }
     }
-    result.hasData=Array.isArray(teams[0].statistics) && teams[0].statistics.length>0;
+    result.hasData=Object.values(result._present).some(Boolean);
     result.source='apisports';
-    apiSportsStatsCache.set(String(id),{time:Date.now(),data:result});
+    // Cache only actual observations. An empty live statistics response is
+    // often temporary, and must not block retries when the provider updates.
+    if (result.hasData) apiSportsStatsCache.set(String(id),{time:Date.now(),data:result});
+    else console.log(`[API SPORTS STATS] fixture=${id} | empty fields, retry permitted`);
     return result;
   } catch(e) { logSourceError('API-Football','STATS',e); return result; }
 }
@@ -3000,7 +3012,7 @@ const providerStatsRequests = new Map();
 const providerStatsCounters = {network:0, reused:0, skippedUnavailable:0};
 // Avoid retrying a provider that has no useful stats for the same native fixture every scan.
 // This is a per-provider negative cache, NOT a quota circuit breaker.
-const EMPTY_PROVIDER_CACHE_MS = 10 * 60 * 1000;
+const EMPTY_PROVIDER_CACHE_MS = 45 * 1000; // Recheck live providers after a short negative TTL
 // Capability observations never block a provider from supplying missing CORE stats.
 // Only suppress optional-only retries when provider repeatedly lacks those fields.
 const providerOptionalUnsupported=new Map();
@@ -3122,6 +3134,17 @@ async function fetchMatchDetailStats(
     if (sourceMatches.some(m => m.source === candidate.source && String(m.id) === String(candidate.id))) continue;
     if (resolverSameMatch(match, candidate) || resolverExactSameFixture(match, candidate)) sourceMatches.push(candidate);
   }
+  // A provider's live list can be incomplete or use an alternate team alias.
+  // Report the strongest unmatched candidates for debugging; do NOT attach
+  // uncertain fixtures or reuse their native IDs for stats.
+  if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
+    const near = independentLiveSourceRegistry.filter(m => m.source !== match.source)
+      .map(m => ({m, h:resolverTeamScore(match.homeName,m.homeName), a:resolverTeamScore(match.awayName,m.awayName)}))
+      .filter(x => x.h >= .55 && x.a >= .55)
+      .sort((a,b) => b.h+b.a-a.h-a.a).slice(0,3);
+    if (near.length) console.log(`[DA/ATT RESOLVER CANDIDATES] ${match.homeName} vs ${match.awayName} | `+
+      near.map(x=>`${x.m.source}:${x.m.id} home=${x.h.toFixed(2)} away=${x.a.toFixed(2)} minute=${x.m.minute}`).join(' | '));
+  }
   if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
     console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | NO_CROSS_PROVIDER_MATCH | candidates=${independentLiveSourceRegistry.length}`);
   }
@@ -3226,18 +3249,22 @@ async function fetchMatchDetailStats(
 
 
   // BƯỚC 3: Total Shots fallback như logic cũ.
-  if (!stats._present?.homeTotalShots && stats.homeTotalShots <= 0) {
+  if (!stats._present?.homeTotalShots && ['ShotsOnTarget','ShotsOffTarget','BlockedShots'].every(f=>stats._present?.['home'+f]===true)) {
     stats.homeTotalShots =
       stats.homeShotsOnTarget +
       stats.homeShotsOffTarget +
       stats.homeBlockedShots;
+    stats._present.homeTotalShots = true;
+    stats._fieldSources.homeTotalShots = 'derived-complete-shots';
   }
 
-  if (!stats._present?.awayTotalShots && stats.awayTotalShots <= 0) {
+  if (!stats._present?.awayTotalShots && ['ShotsOnTarget','ShotsOffTarget','BlockedShots'].every(f=>stats._present?.['away'+f]===true)) {
     stats.awayTotalShots =
       stats.awayShotsOnTarget +
       stats.awayShotsOffTarget +
       stats.awayBlockedShots;
+    stats._present.awayTotalShots = true;
+    stats._fieldSources.awayTotalShots = 'derived-complete-shots';
   }
 
 
