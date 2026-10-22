@@ -7019,34 +7019,96 @@ function hasUsefulStats(
 }
 
 
-// Experimental API-Sports odds: observation only, never fed to production decisions.
+// AI Goal + Odds experiment: isolated from Rule/production AI/Telegram.
+// Store path should be mounted to a persistent disk in production.
 const aiGoalOddsRecords = new Map();
 const aiGoalOddsCache = new Map();
+const oddsShadowStore = process.env.ODDS_SHADOW_STORE || './ai_goal_odds_samples.json';
+const fsOdds = require('fs');
+let oddsShadowSamples = [];
+let oddsShadowModel = {ready:false,count:0,reason:'NEED_60_SETTLED_FIXTURES'};
 let aiGoalOddsScanCalls = 0;
+try {
+  const saved=JSON.parse(fsOdds.readFileSync(oddsShadowStore,'utf8'));
+  if(Array.isArray(saved)) oddsShadowSamples=saved.filter(x=>x&&x.fixtureId).slice(-5000);
+} catch(e) { if(e.code!=='ENOENT') console.warn('[ODDS SHADOW STORE]',e.message); }
+oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples);
+function persistOddsShadow() {
+  try {
+    fsOdds.writeFileSync(oddsShadowStore+'.tmp',JSON.stringify(oddsShadowSamples));
+    fsOdds.renameSync(oddsShadowStore+'.tmp',oddsShadowStore);
+  } catch(e) { console.warn('[ODDS SHADOW STORE WRITE]',e.message); }
+}
 async function observeAiGoalOdds(match, minute, aiGoalPercent) {
   if (!APISPORTS_KEY) return;
   const candidates=[match,...(match.crossSourceMatches||[])];
   const fixture=candidates.find(c=>c.source==='apisports' && c.id);
-  if (!fixture) return; // Never guess a fixture ID from another provider.
+  if (!fixture) return;
   const id=String(fixture.id), now=Date.now();
   let cached=aiGoalOddsCache.get(id);
   if (!cached || now-cached.at>120000) {
     if (aiGoalOddsScanCalls>=4) return;
     aiGoalOddsScanCalls++;
-    try { cached={at:now,payload:await apiSportsGet('/odds/live',{fixture:id})};
+    try {
+      cached={at:now,payload:await apiSportsGet('/odds/live',{fixture:id})};
       aiGoalOddsCache.set(id,cached);
     } catch(e) { console.warn(`[AI GOAL ODDS SHADOW] fixture=${id} | ${e.message}`);return; }
   }
   const total=Number(match.homeScore)+Number(match.awayScore);
   if (!Number.isFinite(total)) return;
   const assessment=aiGoalOddsShadow.evaluate(cached.payload,total,aiGoalPercent);
+  const quoteTime=Date.parse(assessment.oddsUpdate||'');
+  const fresh=Number.isFinite(quoteTime) && Math.abs(now-quoteTime)<=10*60*1000;
+  const valid=fresh && assessment.blocked!==true && assessment.marketImpliedPercent!==null;
   const record={key:`apisports:${id}`,fixtureId:id,minute,score:`${match.homeScore}-${match.awayScore}`,
     home:match.homeName,away:match.awayName,observedAt:new Date().toISOString(),
-    ...assessment,evaluation:'PENDING_FT'};
+    ...assessment,probability:null,evaluation:'PENDING_FT',
+    quoteValid:valid,modelStatus:oddsShadowModel.reason};
+  // A provisional market reference is NOT labelled as a trained combined AI forecast.
+  if(valid) {
+    record.marketBaselinePercent=assessment.marketImpliedPercent;
+    record.probability=aiGoalOddsShadow.predict(oddsShadowModel,record);
+    record.calibrated=record.probability!==null;
+    if(!oddsShadowSamples.some(x=>x.fixtureId===id)) {
+      oddsShadowSamples.push({...record,observedGoals:total,outcome:null});
+      oddsShadowSamples=oddsShadowSamples.slice(-5000);
+      persistOddsShadow();
+    }
+  }
   aiGoalOddsRecords.set(record.key,record);
   if (aiGoalOddsRecords.size>300) aiGoalOddsRecords.delete(aiGoalOddsRecords.keys().next().value);
 }
-
+let oddsFtAuditBusy=false;
+async function auditAiGoalOddsFt() {
+  if(oddsFtAuditBusy||!APISPORTS_KEY)return;
+  oddsFtAuditBusy=true;
+  try {
+    const pending=oddsShadowSamples.filter(x=>x.outcome==null &&
+      Date.now()-Date.parse(x.observedAt)>90*60*1000).slice(0,4);
+    let changed=false;
+    for(const row of pending) {
+      try {
+        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const f=response?.response?.[0];
+        const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        if(!['FT','AET','PEN'].includes(status))continue;
+        const finalGoals=Number(f?.goals?.home)+Number(f?.goals?.away);
+        if(!Number.isFinite(finalGoals))continue;
+        row.outcome=finalGoals>row.observedGoals?1:0;
+        row.ftScore=`${f.goals.home}-${f.goals.away}`;
+        row.settledAt=new Date().toISOString();
+        changed=true;
+        const active=aiGoalOddsRecords.get(`apisports:${row.fixtureId}`);
+        if(active) {active.evaluation=row.outcome?'WIN':'LOSS';active.ftScore=row.ftScore;}
+      } catch(e) { console.warn('[ODDS SHADOW FT]',row.fixtureId,e.message); }
+    }
+    if(changed) {
+      persistOddsShadow();
+      oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples);
+    }
+  } finally {oddsFtAuditBusy=false;}
+}
+setInterval(()=>auditAiGoalOddsFt().catch(e=>console.warn('[ODDS SHADOW FT]',e.message)),10*60*1000);
 // AI NO-STATS: separate observation-only pipeline, never used by Rule/AI Goal/Telegram.
 const noStatsRecords = new Map();
 const noStatsEventCache = new Map();
@@ -7782,7 +7844,10 @@ async function scanLiveMatches() {
 
 
 app.get('/api/ai-goal-odds-shadow',(req,res)=>{
-  res.json({ok:true,mode:'SHADOW_ONLY',calibrated:false,
+  res.json({ok:true,mode:'SHADOW_ONLY',calibrated:oddsShadowModel.ready,
+    model:{...oddsShadowModel,weights:undefined},
+    samples:oddsShadowSamples.length,
+    settled:oddsShadowSamples.filter(x=>x.outcome!==null).length,
     count:aiGoalOddsRecords.size,records:[...aiGoalOddsRecords.values()]});
 });
 

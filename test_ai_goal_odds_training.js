@@ -1,0 +1,10 @@
+'use strict';
+const assert=require('assert');
+const m=require('./ai_goal_odds_shadow');
+assert.strictEqual(m.train([]).ready,false);
+const rows=Array.from({length:100},(_,i)=>({fixtureId:String(i),observedAt:new Date(Date.UTC(2026,0,1+i)).toISOString(),aiGoalV4Percent:50,marketImpliedPercent:i%2?80:20,outcome:i%2?1:0}));
+const result=m.train(rows);
+assert(result.count===100 && result.holdout===20);
+assert(result.modelBrier<result.baselineBrier);
+assert(result.ready && m.predict(result,rows[1])>m.predict(result,rows[0]));
+console.log('PASS: chronological training, holdout validation, model probabilities');
