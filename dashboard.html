@@ -318,7 +318,32 @@ main>.tabs button{white-space:nowrap}
 /* Rule V4 label and percentage: yellow, display only */
 .match-metrics > .match-metric:nth-child(2) small,
 .match-metrics > .match-metric:nth-child(2) strong { color: #ffd43b !important; }
-</style></head><body><main><div class="promax-topbar">
+
+/* Restore FT result row on desktop and mobile; preserve existing audit data. */
+.match-card .match-bottom{display:flex!important;grid-area:footer!important;align-items:center!important;justify-content:space-between!important;gap:8px!important;flex-wrap:wrap!important;padding:9px 0 0!important;margin:0!important;border-top:1px solid #1b5540!important;font-size:12px!important;color:#c8e8d8!important}
+.match-card .match-bottom b{color:#fff!important;font-size:14px!important}
+.match-card .match-bottom .pill{font-weight:800!important}
+@media(max-width:900px){.match-card{grid-template-areas:"meta" "teams" "signal" "metrics" "scenarios" "explain" "actions" "footer" "details"!important}.match-card .match-bottom{display:flex!important;grid-area:footer!important;font-size:11px!important}}
+</style>
+<style>
+/* AI detail panel opens inside the selected match card */
+.match-card>.ai-overview.ai-focused{
+  display:block!important;grid-column:1/-1!important;grid-row:auto!important;
+  width:100%!important;max-width:none!important;margin:10px 0 0!important;
+  padding:16px!important;border:1px solid #4b9d80!important;
+  border-radius:12px!important;background:#061c18!important;
+  box-shadow:0 4px 18px #0006!important;box-sizing:border-box!important;
+}
+.match-card>.ai-overview .ai-detail-grid{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:9px!important}
+.match-card>.ai-overview .ai-metrics{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important}
+.match-card>.ai-overview .ai-toolbar{display:flex!important;flex-wrap:wrap!important}
+@media(max-width:650px){
+.match-card>.ai-overview.ai-focused{padding:12px!important}
+.match-card>.ai-overview .ai-detail-grid{grid-template-columns:1fr!important}
+.match-card>.ai-overview .ai-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+</style>
+</head><body><main><div class="promax-topbar">
   <div class="promax-brand"><span>PROMAX</span> L18</div>
   <nav class="promax-nav" aria-label="Điều hướng">
     <a href="#audit-list" class="nav-current">Dashboard</a>
@@ -336,7 +361,7 @@ const scenarioStatus=v=>{if(v==null)return 'MISSING';if(typeof v==='boolean')ret
 const achievedGroups=x=>{const raw=scenarioSource(x);return scenarioNames.filter(n=>scenarioStatus(scenarioValue(raw,n))==='PASS');};
 const signalLabel=x=>{const n=Number(x?.aiGoalProbability);return x?.aiGoalProbability==null||!Number.isFinite(n)||n<0||n>100?'Chưa có dữ liệu':n>65?'Cao':n>=50?'Trung bình':'Thấp';};
 const signalExplanation=x=>{const groups=achievedGroups(x);const source=scenarioSource(x);return 'Tín hiệu: '+signalLabel(x)+' (AI Goal '+(x?.aiGoalProbability==null?'—':scoreCell(x.aiGoalProbability))+') · Nhóm đạt: '+(source==null?'Chưa có dữ liệu phân tích':groups.length?groups.join(', '):'Không có nhóm đạt');};
-const bigBetSignalCell=x=>{if(String(x?.alertType||'').trim().toUpperCase()!=='BIG BET'||Number(x?.alertNumber)!==2)return '';return '<br><span class="bigbet-signal">🔥 BIG BET #2 · Đột biến đã xác nhận</span><span class="bigbet-group">Nhóm liên quan: H2_ATTACK_SPIKE</span>';};const confidenceCell=c=>{if(c==null)return '—';const n=typeof c==='number'?c:Number(c.percent);if(!Number.isFinite(n))return '—';return '<b>'+esc(n.toFixed(0))+'%</b>'+(typeof c==='object'&&c.coverage!=null?'<br><span class="muted">'+esc(c.coverage)+'/'+esc(c.total??'—')+' chỉ số · '+esc(c.method||'dữ liệu')+'</span>':'');};function pill(x){return '<span class="pill '+(x==='WIN'?'win':x==='LOSS'?'loss':'pending')+'">'+esc(x)+'</span>'}async function load(){try{const r=await fetch('/api/audit?status='+filter+'&v=L18-2ALERT',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json(),s=d.summary;el('notice').textContent='';if(d.globalSummary){const g=d.globalSummary;el('globalAuditCount').textContent='TOÀN BỘ AUDIT: '+g.sent+' bản ghi · '+g.settled+' đã chốt · '+g.goal.pending+' đang PENDING. Bảng bên dưới đang lọc: '+(filter==='all'?'Tất cả':filter==='pending'?'Đang theo dõi':'Đã chốt');}el('sent').textContent=s.sent;el('settled').textContent=s.settled;el('goalRate').textContent=pct(s.goal.rate);el('overRate').textContent=pct(s.over.rate);el('goalDetail').textContent=s.goal.wins+' WIN / '+s.goal.losses+' LOSS';el('overDetail').textContent=s.over.wins+' WIN / '+s.over.losses+' LOSS · '+s.over.noLine+' NO LINE';el('groups').innerHTML=d.byAlert.map(g=>'<p class="hint">Cảnh báo #'+g.number+' — Còn bàn: <b class="green">'+pct(g.goal.rate)+'</b> · Over: <b class="amber">'+pct(g.over.rate)+'</b> · '+g.sent+' tín hiệu</p>').join('');allRecords=d.records||[];renderPage();if(allRecords.length){const chosen=allRecords.find(x=>x.id===selectedAiRecordId)||allRecords[0];showAiDetails(chosen);}else{showAiDetails(null);}}catch(e){el('notice').textContent='Không tải được dữ liệu: '+e.message}}function renderPage(){const pages=Math.max(1,Math.ceil(allRecords.length/pageSize));currentPage=Math.min(currentPage,pages);const visible=allRecords.slice((currentPage-1)*pageSize,currentPage*pageSize);el('rows').innerHTML=visible.map((x,i)=>{
+const bigBetSignalCell=x=>{if(String(x?.alertType||'').trim().toUpperCase()!=='BIG BET'||Number(x?.alertNumber)!==2)return '';return '<br><span class="bigbet-signal">🔥 BIG BET #2 · Đột biến đã xác nhận</span><span class="bigbet-group">Nhóm liên quan: H2_ATTACK_SPIKE</span>';};const confidenceCell=c=>{if(c==null)return '—';const n=typeof c==='number'?c:Number(c.percent);if(!Number.isFinite(n))return '—';return '<b>'+esc(n.toFixed(0))+'%</b>'+(typeof c==='object'&&c.coverage!=null?'<br><span class="muted">'+esc(c.coverage)+'/'+esc(c.total??'—')+' chỉ số · '+esc(c.method||'dữ liệu')+'</span>':'');};function pill(x){return '<span class="pill '+(x==='WIN'?'win':x==='LOSS'?'loss':'pending')+'">'+esc(x)+'</span>'}async function load(){try{const r=await fetch('/api/audit?status='+filter+'&v=L18-2ALERT',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json(),s=d.summary;el('notice').textContent='';if(d.globalSummary){const g=d.globalSummary;el('globalAuditCount').textContent='TOÀN BỘ AUDIT: '+g.sent+' bản ghi · '+g.settled+' đã chốt · '+g.goal.pending+' đang PENDING. Bảng bên dưới đang lọc: '+(filter==='all'?'Tất cả':filter==='pending'?'Đang theo dõi':'Đã chốt');}el('sent').textContent=s.sent;el('settled').textContent=s.settled;el('goalRate').textContent=pct(s.goal.rate);el('overRate').textContent=pct(s.over.rate);el('goalDetail').textContent=s.goal.wins+' WIN / '+s.goal.losses+' LOSS';el('overDetail').textContent=s.over.wins+' WIN / '+s.over.losses+' LOSS · '+s.over.noLine+' NO LINE';el('groups').innerHTML=d.byAlert.map(g=>'<p class="hint">Cảnh báo #'+g.number+' — Còn bàn: <b class="green">'+pct(g.goal.rate)+'</b> · Over: <b class="amber">'+pct(g.over.rate)+'</b> · '+g.sent+' tín hiệu</p>').join('');allRecords=d.records||[];renderPage();if(allRecords.length){const chosen=allRecords.find(x=>x.id===selectedAiRecordId)||allRecords[0];showAiDetails(chosen);}else{showAiDetails(null);}}catch(e){el('notice').textContent='Không tải được dữ liệu: '+e.message}}function renderPage(){const aiPanel=document.querySelector('.ai-overview');if(aiPanel&&aiPanel.closest('.match-card')){aiPanel.classList.remove('ai-focused');document.querySelector('main').insertBefore(aiPanel,document.querySelector('main .tabs'));}const pages=Math.max(1,Math.ceil(allRecords.length/pageSize));currentPage=Math.min(currentPage,pages);const visible=allRecords.slice((currentPage-1)*pageSize,currentPage*pageSize);el('rows').innerHTML=visible.map((x,i)=>{
  const idx=(currentPage-1)*pageSize+i;
  const groups=achievedGroups(x);
  const ai=Number(x.aiGoalProbability),rule=Number(x.rule);
@@ -355,20 +380,31 @@ const bigBetSignalCell=x=>{if(String(x?.alertType||'').trim().toUpperCase()!=='B
  '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong></div></div>'+
  '<div class="match-actions"><button type="button" class="match-btn-stats" data-stats-index="'+idx+'">▥ Chi tiết thống kê</button><button type="button" class="ai-detail-button match-btn-ai" data-ai-index="'+idx+'">✧ Chi tiết AI</button></div></div>'+
  '<div class="match-interpretation"><b>Diễn giải:</b> '+esc(signalExplanation(x))+' · Rule V4 '+scoreCell(x.rule)+' · AI Goal '+scoreCell(x.aiGoalProbability)+' · '+esc(verdict)+'. '+(x.aiGoalCalibrated===true?'Trạng thái hiệu chuẩn theo Audit.':'Chưa xác nhận mô hình hiệu chuẩn; không suy diễn độ chính xác thực tế.')+'</div>'+
- '<div class="match-bottom"><span>FT: <b>'+(x.ftHome==null?'Đang chờ':esc(x.ftHome)+'-'+esc(x.ftAway))+'</b> · '+pill(x.goalResult)+' · '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine))+'</span><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
+ '<div class="match-bottom"><span>Kết quả FT: <b>'+(x.ftHome==null?'Đang chờ':esc(x.ftHome)+'-'+esc(x.ftAway))+'</b> · '+pill(x.goalResult)+' · '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine))+'</span><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
  '<details class="match-stats-details" data-stats-detail="'+idx+'"><summary hidden>Thống kê</summary><div class="match-stats-content">'+detail+'</div></details>'+
  '</article></td></tr>';
  }).join('')||'<tr><td class="match-card-cell">Chưa có cảnh báo Telegram được xác nhận gửi thành công.</td></tr>' ;el('checkPage').checked=visible.length>0&&visible.every(x=>selected.has(x.id));el('deleteSelected').textContent='Xóa đã chọn ('+selected.size+')';el('deleteSelected').disabled=!selected.size;el('pageInfo').textContent='Trang '+currentPage+'/'+pages+' · '+allRecords.length+' bản ghi';let buttons='';for(let i=Math.max(1,currentPage-2);i<=Math.min(pages,Math.max(5,currentPage+2));i++)buttons+='<button '+(i===currentPage?'disabled':'')+' onclick="goPage('+i+')">'+i+'</button>';el('pagination').innerHTML='<button '+(currentPage===1?'disabled':'')+' onclick="goPage('+(currentPage-1)+')">Trước</button>'+buttons+'<button '+(currentPage===pages?'disabled':'')+' onclick="goPage('+(currentPage+1)+')">Sau</button>'; }function goPage(p){currentPage=p;renderPage()}function toggleId(cb){if(cb.checked)selected.add(cb.dataset.id);else selected.delete(cb.dataset.id);renderPage()}function togglePage(yes){for(const x of allRecords.slice((currentPage-1)*pageSize,currentPage*pageSize)){if(yes)selected.add(x.id);else selected.delete(x.id)}renderPage()}async function deleteSelected(){const ids=[...selected];if(!ids.length||!confirm('Xóa vĩnh viễn '+ids.length+' bản ghi Audit đã chọn?'))return;try{const r=await fetch('/api/audit/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'HTTP '+r.status);selected.clear();await load();el('notice').textContent='Đã xóa '+d.deleted+'/'+ids.length+' bản ghi. Audit còn '+d.remaining+' bản ghi, trong đó '+d.pending+' PENDING.'}catch(e){el('notice').textContent='Xóa thất bại: '+e.message}}
 let selectedAiRecordId=null;
 function showAiDetailsByIndex(i){
  const x=allRecords[i]; if(!x)return;
+ const clicked=document.querySelector('#rows button[data-ai-index="'+i+'"]');
+ const card=clicked?.closest('.match-card');
+ const panel=document.querySelector('.ai-overview');
+ if(!card||!panel)return;
+ const alreadyOpen=panel.classList.contains('ai-focused')&&panel.parentElement===card&&selectedAiRecordId===x.id;
+ if(alreadyOpen){
+   panel.classList.remove('ai-focused');
+   clicked.textContent='✧ Chi tiết AI';
+   return;
+ }
  showAiDetails(x);
  document.querySelectorAll('#rows tr').forEach(row=>row.classList.remove('ai-row-selected'));
- const clicked=document.querySelector('#rows button[data-ai-index="'+i+'"]');
- if(clicked)clicked.closest('tr')?.classList.add('ai-row-selected');
- const panel=document.querySelector('.ai-overview');
+ document.querySelectorAll('#rows button[data-ai-index]').forEach(b=>b.textContent='✧ Chi tiết AI');
+ clicked.closest('tr')?.classList.add('ai-row-selected');
+ clicked.textContent='✕ Đóng chi tiết AI';
+ card.appendChild(panel);
  panel.classList.add('ai-focused');
- panel.scrollIntoView({block:'start',behavior:'smooth'});
+ panel.scrollIntoView({block:'nearest',behavior:'smooth'});
 }
 el('rows').addEventListener('click',event=>{
  const button=event.target.closest('button[data-ai-index]');
