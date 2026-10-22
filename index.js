@@ -14,6 +14,7 @@ try {
 
 // Goal AI V4 is informational; it never changes Rule or Telegram decisions.
 const aiGoalPipeline = require('./v4_ai_goal_pipeline');
+const aiGoalBetDecision = require('./ai_goal_bet_verdict');
 let aiGoalV4;
 try {
   aiGoalV4 = require('./ai_goal_v4');
@@ -6703,6 +6704,7 @@ async function sendTelegramAlert(
     v3TelegramDetail(item.ai, st, item.minute),
     `🧠 RULE: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
+    `🔔 AI Goal dự đoán còn ≥1 bàn: ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).verdict} | ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).mode} (RUNG yêu cầu Rule V4 >60%)`,
     ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7340,11 +7342,17 @@ async function analyzeOneMatch(
     }
   }
 
+  // The trained two-stage V4 + four-scenario probability is the final AI Goal
+  // next-goal assessment when independently validated. Until then, keep the
+  // previous production gates and label the decision as uncalibrated.
+  const nextGoalDecision = aiGoalBetDecision.decide(aiGoal,ai.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
+  console.log(`[AI GOAL NEXT-GOAL] ${match.homeName} vs ${match.awayName} | ${minute}' | ${nextGoalDecision.verdict} | AI Goal=${nextGoalDecision.probability ?? 'N/A'}% | Rule=${nextGoalDecision.rule ?? 'N/A'}% | mode=${nextGoalDecision.mode} | reason=${nextGoalDecision.reason}`);
+
   // Telegram RUNG requires Rule V4 >60% AND AI Goal >65%.
   // Preserve the existing Rule, BIG BET and POST GOAL calculations.
   if (alertDecision.send) {
     const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
-    if (!Number.isFinite(aiGoalPercent) || aiGoalPercent <= MIN_SEND_PERCENTAGE) {
+    if (!nextGoalDecision.eligible) {
       alertDecision.send = false;
       alertDecision.bigBet = false;
       alertDecision.reason = Number.isFinite(aiGoalPercent)
@@ -7686,9 +7694,11 @@ async function scanLiveMatches() {
 
       const ruleDisplay = item.ai?.efficiency == null ? 'N/A' : item.ai.efficiency + '%';
       const aiGoalDisplay = item.aiGoal?.percent == null ? 'N/A' : item.aiGoal.percent + '%';
+      const verdict = aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
+      const betLabel = `${verdict.verdict} (${verdict.mode})`;
       const sentLabel = item.telegramSent === true ? ' | 🟢 ĐÃ GỬI CẢNH BÁO' : '';
       console.log(
-        `${item.minute}' | Rule ${ruleDisplay} | AI Goal ${aiGoalDisplay} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentLabel}`
+        `${item.minute}' | Rule ${ruleDisplay} | AI Goal ${aiGoalDisplay} | AI verdict ${betLabel} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentLabel}`
       );
     }
 

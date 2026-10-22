@@ -10,6 +10,22 @@ const scenarios=require('./v4_goal_scenarios');
 const sigmoid=z=>1/(1+Math.exp(-Math.max(-35,Math.min(35,z))));
 const logit=p=>Math.log(Math.max(.001,Math.min(.999,p))/(1-Math.max(.001,Math.min(.999,p))));
 const brier=rows=>rows.reduce((s,r)=>s+(r.y-r.p)**2,0)/rows.length;
+// Probability calibration is evaluated out of sample; a high score is not
+// automatically a high chance of a future goal.
+function calibration(rows){
+ const bins=[];let weightedError=0,used=0;
+ for(let lo=0;lo<1;lo+=.1){
+  const hi=Math.min(1,lo+.1);
+  const subset=rows.filter(r=>r.p>=lo&&(hi===1?r.p<=hi:r.p<hi));
+  if(!subset.length)continue;
+  const predicted=subset.reduce((a,r)=>a+r.p,0)/subset.length;
+  const observed=subset.reduce((a,r)=>a+r.y,0)/subset.length;
+  bins.push({from:Number(lo.toFixed(1)),to:Number(hi.toFixed(1)),count:subset.length,predicted,observed});
+  weightedError+=subset.length*Math.abs(predicted-observed);used+=subset.length;
+ }
+ return {ece:used?weightedError/used:null,bins};
+}
+
 function fit(rows){
  const d=rows[0].x.length,n=rows.length;
  const means=Array.from({length:d},(_,j)=>rows.reduce((s,r)=>s+r.x[j],0)/n);
@@ -79,16 +95,22 @@ async function trainFromAudit(audit){
  const results=[];
  for(const r of c){
   const enhanced=pipeline.evaluate(model,r.stats,r.windows,r.originalRule);
-  if(enhanced)results.push({y:r.y,p:enhanced.percent/100,baseline:r.originalGoal/100});
+  if(enhanced)results.push({y:r.y,p:enhanced.percent/100,baseline:r.originalGoal/100,rule:r.originalRule});
  }
  if(results.length<30)return;
- const alerts=results.filter(r=>r.p>.65),wins=alerts.reduce((s,r)=>s+r.y,0);
+ // Evaluate the actual first-alert probability thresholds (AI Goal >65 AND Rule >60).
+ const alerts=results.filter(r=>r.p>.65&&r.rule>60),wins=alerts.reduce((s,r)=>s+r.y,0);
  const rate=alerts.length?wins/alerts.length:null;
  const newBrier=brier(results),oldBrier=brier(results.map(r=>({y:r.y,p:r.baseline})));
- const accepted=alerts.length>=20&&rate>=.65&&newBrier<oldBrier;
- console.log(`[V4 GOAL TRAIN] matches=${rows.length} holdout=${results.length} RUNG>65=${alerts.length} WIN=${wins} rate=${rate==null?'N/A':(rate*100).toFixed(1)+'%'} Brier old=${oldBrier.toFixed(4)} new=${newBrier.toFixed(4)} accepted=${accepted}`);
+ const newCalibration=calibration(results);
+ const oldCalibration=calibration(results.map(r=>({y:r.y,p:r.baseline})));
+ // Both reliability and accuracy must improve on later, unseen matches.
+ // Avoid accepting a model just because it sends very few alerts.
+ const accepted=alerts.length>=30&&rate>=.65&&newBrier<oldBrier&&
+   newCalibration.ece<oldCalibration.ece&&newCalibration.ece<=.10;
+ console.log(`[V4 GOAL TRAIN] matches=${rows.length} holdout=${results.length} RUNG>65=${alerts.length} WIN=${wins} rate=${rate==null?'N/A':(rate*100).toFixed(1)+'%'} Brier old=${oldBrier.toFixed(4)} new=${newBrier.toFixed(4)} ECE old=${oldCalibration.ece.toFixed(4)} new=${newCalibration.ece.toFixed(4)} accepted=${accepted}`);
  if(!accepted)return;
- model.validation={accepted:true,holdout:results.length,alertsOver65:alerts.length,wins,winRate:rate,brierOld:oldBrier,brierNew:newBrier};
+ model.validation={accepted:true,holdout:results.length,alertsOver65:alerts.length,wins,winRate:rate,brierOld:oldBrier,brierNew:newBrier,eceOld:oldCalibration.ece,eceNew:newCalibration.ece,calibrationBins:newCalibration.bins,gate:'AI_GOAL_GT_65_AND_RULE_GT_60'};
  model.training={matches:rows.length,stage1:a.length,stage2:stage2.length,stage3:results.length,createdAt:new Date().toISOString(),source:'confirmed_audit_first_alert'};
  // Persist first, then activate. If Render storage is ephemeral, re-train from audit on restart.
  try{fs.writeFileSync(pipeline.MODEL_FILE+'.tmp',JSON.stringify(model,null,2));fs.renameSync(pipeline.MODEL_FILE+'.tmp',pipeline.MODEL_FILE);}
