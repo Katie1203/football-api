@@ -34,11 +34,305 @@ body{background:#03120f}main{max-width:1600px}
 @media(max-width:1250px){.match-main{grid-template-columns:minmax(0,2fr) repeat(3,minmax(95px,.7fr))}.match-main .match-teams{grid-column:auto}.match-main .match-metric:last-child{grid-column:1/-1;min-height:0}}
 @media(max-width:800px){body{padding:9px}.match-card{padding:11px}.match-head-left{width:100%}.match-head-right{width:100%;justify-content:space-between}.match-head-right button{flex:1;min-width:0;padding:8px 5px;font-size:12px}.match-head-right .ai-status{flex-basis:100%;text-align:center}.match-main{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin:8px 0}.match-main .match-teams{grid-column:1/-1;min-height:58px;padding:5px 0}.match-main .match-metric:last-child{grid-column:1/-1;min-height:0}.match-main .match-metric{padding:9px;min-height:70px}.match-name{font-size:15px}.match-score{font-size:22px}.match-metric strong{font-size:20px}.match-metric .match-result{font-size:19px}.match-achieved{gap:5px}.scenario-pass{font-size:10px;padding:5px 7px}.match-bottom{align-items:flex-start}.match-interpretation{line-height:1.55}}
 @media(max-width:380px){.match-name{font-size:13px}.match-score{font-size:19px}.match-head-right button{font-size:11px}.match-main .match-metric{padding:7px}.match-metric strong{font-size:18px}}
-</style></head><body><main><header><div><div class="sub">KÈO RUNG · PROMAX L18 · RULE V3.4</div><h1>PROMAX L18 – Rule V3.4</h1><div class="hint">Chỉ tính WIN RATE trên kết quả WIN/LOSS đã chốt; PUSH và chưa có kèo Over không tính vào mẫu số.</div></div><div><button onclick="load()">↻ Làm mới</button></div></header><div id="notice"></div><p id="globalAuditCount" class="hint">Đang tải tổng số bản ghi Audit...</p><section class="stats"><div class="stat"><small>Đã phát</small><strong id="sent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="settled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="goalRate" class="green">—</strong><small id="goalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="overRate" class="amber">—</strong><small id="overDetail"></small></div></section><section class="split"><div class="panel"><h3>Hiệu quả theo lần cảnh báo</h3><div id="groups"></div></div><div class="panel"><h3>Quy tắc kiểm toán</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line tài đã lưu tại thời điểm báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Tự chốt FT qua SofaScore, FotMob hoặc API-Football khi nhà cung cấp xác nhận trận kết thúc và có tỷ số chính thức.</p></div></section><section class="panel ai-overview" aria-label="AI Goal và Rule V4"><div class="ai-toolbar"><div><h3 style="margin:0 0 5px">AI Goal · Rule V4 · BET / NO BET</h3><div class="hint">Chi tiết tín hiệu từ bản ghi Audit, không thay đổi điều kiện gửi cảnh báo</div></div><span id="aiVerdict" class="ai-status ai-na">CHƯA CÓ DỮ LIỆU</span></div><div class="ai-metrics"><div class="ai-metric"><small class="muted">AI Goal</small><strong id="aiProbability">—</strong></div><div class="ai-metric"><small class="muted">Rule V4 (giá trị Audit)</small><strong id="aiRule">—</strong></div><div class="ai-metric"><small class="muted">Trạng thái mô hình</small><strong id="aiModelStatus" style="font-size:17px">—</strong></div></div><div id="aiSelectedMatch" class="hint" style="margin-bottom:12px">Chọn “Chi tiết AI” ở một trận để xem.</div><div id="aiSignalSummary" class="hint" style="margin:-4px 0 10px;color:#a4e7c0">Chọn trận để xem tín hiệu và nhóm đạt.</div><div class="ai-detail-grid"><div class="ai-detail-card"><small>01 · ONE_SIDE_PRESSURE</small><strong id="aiScenarioOne">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>02 · TWO_WAY_ATTACK</small><strong id="aiScenarioTwo">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>03 · H2_ATTACK_SPIKE</small><strong id="aiScenarioSpike">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>04 · HIGH_QUALITY_CHANCES</small><strong id="aiScenarioQuality">Chưa có dữ liệu Audit</strong></div></div><div class="ai-toolbar" style="margin-top:14px"><div class="hint">Kết quả FT: <b id="aiFT">—</b></div><div class="hint">Tín hiệu Telegram: <b id="aiSent">—</b></div></div><p class="ai-note" id="aiExplanation">BET/NO BET theo hai ngưỡng chỉ là nhãn quy tắc; chưa phải kết luận độc lập của mô hình đã hiệu chuẩn. Những trường chưa lưu trong Audit sẽ được ghi rõ là thiếu, không tự suy đoán.</p></section><div class="tabs"><button onclick="filter='all';load()">Tất cả</button><button onclick="filter='pending';load()">Đang theo dõi</button><button onclick="filter='settled';load()">Đã chốt</button></div><section class="panel"><div class="audit-tools"><button id="deleteSelected" onclick="deleteSelected()">Xóa đã chọn (0)</button><button onclick="togglePage(true)">Chọn trang này</button><button onclick="togglePage(false)">Bỏ chọn trang</button><span id="pageInfo" class="hint"></span></div><div class="audit-scroll"><table><thead><tr><th><input type="checkbox" id="checkPage" onchange="togglePage(this.checked)"></th><th>Thời gian</th><th>Trận đấu</th><th>Phút</th><th>Rule V4</th><th>AI Goal</th><th>Độ tin cậy</th><th>Nhóm đạt (V4)</th><th>Tỷ số / FT</th><th>Kết quả</th><th>Chi tiết</th><th>AI</th></tr></thead><tbody id="rows"></tbody></table></div><div id="pagination" class="audit-tools" style="margin-top:12px"></div></section><p class="hint">Dữ liệu làm mới mỗi 60 giây. Rule V3.4 quyết định cảnh báo; AI Goal thử nghiệm chưa hiệu chuẩn. Bản ghi cũ thiếu AI Goal hiển thị —. Độ tin cậy được lưu tại thời điểm rung; không ảnh hưởng Rule hoặc điều kiện gửi Telegram.</p></main><script>
+
+/* PROMAX L18 APPROVED DESKTOP + MOBILE CARD LAYOUT — 2026-10-22 */
+:root{font-size:16px}body{padding:18px;background:#03130f}main{max-width:1680px}
+.audit-scroll{max-height:78vh;overflow-y:auto;overflow-x:hidden}.audit-scroll tbody{display:block;width:100%}.audit-scroll tr{display:block;width:100%;margin-bottom:12px}.audit-scroll td.match-card-cell{display:block;width:100%;padding:0;border:0}
+.match-card{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,1fr);grid-template-areas:"header header" "teams metrics" "signal metrics" "scenarios scenarios" "footer footer" "explain explain" "details details";column-gap:18px;row-gap:10px;padding:20px 22px;border-radius:14px;border:1px solid #0d9064;background:linear-gradient(115deg,#001b16,#00241b 65%,#001b16);box-shadow:0 2px 16px #0004}
+.match-head{grid-area:header;display:flex;align-items:center;justify-content:space-between;gap:14px;border-bottom:1px solid #194e3c;padding-bottom:10px}
+.match-head-left{font-size:14px;gap:12px}.match-head-left .muted{font-size:13px}.match-head-right{gap:10px}
+.match-head-right button{font-size:13px;padding:10px 14px;font-weight:700}.match-head-right .ai-status{font-size:12px;padding:9px 12px}
+.match-main{display:contents}
+.match-main .match-teams{grid-area:teams;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;min-height:82px;padding:8px 4px;background:transparent;border:0}
+.match-teams .team-home{text-align:right}.match-teams .team-away{text-align:left}.match-name{font-size:clamp(19px,1.8vw,28px);line-height:1.2;font-weight:850;color:#f6fff9}.match-score{font-size:clamp(28px,2.4vw,38px);font-weight:900;color:#fff;letter-spacing:.3px}
+.match-main>.match-metric:not(.match-teams){grid-area:metrics;min-height:0;border:1px solid #1a6249;border-radius:10px;padding:13px 15px;background:#00271d}
+.match-main>.match-metric:nth-child(2){grid-area:metrics;justify-self:stretch;align-self:stretch;grid-column:auto}
+.match-main{--metric-gap:10px}
+.match-main>.match-metric:nth-child(2){margin-right:calc(75% + 7px)}
+.match-main>.match-metric:nth-child(3){margin-left:calc(25% + 4px);margin-right:calc(50% + 4px)}
+.match-main>.match-metric:nth-child(4){margin-left:calc(50% + 4px);margin-right:calc(25% + 4px)}
+.match-main>.match-metric:nth-child(5){margin-left:calc(75% + 7px)}
+.match-metric small{font-size:12px;color:#a7cbb8}.match-metric strong{font-size:clamp(22px,2vw,30px);margin-top:8px;color:#51ecad}.match-metric .match-result{font-size:clamp(22px,2vw,30px)}.match-metric .metric-text{font-size:13px;line-height:1.35}
+.match-status-inline{grid-area:signal;align-self:start;margin:0;gap:10px;font-size:12px}
+.match-achieved{grid-area:scenarios;margin:22px 0 3px;min-height:28px;align-items:center;gap:9px;position:relative}
+.match-achieved:before{content:'Nhóm điều kiện đạt (V4)';position:absolute;bottom:calc(100% + 6px);left:0;color:#7be5b3;font-size:13px;font-weight:800}
+.match-card>.muted[style*="font-weight:700"]{display:none}
+.scenario-pass{font-size:12px;padding:7px 10px;background:#003d2a;border-color:#0d9263}
+.match-bottom{grid-area:footer;padding-top:12px;border-top:1px solid #1a5942;font-size:13px;gap:10px}.match-interpretation{grid-area:explain;font-size:13px;line-height:1.6;margin:0;padding:12px 14px;background:#103127;border-radius:9px}.match-stats-details{grid-area:details;margin:0}.match-stats-content{font-size:13px}
+@media(max-width:1200px){.match-card{grid-template-columns:minmax(0,1fr);grid-template-areas:"header" "teams" "metrics" "signal" "scenarios" "footer" "explain" "details";gap:10px}.match-main .match-teams{min-height:64px}.match-main>.match-metric:nth-child(n+2){grid-area:metrics;margin:0;align-self:stretch;min-width:0}.match-main{display:grid;grid-area:metrics;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px}.match-main .match-teams{grid-area:unset;grid-column:1/-1}.match-main>.match-metric:nth-child(n+2){grid-area:unset}.match-achieved{margin-top:24px}.match-name{font-size:23px}}
+@media(max-width:800px){body{padding:9px}.match-card{padding:14px 12px;gap:10px}.match-head{align-items:flex-start;flex-direction:column}.match-head-left{width:100%;gap:8px;font-size:12px}.match-head-left .muted{font-size:12px}.match-head-right{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px}.match-head-right .ai-status{grid-column:1/-1;text-align:center}.match-head-right button{padding:11px 5px;font-size:12px}.match-main{grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}.match-main .match-teams{grid-column:1/-1;gap:7px;min-height:55px}.match-main>.match-metric:nth-child(5){grid-column:1/-1}.match-main>.match-metric{padding:11px 9px!important}.match-name{font-size:clamp(15px,4vw,21px)}.match-score{font-size:clamp(22px,6vw,30px)}.match-metric strong,.match-metric .match-result{font-size:clamp(19px,5vw,25px)}.match-metric .metric-text{font-size:13px}.match-achieved{margin-top:26px}.match-bottom{font-size:12px}.match-interpretation{font-size:12px;padding:11px}.scenario-pass{font-size:11px}}
+@media(max-width:390px){.match-name{font-size:14px}.match-score{font-size:21px}.match-metric strong{font-size:18px}.match-head-right button{font-size:11px}}
+
+/* Stable actual DOM grid: match-main contains teams + 4 metric tiles */
+.match-main{grid-area:metrics;display:grid;grid-template-columns:minmax(250px,2fr) repeat(3,minmax(120px,.8fr)) minmax(190px,1.3fr);gap:10px;margin:0;align-items:stretch}
+.match-main .match-teams{grid-area:auto;grid-column:1;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);min-height:100px}
+.match-main>.match-metric:nth-child(n+2){grid-area:auto;grid-column:auto;margin:0;min-width:0;padding:14px 12px;align-self:stretch}
+.match-card{grid-template-columns:1fr;grid-template-areas:"header" "metrics" "signal" "scenarios" "footer" "explain" "details";row-gap:10px}
+.match-status-inline{grid-area:signal}
+@media(max-width:1250px){.match-main{grid-template-columns:repeat(4,minmax(0,1fr))}.match-main .match-teams{grid-column:1/-1;min-height:70px}}
+@media(max-width:800px){.match-main{grid-template-columns:repeat(3,minmax(0,1fr))}.match-main .match-teams{grid-column:1/-1}.match-main>.match-metric:nth-child(5){grid-column:1/-1}}
+
+/* APPROVED 2026-10-22 DESIGN: unified desktop/mobile, no scoring changes */
+.ai-overview:not(.ai-focused){display:none}
+body{background:#02130f;padding:16px;font-size:14px}
+main{max-width:1720px}
+.panel{background:#041a14;border-color:#14573f}
+.audit-scroll{max-height:78vh;overflow-y:auto;overflow-x:hidden}
+.match-card{display:block!important;background:#001d16;border:1px solid #078b5b;border-radius:12px;padding:18px 20px;box-shadow:none}
+.match-head{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;border:0;padding:0;margin-bottom:12px}
+.match-head-left{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:13px}
+.match-head-right{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.match-head-right .ai-status{font-size:12px;padding:9px 12px}
+.match-head-right button{font-size:13px;font-weight:700;padding:10px 13px}
+.match-btn-stats{border:1px solid #16b5f8;background:#082a37;color:#8adfff}
+.match-btn-ai{border:1px solid #b279fb;background:#241332;color:#e0bbff}
+.match-main{display:grid!important;grid-template-columns:minmax(310px,2.4fr) minmax(120px,.75fr) minmax(120px,.75fr) minmax(120px,.75fr) minmax(190px,1.15fr)!important;gap:10px;align-items:stretch;margin:0 0 10px}
+.match-main .match-teams{grid-area:auto!important;grid-column:1!important;display:grid!important;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);gap:10px;min-height:90px;padding:6px 8px;border:0;background:transparent}
+.match-teams .team-home{text-align:right}.match-teams .team-away{text-align:left}
+.match-name{font-size:clamp(20px,1.65vw,27px)!important;line-height:1.2;font-weight:850;color:#fff}
+.match-score{font-size:clamp(28px,2.3vw,38px)!important;font-weight:900;white-space:nowrap}
+.match-main>.match-metric:not(.match-teams){grid-area:auto!important;grid-column:auto!important;margin:0!important;min-height:90px;border:1px solid #135d44;border-radius:9px;padding:14px 13px;background:#03251c}
+.match-metric small{font-size:12px;color:#a2c4b4}.match-metric strong{font-size:clamp(22px,2vw,29px);margin-top:8px;color:#50e9a8}
+.match-metric .metric-text{font-size:14px;color:#f3fff8;line-height:1.35}
+.match-metric .match-result{font-size:25px!important;background:transparent}
+.match-status-inline{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:3px 0 10px}
+.match-card>.muted[style*="font-weight:700"]{display:block!important;color:#78dcae!important;font-size:13px;margin:10px 0 7px!important}
+.match-achieved{position:static;margin:0 0 11px;min-height:24px;display:flex;flex-wrap:wrap;gap:8px}
+.match-achieved:before{display:none!important}
+.scenario-pass{font-size:12px;padding:6px 10px;background:#00422e;border:1px solid #168b64;color:#7ff3be}
+.match-bottom{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;border-top:1px solid #1d5b43;padding:10px 0 0;font-size:13px}
+.match-interpretation{background:#0e3027;padding:11px 13px;margin-top:10px;border-radius:8px;font-size:13px;line-height:1.55}
+.match-stats-details{margin-top:10px}
+@media(max-width:1180px){.match-main{grid-template-columns:repeat(4,minmax(0,1fr))!important}.match-main .match-teams{grid-column:1/-1!important;min-height:65px}}
+@media(max-width:680px){body{padding:8px}.panel{padding:10px}.match-card{padding:12px!important}.match-head{gap:8px}.match-head-left{width:100%;font-size:12px}.match-head-left .muted{font-size:11px}.match-head-right{width:100%;display:grid;grid-template-columns:1fr 1fr;gap:8px}.match-head-right .ai-status{grid-column:1/-1;text-align:center;padding:7px}.match-head-right button{font-size:12px;padding:10px 5px;min-width:0}.match-main{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:7px}.match-main .match-teams{grid-column:1/-1!important;min-height:64px;gap:6px;padding:5px 0}.match-name{font-size:clamp(14px,4vw,19px)!important;overflow-wrap:anywhere}.match-score{font-size:clamp(22px,6vw,29px)!important}.match-main>.match-metric:not(.match-teams){min-height:76px;padding:10px 8px}.match-main>.match-metric:nth-child(5){grid-column:1/-1!important;min-height:55px}.match-metric small{font-size:11px}.match-metric strong,.match-metric .match-result{font-size:22px!important;margin-top:5px}.match-metric .metric-text{font-size:13px}.match-bottom{font-size:12px}.match-interpretation{font-size:12px}.scenario-pass{font-size:11px;padding:6px 8px}}
+
+/* PROMAX L18: approved desktop / mobile match-card layout. CSS only. */
+:root{color-scheme:dark}
+body{background:#00110e!important;color:#e9fff5;padding:12px!important;font-size:14px}
+main{max-width:1600px!important}
+header{background:#001c16;border:1px solid #13513d;border-radius:12px;padding:16px 20px;margin-bottom:12px}
+header h1{color:#f5fff9;font-size:25px;margin:3px 0}
+.panel{background:#001b15;border-color:#15533f}
+.audit-scroll{max-height:80vh;overflow:auto hidden!important}
+.audit-scroll table,.audit-scroll tbody,.audit-scroll tr,.audit-scroll td.match-card-cell{width:100%!important;min-width:0!important}
+.audit-scroll tr{margin-bottom:9px!important}
+.match-card{display:flex!important;flex-direction:column!important;gap:9px!important;padding:15px 18px!important;border:1px solid #0a825b!important;border-radius:12px!important;background:linear-gradient(110deg,#001b16,#00251c)!important;box-shadow:none!important}
+.match-head{display:flex!important;justify-content:space-between!important;align-items:center!important;flex-wrap:wrap!important;gap:10px!important;margin:0!important}
+.match-head-left{display:flex!important;align-items:center!important;gap:9px!important;font-size:12px!important;width:auto!important}
+.match-head-left .muted{color:#b1c8bb}
+.match-minute{background:#d61948!important;color:white!important;padding:5px 9px!important;border-radius:6px!important}
+.match-head-right{display:flex!important;justify-content:flex-end!important;align-items:center!important;gap:8px!important;flex-wrap:wrap!important;width:auto!important;margin:0!important}
+.match-head-right .ai-status{padding:7px 10px!important;font-size:11px!important;white-space:nowrap}
+.match-head-right button{font-size:12px!important;font-weight:700!important;padding:9px 12px!important;white-space:nowrap}
+.match-btn-stats{background:#052938!important;border:1px solid #08b9fb!important;color:#92e4ff!important}
+.match-btn-ai{background:#271632!important;border:1px solid #a56ff0!important;color:#e6c1ff!important}
+.match-main{display:grid!important;grid-template-columns:minmax(0,2.7fr) repeat(3,minmax(110px,.65fr))!important;align-items:center!important;gap:10px!important;margin:0!important}
+.match-main .match-teams{grid-column:auto!important;grid-area:auto!important;display:grid!important;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)!important;align-items:center!important;gap:11px!important;min-height:78px!important;padding:5px 4px!important;border:0!important;background:transparent!important}
+.match-teams .team-home{text-align:right!important}.match-teams .team-away{text-align:left!important}
+.match-name{font-size:clamp(19px,1.6vw,26px)!important;font-weight:850!important;line-height:1.2!important;color:#fff!important;overflow-wrap:anywhere}
+.match-score{font-size:clamp(28px,2.35vw,38px)!important;font-weight:900!important;white-space:nowrap!important}
+.match-main>.match-metric:not(.match-teams){grid-column:auto!important;grid-area:auto!important;justify-self:stretch!important;width:auto!important;min-height:76px!important;margin:0!important;padding:11px 12px!important;background:#00251c!important;border:1px solid #145d45!important;border-radius:9px!important}
+.match-metric small{font-size:12px!important;color:#a8cdb9!important}
+.match-metric strong{font-size:clamp(23px,2vw,29px)!important;margin-top:6px!important;color:#55e9ad!important}
+.match-metric .match-result{font-size:24px!important;background:transparent!important}
+.match-metric .match-result.loss{color:#ff6484!important}
+.match-status-inline{display:flex!important;position:static!important;transform:none!important;align-items:center!important;gap:8px!important;flex-wrap:wrap!important;margin:0!important;justify-self:auto!important}
+.match-card>.muted[style*="font-weight:700"]{display:block!important;position:static!important;margin:1px 0 0!important;color:#74e7b5!important;font-size:13px!important}
+.match-achieved{display:flex!important;position:static!important;align-self:auto!important;flex-wrap:wrap!important;gap:7px!important;min-height:0!important;padding:0!important;margin:0!important}
+.match-achieved:before{display:none!important}
+.scenario-pass{font-size:12px!important;padding:6px 10px!important;border:1px solid #148d63!important;border-radius:5px!important;background:#003b2a!important;color:#8af4c2!important;margin:0!important}
+.match-interpretation{position:static!important;margin:2px 0 0!important;padding:10px 12px!important;border-radius:8px!important;background:#103027!important;color:#d6ede0!important;font-size:13px!important;line-height:1.5!important}
+.match-bottom{display:flex!important;justify-content:space-between!important;gap:8px!important;flex-wrap:wrap!important;border-top:1px solid #1b5540!important;padding:9px 0 0!important;margin:0!important;font-size:12px!important}
+.match-stats-details{position:static!important;margin:0!important}
+@media(max-width:900px){.match-main{grid-template-columns:repeat(3,minmax(0,1fr))!important}.match-main .match-teams{grid-column:1/-1!important}}
+@media(max-width:600px){body{padding:7px!important}.panel{padding:9px!important}.match-card{padding:11px!important;gap:9px!important}.match-head-left{font-size:11px!important;gap:6px!important}.match-head-left .muted{font-size:11px!important}.match-head-right{width:100%!important;display:grid!important;grid-template-columns:1fr 1fr!important;gap:7px!important}.match-head-right .ai-status{grid-column:1/-1!important;justify-self:start!important}.match-head-right button{font-size:12px!important;padding:10px 4px!important}.match-main{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:7px!important}.match-main .match-teams{grid-column:1/-1!important;gap:5px!important;min-height:66px!important;padding:4px 0!important}.match-name{font-size:clamp(14px,3.9vw,19px)!important}.match-score{font-size:clamp(23px,6vw,30px)!important}.match-main>.match-metric:not(.match-teams){min-height:70px!important;padding:9px 7px!important}.match-metric small{font-size:11px!important}.match-metric strong,.match-metric .match-result{font-size:clamp(18px,5.3vw,23px)!important}.match-interpretation{font-size:12px!important}.match-bottom{font-size:11px!important}.scenario-pass{font-size:11px!important;padding:5px 7px!important}}
+
+/* Approved PROMAX L18 responsive match cards: presentation only. */
+:root{color-scheme:dark}body{background:#00120f!important;color:#e9fff5!important;padding:12px!important;font-size:14px!important}main{max-width:1560px!important;margin:auto!important}header{background:#001b16!important;border:1px solid #13533e!important;border-radius:12px!important;padding:14px 20px!important;margin-bottom:10px!important}header h1{font-size:23px!important;color:#f5fff9!important;margin:3px 0!important}.panel{background:#001a15!important;border-color:#14553e!important}.audit-scroll{max-height:78vh!important;overflow-y:auto!important;overflow-x:hidden!important}.audit-scroll table,.audit-scroll tbody,.audit-scroll tr,.audit-scroll td.match-card-cell{width:100%!important;min-width:0!important;display:block!important;border:0!important;background:transparent!important}.audit-scroll thead{display:none!important}.audit-scroll tr{margin:0 0 8px!important}.audit-scroll td.match-card-cell{padding:0!important}.ai-overview:not(.ai-focused){display:none!important}
+.match-card{display:grid!important;grid-template-columns:minmax(0,1.48fr) minmax(0,1fr)!important;grid-template-areas:"meta metrics" "teams metrics" "signal actions" "scenario scenario" "explain explain" "footer footer" "details details"!important;column-gap:20px!important;row-gap:5px!important;padding:13px 18px!important;background:#001c16!important;border:1px solid #086a50!important;border-radius:11px!important;box-shadow:none!important;position:relative!important;min-width:0!important}
+.match-head{display:contents!important}.match-head-left{grid-area:meta!important;display:flex!important;align-items:center!important;gap:9px!important;width:auto!important;min-width:0!important;font-size:12px!important;margin:0!important;padding:0!important}.match-head-left .muted{color:#b9d6ca!important;font-size:12px!important}.match-minute{background:#e20e48!important;color:#fff!important;padding:4px 8px!important;border-radius:5px!important;font-weight:800!important;white-space:nowrap!important}.match-head-right{grid-area:actions!important;display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:8px!important;flex-wrap:wrap!important;width:100%!important;margin:0!important;padding:0!important}.match-head-right .ai-status{display:none!important}.match-head-right button{font-size:12px!important;font-weight:700!important;white-space:nowrap!important;padding:8px 11px!important;border-radius:7px!important;flex:0 0 auto!important}.match-btn-stats{background:#052936!important;border:1px solid #04b7fc!important;color:#9ee7ff!important}.match-btn-ai{background:#24152f!important;border:1px solid #9c67e9!important;color:#ecc9ff!important}
+.match-main{display:contents!important}.match-main .match-teams{grid-area:teams!important;display:grid!important;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)!important;align-items:center!important;gap:10px!important;border:0!important;background:transparent!important;min-height:45px!important;padding:0!important;margin:0!important;min-width:0!important}.match-teams .team-home{text-align:left!important}.match-teams .team-away{text-align:left!important}.match-name{font-size:clamp(17px,1.5vw,22px)!important;line-height:1.15!important;font-weight:850!important;color:white!important;overflow-wrap:anywhere!important}.match-score{font-size:clamp(27px,2.25vw,36px)!important;white-space:nowrap!important;font-weight:900!important;color:white!important}.match-main>.match-metric:not(.match-teams){grid-area:metrics!important;display:flex!important;flex-direction:column!important;justify-content:center!important;min-height:70px!important;width:auto!important;margin:0!important;padding:10px 12px!important;border:1px solid #146149!important;border-radius:8px!important;background:#00251d!important;min-width:0!important}.match-main>.match-metric:nth-child(2){grid-column:2!important;grid-row:1/3!important;justify-self:stretch!important;margin-right:calc(66.666% + 6px)!important}.match-main>.match-metric:nth-child(3){grid-column:2!important;grid-row:1/3!important;margin-left:calc(33.333% + 3px)!important;margin-right:calc(33.333% + 3px)!important}.match-main>.match-metric:nth-child(4){grid-column:2!important;grid-row:1/3!important;margin-left:calc(66.666% + 6px)!important}.match-metric small{font-size:12px!important;color:#a5d0bb!important}.match-metric strong{font-size:clamp(19px,1.8vw,27px)!important;font-weight:850!important;color:#27e5ac!important;margin:3px 0 0!important}.match-result{font-size:23px!important;color:#26e5a7!important;background:transparent!important}.match-result.loss{color:#ff527b!important}
+.match-status-inline{grid-area:signal!important;display:flex!important;gap:7px!important;align-items:center!important;flex-wrap:wrap!important;margin:0!important;padding:0!important;position:static!important;transform:none!important;justify-self:start!important}.match-status-inline .muted{font-size:11px!important}.match-card>.muted[style*="font-weight:700"]{grid-area:scenario!important;display:block!important;position:static!important;font-size:12px!important;font-weight:800!important;color:#71e5b2!important;margin:3px 0 -3px!important;padding:0!important}.match-achieved{grid-area:scenario!important;display:flex!important;align-items:center!important;flex-wrap:wrap!important;gap:7px!important;margin:19px 0 0!important;padding:0!important;position:static!important;min-height:0!important}.match-achieved:before{display:none!important}.scenario-pass{font-size:12px!important;color:#80f8bf!important;border:1px solid #098b63!important;background:#003524!important;border-radius:5px!important;padding:5px 9px!important;margin:0!important}.match-interpretation{grid-area:explain!important;background:#102d25!important;color:#d7efe4!important;border-radius:7px!important;padding:8px 10px!important;margin:3px 0 0!important;position:static!important;font-size:12px!important;line-height:1.45!important}.match-bottom{grid-area:footer!important;display:flex!important;justify-content:space-between!important;gap:8px!important;flex-wrap:wrap!important;margin:0!important;padding:0!important;border:0!important;font-size:11px!important;color:#a5c7b6!important}.match-stats-details{grid-area:details!important;position:static!important;margin:0!important}.match-stats-details:not([open]){display:none!important}
+@media(min-width:901px){.match-card{grid-template-rows:auto auto auto auto auto auto auto!important}.match-main>.match-metric:nth-child(2),.match-main>.match-metric:nth-child(3),.match-main>.match-metric:nth-child(4){grid-row:1/3!important}}
+@media(max-width:900px){body{padding:8px!important}.panel{padding:9px!important}.match-card{display:grid!important;grid-template-columns:1fr!important;grid-template-areas:"meta" "teams" "signal" "metrics" "scenario" "explain" "actions" "footer" "details"!important;row-gap:9px!important;padding:12px!important}.match-head-left{grid-area:meta!important;font-size:11px!important;gap:6px!important}.match-head-left .muted{font-size:11px!important}.match-main .match-teams{grid-area:teams!important;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)!important;gap:7px!important;min-height:48px!important}.match-name{font-size:clamp(13px,3.8vw,18px)!important}.match-score{font-size:clamp(24px,6.5vw,33px)!important}.match-main>.match-metric:not(.match-teams){grid-area:metrics!important;grid-row:auto!important;grid-column:1!important;min-height:66px!important;margin:0!important;padding:8px 9px!important}.match-main>.match-metric:nth-child(2){grid-row:4!important;grid-column:1!important;width:calc((100% - 14px)/3)!important;margin:0!important}.match-main>.match-metric:nth-child(3){grid-row:4!important;grid-column:1!important;width:calc((100% - 14px)/3)!important;margin-left:calc((100% - 14px)/3 + 7px)!important}.match-main>.match-metric:nth-child(4){grid-row:4!important;grid-column:1!important;width:calc((100% - 14px)/3)!important;margin-left:calc(2 * ((100% - 14px)/3 + 7px))!important}.match-metric small{font-size:11px!important}.match-metric strong{font-size:clamp(18px,5.5vw,25px)!important}.match-card>.muted[style*="font-weight:700"]{grid-area:scenario!important;align-self:start!important;margin:0!important}.match-achieved{grid-area:scenario!important;margin:20px 0 0!important;gap:6px!important}.scenario-pass{font-size:11px!important;padding:5px 7px!important}.match-head-right{grid-area:actions!important;display:grid!important;grid-template-columns:1fr 1fr!important;gap:7px!important;width:100%!important}.match-head-right button{width:100%!important;min-width:0!important;padding:10px 5px!important;font-size:12px!important}.match-interpretation{grid-area:explain!important;font-size:12px!important}.match-bottom{grid-area:footer!important}.match-status-inline{grid-area:signal!important}}
+
+
+/* MATCH CARD FINAL: one unified layout for desktop and mobile */
+.audit-scroll{max-height:none!important;overflow:visible!important}
+.audit-scroll table,.audit-scroll tbody,.audit-scroll tr,.audit-scroll td.match-card-cell{display:block!important;width:100%!important;min-width:0!important}
+.audit-scroll tr{margin-bottom:8px!important}.audit-scroll td.match-card-cell{padding:0!important}
+.match-card{display:grid!important;grid-template-columns:minmax(0,1.45fr) minmax(340px,.9fr)!important;grid-template-areas:"left right" "explain explain" "footer footer" "details details"!important;column-gap:20px!important;row-gap:7px!important;padding:15px 18px!important;background:#001a15!important;border:1px solid #0a7354!important;border-radius:12px!important;min-width:0!important;align-items:start!important}
+.match-left{grid-area:left!important;display:flex!important;flex-direction:column!important;gap:9px!important;min-width:0!important}
+.match-right{grid-area:right!important;display:flex!important;flex-direction:column!important;gap:14px!important;min-width:0!important;padding-top:7px!important}
+.match-head-left{display:flex!important;gap:9px!important;align-items:center!important;min-width:0!important;font-size:12px!important;flex-wrap:wrap!important;color:#b3d5c8!important}
+.match-head-left input{width:14px!important;height:14px!important;flex:0 0 auto!important}
+.match-minute{background:#e30b46!important;color:white!important;border-radius:5px!important;padding:4px 8px!important;font-weight:800!important;font-size:12px!important}
+.match-teams{display:grid!important;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)!important;gap:10px!important;align-items:center!important;min-height:47px!important;border:0!important;background:transparent!important;padding:0!important;margin:0!important;min-width:0!important}
+.match-name{font-size:clamp(16px,1.35vw,22px)!important;line-height:1.25!important;font-weight:800!important;color:#f4fff9!important;overflow-wrap:anywhere!important}
+.team-home{text-align:left!important}.team-away{text-align:left!important}.match-score{font-size:clamp(25px,2vw,32px)!important;white-space:nowrap!important;font-weight:900!important;color:white!important}
+.match-status-inline{display:flex!important;gap:7px!important;align-items:center!important;flex-wrap:wrap!important;margin:0!important;position:static!important;transform:none!important}
+.match-status-inline .ai-status{font-size:11px!important;padding:6px 9px!important;border-radius:5px!important;font-weight:800!important}
+.match-status-inline .signal-strength{font-size:11px!important}
+.match-scenarios{display:block!important;min-width:0!important}.match-scenarios-title{color:#77e9bd!important;font-size:12px!important;font-weight:800!important;margin-bottom:6px!important}
+.match-achieved{display:flex!important;flex-wrap:wrap!important;gap:7px!important;margin:0!important;padding:0!important;min-height:0!important}
+.scenario-pass{display:inline-flex!important;align-items:center!important;border:1px solid #087f5a!important;background:#003b2c!important;color:#83f3c3!important;padding:5px 8px!important;border-radius:5px!important;font-size:11px!important;margin:0!important}
+.match-metrics{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:9px!important;min-width:0!important}
+.match-metrics .match-metric{display:flex!important;flex-direction:column!important;justify-content:center!important;min-width:0!important;min-height:68px!important;padding:10px 12px!important;border:1px solid #135d47!important;border-radius:9px!important;background:#002219!important;grid-area:auto!important;margin:0!important}
+.match-metric small{font-size:12px!important;color:#a4d5c1!important}.match-metric strong{font-size:clamp(19px,1.8vw,27px)!important;line-height:1.2!important;margin-top:5px!important;color:#27efae!important}.match-result.loss{color:#ff5378!important}.match-result.pending{color:#ffcf74!important}
+.match-actions{display:flex!important;gap:9px!important;justify-content:flex-end!important;min-width:0!important}
+.match-actions button{padding:9px 12px!important;font-size:12px!important;font-weight:700!important;border-radius:7px!important;white-space:nowrap!important;cursor:pointer!important}
+.match-btn-stats{border:1px solid #05a9f1!important;background:#00273b!important;color:#7bd9ff!important}.match-btn-ai{border:1px solid #a76afb!important;background:#261535!important;color:#e0b4ff!important}
+.match-interpretation{grid-area:explain!important;margin:0!important;padding:9px 11px!important;background:#0b2a22!important;color:#c9e8db!important;font-size:12px!important;line-height:1.5!important;border-radius:7px!important}
+.match-bottom{grid-area:footer!important;border-top:0!important;padding:0!important;display:flex!important;justify-content:space-between!important;gap:9px!important;font-size:11px!important;color:#a4cdbd!important;flex-wrap:wrap!important}
+.match-stats-details{grid-area:details!important;margin:0!important}.match-stats-details:not([open]){display:none!important}
+.ai-overview{display:none!important}.ai-overview.ai-focused{display:block!important}
+@media(max-width:900px){.match-card{grid-template-columns:minmax(0,1fr)!important;grid-template-areas:"left" "right" "explain" "footer" "details"!important;gap:9px!important;padding:12px!important}.match-left{gap:10px!important}.match-right{padding-top:0!important;gap:10px!important}.match-name{font-size:clamp(13px,3.9vw,18px)!important}.match-score{font-size:clamp(23px,6.3vw,30px)!important}.match-teams{gap:6px!important}.match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:7px!important}.match-metrics .match-metric{min-height:66px!important;padding:9px 8px!important}.match-metric strong{font-size:clamp(18px,5.4vw,25px)!important}.match-actions{justify-content:stretch!important}.match-actions button{flex:1!important;min-width:0!important;padding:10px 4px!important;font-size:12px!important}.match-head-left{font-size:11px!important;gap:6px!important}.match-date{font-size:10px!important}.match-bottom{font-size:10px!important}}
+@media(min-width:901px){.match-scenarios{margin-top:1px!important}}
+
+/* 2026-10-22 approved compact Desktop/Mobile presentation */
+:root{color-scheme:dark}
+body{background:#00100e!important;color:#e6f8f1!important}
+main{max-width:1480px!important;padding:0 12px 24px!important}
+.promax-topbar{display:flex;align-items:center;gap:28px;min-height:65px;border-bottom:1px solid #0c4436;padding:0 14px;margin-bottom:12px}
+.promax-brand{font-size:22px;font-weight:900;letter-spacing:-.6px;white-space:nowrap;color:#fff}
+.promax-brand span{color:#20e6ac}
+.promax-nav{display:flex;align-items:center;gap:8px;flex:1}
+.promax-nav a,.promax-nav button{font-size:13px!important;text-decoration:none;color:#d0e5da!important;border:0!important;background:transparent!important;padding:11px 14px!important;white-space:nowrap;cursor:pointer}
+.promax-nav .nav-current{background:#00352a!important;color:#38efb9!important;border-radius:8px!important}
+.promax-running{color:#23dba3;font-size:12px;white-space:nowrap}
+.promax-refresh{color:#d8fff0!important;background:transparent!important;border:1px solid #155b45!important;border-radius:7px!important;font-size:23px!important;padding:3px 11px!important}
+main>header,main>.stats,main>.split,main>#globalAuditCount{display:none!important}
+body.show-audit-stats main>.stats{display:grid!important}
+body.show-audit-stats main>.split{display:grid!important}
+body.show-audit-stats main>header{display:flex!important}
+main>.tabs{margin:4px 0 12px!important;gap:8px!important}
+main>.tabs button{padding:10px 14px!important;border-radius:7px!important;font-size:13px!important}
+main>section.panel:not(.ai-overview){padding:0!important;border:0!important;background:transparent!important}
+#audit-list>.toolbar{padding:6px 6px 12px!important}
+.audit-scroll{max-height:none!important;overflow:visible!important}
+.match-card{grid-template-columns:minmax(0,1.5fr) minmax(360px,.92fr)!important;gap:6px 17px!important;padding:13px 16px!important;border-radius:10px!important}
+.match-left{gap:6px!important}
+.match-right{gap:10px!important;padding-top:2px!important}
+.match-teams{min-height:39px!important}
+.match-name{font-size:clamp(16px,1.45vw,22px)!important}
+.match-score{font-size:clamp(25px,2.1vw,32px)!important}
+.match-metrics .match-metric{min-height:58px!important;padding:8px 10px!important}
+.match-metric strong{font-size:24px!important}
+.match-scenarios-title{margin:0 0 4px!important}
+.match-achieved{gap:5px!important}
+.match-interpretation{padding:7px 9px!important}
+.match-bottom{display:none!important}
+.match-actions button{padding:8px 11px!important}
+@media(max-width:900px){
+main{padding:0 8px 24px!important}
+.promax-topbar{min-height:58px!important;gap:8px!important;padding:0 5px!important}
+.promax-brand{font-size:18px!important}
+.promax-nav{display:none!important}
+.promax-running{margin-left:auto;font-size:11px!important}
+.promax-refresh{padding:4px 9px!important}
+main>.tabs{overflow-x:auto;flex-wrap:nowrap!important}
+main>.tabs button{white-space:nowrap}
+#audit-list>.toolbar{flex-wrap:wrap!important}
+.match-card{grid-template-columns:1fr!important;gap:10px!important;padding:12px!important}
+.match-left{gap:10px!important}
+.match-name{font-size:clamp(13px,3.9vw,18px)!important}
+.match-score{font-size:clamp(23px,6vw,30px)!important}
+.match-metrics .match-metric{min-height:65px!important;padding:9px 7px!important}
+.match-metric strong{font-size:clamp(19px,5vw,25px)!important}
+.match-actions button{font-size:12px!important}
+.match-bottom{display:none!important}
+}
+
+@media(max-width:900px){
+.match-card{grid-template-areas:"meta" "teams" "signal" "metrics" "scenarios" "explain" "actions" "details"!important;row-gap:9px!important}
+.match-left,.match-right{display:contents!important}
+.match-head-left{grid-area:meta!important}.match-teams{grid-area:teams!important}.match-status-inline{grid-area:signal!important}.match-metrics{grid-area:metrics!important}.match-scenarios{grid-area:scenarios!important}.match-actions{grid-area:actions!important}.match-interpretation{grid-area:explain!important}.match-stats-details{grid-area:details!important}
+.match-teams{min-height:44px!important}.match-scenarios{margin:0!important}.match-achieved{margin:0!important}.match-actions{margin-top:1px!important}
+}
+
+/* Final visual polish: match-name typography and approved mint/white palette; no data or JS changes */
+.match-card{background:#001a15!important;border-color:#096e51!important;color:#ecfff7!important}
+.match-head-left,.match-league,.match-date{color:#a7d8c8!important}
+.match-minute{background:#e11249!important;color:#fff!important;font-weight:800!important}
+.match-teams{display:grid!important;grid-template-columns:minmax(0,1fr) max-content minmax(0,1fr)!important;align-items:center!important;gap:12px!important;min-width:0!important}
+.match-teams .team-home,.match-teams .team-away{display:block!important;color:#f9fffd!important;font-family:Arial,Helvetica,sans-serif!important;font-size:clamp(17px,1.45vw,23px)!important;font-weight:800!important;letter-spacing:-.35px!important;line-height:1.22!important;text-shadow:0 1px 1px #0008!important;overflow-wrap:break-word!important;word-break:normal!important;hyphens:none!important}
+.match-teams .team-home{text-align:right!important}.match-teams .team-away{text-align:left!important}
+.match-teams .match-score{color:#fff!important;font-family:Arial,Helvetica,sans-serif!important;font-size:clamp(26px,2.25vw,35px)!important;font-weight:900!important;letter-spacing:-.6px!important;white-space:nowrap!important;text-align:center!important;font-variant-numeric:tabular-nums!important}
+.match-metrics .match-metric{background:#00221b!important;border:1px solid #0d5b43!important}
+.match-metrics .match-metric small{color:#a8d6c5!important;font-weight:500!important}
+.match-metrics .match-metric strong{color:#26e5ab!important;font-weight:850!important}
+.match-metrics .match-result.win{color:#26e5ab!important}.match-metrics .match-result.loss{color:#ff527b!important}
+.match-scenarios-title{color:#74efbc!important;font-weight:800!important}
+.match-achieved .scenario-pass{color:#83f4c7!important;background:#003b2b!important;border:1px solid #128b62!important}
+.match-interpretation{background:#0c2b24!important;color:#d4e9df!important;font-size:13px!important;line-height:1.48!important}
+.match-interpretation b{color:#fff!important}
+.match-btn-stats{border:1px solid #0db6ff!important;color:#91e4ff!important;background:#052b39!important}
+.match-btn-ai{border:1px solid #a875f4!important;color:#e0bbff!important;background:#261536!important}
+@media(max-width:900px){
+ .match-teams{gap:7px!important;grid-template-columns:minmax(0,1fr) max-content minmax(0,1fr)!important}
+ .match-teams .team-home,.match-teams .team-away{font-size:clamp(13px,3.6vw,18px)!important;line-height:1.18!important;letter-spacing:-.2px!important}
+ .match-teams .match-score{font-size:clamp(23px,6.1vw,31px)!important}
+ .match-metrics .match-metric strong{font-size:clamp(19px,5.2vw,25px)!important}
+}
+
+/* Signal accent palette: presentation only; preserve all JS and thresholds */
+.match-status-inline .ai-status.ai-bet{
+ color:#032a1c!important;background:linear-gradient(135deg,#6affbf,#15df9a)!important;
+ border:1px solid #b5ffe1!important;box-shadow:0 0 0 1px #15a97955,0 0 14px #0bff9b3d!important;
+ font-weight:900!important;letter-spacing:.3px!important;text-shadow:none!important;
+}
+.match-status-inline .bigbet-signal{
+ color:#fff7dc!important;background:linear-gradient(110deg,#dc4c00,#fa8c0b)!important;
+ border:1px solid #ffc466!important;box-shadow:0 0 15px #ff8a004d!important;
+ font-weight:900!important;letter-spacing:.25px!important;padding:6px 10px!important;
+}
+.match-status-inline .signal-strength.signal-high{
+ color:#fff!important;background:linear-gradient(110deg,#007dc3,#09b9e8)!important;
+ border:1px solid #8fe9ff!important;box-shadow:0 0 13px #00c8ff40!important;
+ font-weight:900!important;padding:6px 10px!important;
+}
+@media(max-width:900px){
+ .match-status-inline .ai-status.ai-bet,.match-status-inline .bigbet-signal,.match-status-inline .signal-strength.signal-high{font-size:11px!important;padding:6px 8px!important}
+}
+
+/* BET orange, BIG BET red — visual styling only */
+.match-status-inline .ai-status.ai-bet, .ai-status.ai-bet {
+  color:#fff!important;
+  background:linear-gradient(135deg,#ff9a1e,#f06a00)!important;
+  border:1px solid #ffc16b!important;
+  box-shadow:0 0 13px rgba(255,123,0,.35)!important;
+  font-weight:900!important;
+  text-shadow:0 1px 1px rgba(80,30,0,.3)!important;
+}
+.match-status-inline .bigbet-signal,.bigbet-signal {
+  color:#fff!important;
+  background:linear-gradient(135deg,#ff384b,#d40024)!important;
+  border:1px solid #ff8491!important;
+  box-shadow:0 0 16px rgba(255,25,55,.42)!important;
+  font-weight:900!important;
+  padding:6px 10px!important;
+}
+/* When BIG BET is present, make it the primary badge. */
+.match-status-inline:has(.bigbet-signal) > .ai-status.ai-bet{display:none!important}
+
+/* Rule V4 label and percentage: yellow, display only */
+.match-metrics > .match-metric:nth-child(2) small,
+.match-metrics > .match-metric:nth-child(2) strong { color: #ffd43b !important; }
+</style></head><body><main><div class="promax-topbar">
+  <div class="promax-brand"><span>PROMAX</span> L18</div>
+  <nav class="promax-nav" aria-label="Điều hướng">
+    <a href="#audit-list" class="nav-current">Dashboard</a>
+    <a href="#audit-list">Trận live</a>
+    <a href="#audit-list">Lịch sử</a>
+    <button type="button" onclick="document.body.classList.toggle('show-audit-stats')">Thống kê</button>
+  </nav>
+  <span class="promax-running">● Đang chạy</span>
+  <button class="promax-refresh" type="button" onclick="load()" title="Làm mới">↻</button>
+</div><header><div><div class="sub">KÈO RUNG · PROMAX L18 · DASHBOARD</div><h1>PROMAX L18 – Dashboard</h1><div class="hint">Chỉ tính WIN RATE trên kết quả WIN/LOSS đã chốt; PUSH và chưa có kèo Over không tính vào mẫu số.</div></div><div><button onclick="load()">↻ Làm mới</button></div></header><div id="notice"></div><p id="globalAuditCount" class="hint">Đang tải tổng số bản ghi Audit...</p><section class="stats"><div class="stat"><small>Đã phát</small><strong id="sent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="settled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="goalRate" class="green">—</strong><small id="goalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="overRate" class="amber">—</strong><small id="overDetail"></small></div></section><section class="split"><div class="panel"><h3>Hiệu quả theo lần cảnh báo</h3><div id="groups"></div></div><div class="panel"><h3>Quy tắc kiểm toán</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line tài đã lưu tại thời điểm báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Tự chốt FT qua SofaScore, FotMob hoặc API-Football khi nhà cung cấp xác nhận trận kết thúc và có tỷ số chính thức.</p></div></section><section class="panel ai-overview" aria-label="AI Goal và Rule V4"><div class="ai-toolbar"><div><h3 style="margin:0 0 5px">AI Goal · Rule V4 · BET / NO BET</h3><div class="hint">Chi tiết tín hiệu từ bản ghi Audit, không thay đổi điều kiện gửi cảnh báo</div></div><span id="aiVerdict" class="ai-status ai-na">CHƯA CÓ DỮ LIỆU</span></div><div class="ai-metrics"><div class="ai-metric"><small class="muted">AI Goal</small><strong id="aiProbability">—</strong></div><div class="ai-metric"><small class="muted">Rule V4 (giá trị Audit)</small><strong id="aiRule">—</strong></div><div class="ai-metric"><small class="muted">Trạng thái mô hình</small><strong id="aiModelStatus" style="font-size:17px">—</strong></div></div><div id="aiSelectedMatch" class="hint" style="margin-bottom:12px">Chọn “Chi tiết AI” ở một trận để xem.</div><div id="aiSignalSummary" class="hint" style="margin:-4px 0 10px;color:#a4e7c0">Chọn trận để xem tín hiệu và nhóm đạt.</div><div class="ai-detail-grid"><div class="ai-detail-card"><small>01 · ONE_SIDE_PRESSURE</small><strong id="aiScenarioOne">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>02 · TWO_WAY_ATTACK</small><strong id="aiScenarioTwo">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>03 · H2_ATTACK_SPIKE</small><strong id="aiScenarioSpike">Chưa có dữ liệu Audit</strong></div><div class="ai-detail-card"><small>04 · HIGH_QUALITY_CHANCES</small><strong id="aiScenarioQuality">Chưa có dữ liệu Audit</strong></div></div><div class="ai-toolbar" style="margin-top:14px"><div class="hint">Kết quả FT: <b id="aiFT">—</b></div><div class="hint">Tín hiệu Telegram: <b id="aiSent">—</b></div></div><p class="ai-note" id="aiExplanation">BET/NO BET theo hai ngưỡng chỉ là nhãn quy tắc; chưa phải kết luận độc lập của mô hình đã hiệu chuẩn. Những trường chưa lưu trong Audit sẽ được ghi rõ là thiếu, không tự suy đoán.</p></section><div class="tabs"><button onclick="filter='all';load()">Tất cả</button><button onclick="filter='pending';load()">Đang theo dõi</button><button onclick="filter='settled';load()">Đã chốt</button></div><section class="panel" id="audit-list"><div class="audit-tools"><button id="deleteSelected" onclick="deleteSelected()">Xóa đã chọn (0)</button><button onclick="togglePage(true)">Chọn trang này</button><button onclick="togglePage(false)">Bỏ chọn trang</button><span id="pageInfo" class="hint"></span></div><div class="audit-scroll"><table><thead><tr><th><input type="checkbox" id="checkPage" onchange="togglePage(this.checked)"></th><th>Thời gian</th><th>Trận đấu</th><th>Phút</th><th>Rule V4</th><th>AI Goal</th><th>Độ tin cậy</th><th>Nhóm đạt (V4)</th><th>Tỷ số / FT</th><th>Kết quả</th><th>Chi tiết</th><th>AI</th></tr></thead><tbody id="rows"></tbody></table></div><div id="pagination" class="audit-tools" style="margin-top:12px"></div></section><p class="hint">Dữ liệu làm mới mỗi 60 giây. Rule V4 và AI Goal hiển thị theo bản ghi Audit; trạng thái hiệu chuẩn phụ thuộc dữ liệu đã lưu. Bản ghi cũ thiếu AI Goal hiển thị —. Độ tin cậy được lưu tại thời điểm rung; không ảnh hưởng Rule hoặc điều kiện gửi Telegram.</p></main><script>
 let filter='all';let currentPage=1;const pageSize=20;let allRecords=[];const selected=new Set();const el=id=>document.getElementById(id);const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const pct=x=>x==null?'—':x+'%';const scoreCell=x=>x==null||x===''||!Number.isFinite(Number(x))?'—':esc(Number(x).toFixed(1))+'%';const spikeCell=x=>{if(!x||x.score==null)return '—';return '<b>'+esc(x.score)+'/100</b><br><span class="muted">'+esc(x.groups??'—')+' nhóm · '+(x.confirmed?'Xác nhận':'Chưa đủ')+'</span>'+(x.reason?'<br><span class="muted" title="'+esc(x.reason)+'">'+esc(x.reason.slice(0,85))+'</span>':'');};const liveCell=x=>{if(!x||!Object.keys(x).length)return '—';const pair=(k,label)=>x['home'+k]==null&&x['away'+k]==null?'':label+': '+esc(x['home'+k]??'—')+'-'+esc(x['away'+k]??'—');return [pair('TotalShots','Shots'),pair('ShotsOnTarget','SOT'),pair('Corners','Góc'),pair('DangerousAttacks','DA'),pair('Attacks','ATT'),pair('ShotsOffTarget','OFF'),pair('ShotsInsideBox','Trong vòng cấm'),pair('Possession','KS bóng')].filter(Boolean).join('<br>')||'—';};const componentsCell=c=>{if(!c)return '—';const v=n=>n==null||!Number.isFinite(Number(n))?'N/A':esc(Number(n).toFixed(1));const r=c.reliability||{};return '<b>1. Tempo:</b> '+esc(c.tempoLevel||'UNKNOWN')+' '+v(c.tempo)+' <span class="muted">(ESTIMATED TB trận; không phải 5–10p VERIFIED)</span><br><b>2. Pressure:</b> '+v(c.pressure)+' (Shots/SOT/Corners/Box/BC)<br><b>3. Quality:</b> '+v(c.quality)+' (SOT ratio/BC/xG/Box)<br><b>4. Time:</b> ×'+v(c.timeFactor)+' (~'+esc(c.remainingMinutesEstimate??'N/A')+'p ước tính)<br><b>5. Red:</b> ×'+v(c.redFactor)+'<br><b>6. Data:</b> '+esc(r.label||'N/A')+' '+esc(c.availableGroups??'—')+'/8; thiếu '+esc((r.missing||[]).join(', ')||'không')+'<br><b>Chống bão hòa:</b> SOT/Shots '+v(c.shotAccuracyPercent)+'% · Evidence ×'+v(c.evidenceFactor)+' · Quality ×'+v(c.qualityFactor)+'</span>';};const signalStrengthCell=x=>{const n=x?.aiGoalProbability==null?NaN:Number(x.aiGoalProbability);if(!Number.isFinite(n)||n<0||n>100)return '<span class="signal-strength signal-unknown">Tín hiệu: Chưa có dữ liệu</span>';const level=n>65?'Cao':n>=50?'Trung bình':'Thấp';const cls=n>65?'signal-high':n>=50?'signal-medium':'signal-low';return '<span class="signal-strength '+cls+'" title="Mức tín hiệu theo xác suất AI Goal tại thời điểm cảnh báo">Tín hiệu: '+level+'</span>';};const scenarioNames=['ONE_SIDE_PRESSURE','TWO_WAY_ATTACK','H2_ATTACK_SPIKE','HIGH_QUALITY_CHANCES'];
 const scenarioSource=x=>x?.scenarioAnalysis??x?.scenarios??x?.aiGoalScenarios??x?.v4Scenarios??null;
 const scenarioValue=(raw,name)=>Array.isArray(raw)?raw.find(t=>t===name||t?.name===name||t?.id===name)??null:(raw&&typeof raw==='object'?raw[name]??null:null);
-const scenarioStatus=v=>{if(v==null)return 'MISSING';if(typeof v==='boolean')return v?'PASS':'FAIL';if(typeof v==='number')return 'UNKNOWN';const state=typeof v==='object'?(v.status??v.label??(v.active===true?'PASS':v.active===false?'FAIL':'UNKNOWN')):v;const t=String(state).trim().toUpperCase();if(['PASS','ĐẠT','ĐẠT ĐIỀU KIỆN','TRUE','ACTIVE'].includes(t))return 'PASS';if(['FAIL','KHÔNG ĐẠT','FALSE','INACTIVE'].includes(t))return 'FAIL';if(['INSUFFICIENT','KHÔNG ĐỦ DỮ LIỆU','THIẾU DỮ LIỆU'].includes(t))return 'INSUFFICIENT';return 'UNKNOWN';};
+const scenarioStatus=v=>{if(v==null)return 'MISSING';if(typeof v==='boolean')return v?'PASS':'FAIL';if(typeof v==='number')return 'UNKNOWN';const state=typeof v==='object'?(v.status??v.label??(v.passed===true?'PASS':v.passed===false?'FAIL':v.active===true?'PASS':v.active===false?'FAIL':'UNKNOWN')):v;const t=String(state).trim().toUpperCase();if(['PASS','ĐẠT','ĐẠT ĐIỀU KIỆN','TRUE','ACTIVE'].includes(t))return 'PASS';if(['FAIL','KHÔNG ĐẠT','FALSE','INACTIVE'].includes(t))return 'FAIL';if(['INSUFFICIENT','KHÔNG ĐỦ DỮ LIỆU','THIẾU DỮ LIỆU'].includes(t))return 'INSUFFICIENT';return 'UNKNOWN';};
 const achievedGroups=x=>{const raw=scenarioSource(x);return scenarioNames.filter(n=>scenarioStatus(scenarioValue(raw,n))==='PASS');};
 const signalLabel=x=>{const n=Number(x?.aiGoalProbability);return x?.aiGoalProbability==null||!Number.isFinite(n)||n<0||n>100?'Chưa có dữ liệu':n>65?'Cao':n>=50?'Trung bình':'Thấp';};
 const signalExplanation=x=>{const groups=achievedGroups(x);const source=scenarioSource(x);return 'Tín hiệu: '+signalLabel(x)+' (AI Goal '+(x?.aiGoalProbability==null?'—':scoreCell(x.aiGoalProbability))+') · Nhóm đạt: '+(source==null?'Chưa có dữ liệu phân tích':groups.length?groups.join(', '):'Không có nhóm đạt');};
@@ -53,12 +347,15 @@ const bigBetSignalCell=x=>{if(String(x?.alertType||'').trim().toUpperCase()!=='B
  const groupHtml=groups.length?groups.map(n=>'<span class="scenario-pass">✓ '+esc(n)+'</span>').join(''):'<span class="muted">'+(scenarioSource(x)==null?'Chưa có dữ liệu phân tích nhóm':'Không có nhóm đạt')+'</span>';
  const detail='<b>Thành phần Rule:</b><br>'+componentsCell(x.v3Components)+'<hr><b>LIVE:</b><br>'+liveCell(x.liveStats)+'<hr><b>BIG Spike:</b><br>'+spikeCell(x.spike)+'<hr><b>Kèo:</b> '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine)+' @ '+esc(x.overPrice));
  return '<tr><td class="match-card-cell"><article class="match-card">'+
- '<div class="match-head"><div class="match-head-left"><input type="checkbox" data-id="'+esc(x.id)+'" '+(selected.has(x.id)?'checked':'')+' onchange="toggleId(this)" aria-label="Chọn bản ghi"><span class="muted">'+esc(x.league||'—')+' · '+esc(new Date(x.createdAt).toLocaleString('vi-VN'))+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div><div class="match-head-right"><span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span><button type="button" class="match-btn-stats" data-stats-index="'+idx+'">Chi tiết thống kê</button><button type="button" class="ai-detail-button match-btn-ai" data-ai-index="'+idx+'">Chi tiết AI</button></div></div>'+
- '<div class="match-main"><div class="match-metric match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.homeScore)+' – '+esc(x.awayScore)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
- '<div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric"><small>WIN / LOSS</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong></div><div class="match-metric"><small>Trạng thái mô hình</small><strong class="metric-text">'+(x.aiGoalCalibrated===true?'Đã hiệu chuẩn (theo Audit)':'Chưa xác nhận hiệu chuẩn')+'</strong><small>Độ tin cậy Rule: '+(x.ruleConfidence==null?'—':confidenceCell(x.ruleConfidence))+'</small></div></div>'+
- '<div class="match-status-inline">'+signalStrengthCell(x)+bigBetSignalCell(x)+' <span class="muted">'+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+'</span></div><div class="muted" style="font-weight:700;margin:9px 0 6px">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div>'+
- '<div class="match-bottom"><div>Kết quả FT: <b>'+ (x.ftHome==null?'Đang chờ':esc(x.ftHome)+'-'+esc(x.ftAway))+'</b> · '+pill(x.goalResult)+' · '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine))+'</div><div class="muted">Tín hiệu Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · đã ghi Audit</div></div>'+
+ '<div class="match-left">'+
+ '<div class="match-head-left"><input type="checkbox" data-id="'+esc(x.id)+'" '+(selected.has(x.id)?'checked':'')+' onchange="toggleId(this)" aria-label="Chọn bản ghi"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-date">'+esc(new Date(x.createdAt).toLocaleString('vi-VN'))+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
+ '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.homeScore)+' – '+esc(x.awayScore)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
+ '<div class="match-status-inline"><span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span> '+signalStrengthCell(x)+bigBetSignalCell(x)+'</div>'+
+ '<div class="match-scenarios"><div class="match-scenarios-title">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div></div></div>'+
+ '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong></div></div>'+
+ '<div class="match-actions"><button type="button" class="match-btn-stats" data-stats-index="'+idx+'">▥ Chi tiết thống kê</button><button type="button" class="ai-detail-button match-btn-ai" data-ai-index="'+idx+'">✧ Chi tiết AI</button></div></div>'+
  '<div class="match-interpretation"><b>Diễn giải:</b> '+esc(signalExplanation(x))+' · Rule V4 '+scoreCell(x.rule)+' · AI Goal '+scoreCell(x.aiGoalProbability)+' · '+esc(verdict)+'. '+(x.aiGoalCalibrated===true?'Trạng thái hiệu chuẩn theo Audit.':'Chưa xác nhận mô hình hiệu chuẩn; không suy diễn độ chính xác thực tế.')+'</div>'+
+ '<div class="match-bottom"><span>FT: <b>'+(x.ftHome==null?'Đang chờ':esc(x.ftHome)+'-'+esc(x.ftAway))+'</b> · '+pill(x.goalResult)+' · '+(x.overLine==null?'NO LINE':'Over '+esc(x.overLine))+'</span><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
  '<details class="match-stats-details" data-stats-detail="'+idx+'"><summary hidden>Thống kê</summary><div class="match-stats-content">'+detail+'</div></details>'+
  '</article></td></tr>';
  }).join('')||'<tr><td class="match-card-cell">Chưa có cảnh báo Telegram được xác nhận gửi thành công.</td></tr>' ;el('checkPage').checked=visible.length>0&&visible.every(x=>selected.has(x.id));el('deleteSelected').textContent='Xóa đã chọn ('+selected.size+')';el('deleteSelected').disabled=!selected.size;el('pageInfo').textContent='Trang '+currentPage+'/'+pages+' · '+allRecords.length+' bản ghi';let buttons='';for(let i=Math.max(1,currentPage-2);i<=Math.min(pages,Math.max(5,currentPage+2));i++)buttons+='<button '+(i===currentPage?'disabled':'')+' onclick="goPage('+i+')">'+i+'</button>';el('pagination').innerHTML='<button '+(currentPage===1?'disabled':'')+' onclick="goPage('+(currentPage-1)+')">Trước</button>'+buttons+'<button '+(currentPage===pages?'disabled':'')+' onclick="goPage('+(currentPage+1)+')">Sau</button>'; }function goPage(p){currentPage=p;renderPage()}function toggleId(cb){if(cb.checked)selected.add(cb.dataset.id);else selected.delete(cb.dataset.id);renderPage()}function togglePage(yes){for(const x of allRecords.slice((currentPage-1)*pageSize,currentPage*pageSize)){if(yes)selected.add(x.id);else selected.delete(x.id)}renderPage()}async function deleteSelected(){const ids=[...selected];if(!ids.length||!confirm('Xóa vĩnh viễn '+ids.length+' bản ghi Audit đã chọn?'))return;try{const r=await fetch('/api/audit/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'HTTP '+r.status);selected.clear();await load();el('notice').textContent='Đã xóa '+d.deleted+'/'+ids.length+' bản ghi. Audit còn '+d.remaining+' bản ghi, trong đó '+d.pending+' PENDING.'}catch(e){el('notice').textContent='Xóa thất bại: '+e.message}}
