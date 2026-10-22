@@ -1,10 +1,9 @@
 'use strict';
 // Shadow-only evidence monitor. No probability or Telegram decisions without calibration.
 const EVENT_WORDS = [
-  ['shot', /shot|attempt|blocked shot|sút|on target/i],
-  ['corner', /corner|phạt góc/i],
   ['red_card', /red.card|red card|second yellow|thẻ đỏ/i],
   ['penalty', /penalty|penalt/i],
+  ['var', /\bvar\b|video assistant|review/i],
   ['goal', /\bgoal\b|bàn thắng/i]
 ];
 function collectEvents(payload) {
