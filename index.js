@@ -2,6 +2,8 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
+const aiNoStats = require('./ai_no_stats');
+
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
 let ruleV4;
 try {
@@ -7230,6 +7232,68 @@ function hasUsefulStats(
 }
 
 
+// AI NO-STATS: separate observation-only pipeline, never used by Rule/AI Goal/Telegram.
+const noStatsRecords = new Map();
+const noStatsEventCache = new Map();
+const noStatsHistoryCache = new Map();
+const NO_STATS_EVENT_TTL = 3 * 60 * 1000;
+const NO_STATS_HISTORY_TTL = 6 * 60 * 60 * 1000;
+let noStatsScanBudget = {events: 0, history: 0};
+async function noStatsEvents(match) {
+  const candidates = [match, ...(match.crossSourceMatches || [])];
+  for (const candidate of candidates) {
+    const events = aiNoStats.collectEvents(candidate.raw);
+    if (events.length) return {events, source: candidate.source + ':live'};
+  }
+  const fixture = candidates.find(c => c.source === 'apisports' && c.id);
+  if (!fixture || !APISPORTS_KEY) return {events: [], source: null};
+  const key = String(fixture.id), cached = noStatsEventCache.get(key);
+  if (cached && Date.now() - cached.at < NO_STATS_EVENT_TTL) return cached.value;
+  if (noStatsScanBudget.events >= 5) return {events: [], source: null};
+  noStatsScanBudget.events++;
+  try {
+    const payload = await apiSportsGet('/fixtures/events', {fixture: key});
+    const value = {events: aiNoStats.collectEvents(payload), source: 'apisports:events'};
+    noStatsEventCache.set(key, {at: Date.now(), value});
+    return value;
+  } catch (e) {
+    console.warn(`[AI NO-STATS EVENTS] ${key} | ${e.message}`);
+    noStatsEventCache.set(key, {at: Date.now(), value: {events: [], source: null}});
+    return {events: [], source: null};
+  }
+}
+async function noStatsHistory(teamId) {
+  if (!teamId || !APISPORTS_KEY) return null;
+  const key = String(teamId), cached = noStatsHistoryCache.get(key);
+  if (cached && Date.now() - cached.at < NO_STATS_HISTORY_TTL) return cached.value;
+  if (noStatsScanBudget.history >= 4) return null;
+  noStatsScanBudget.history++;
+  try {
+    const data = await apiSportsGet('/fixtures', {team: key, last: 5});
+    const value = aiNoStats.historyFromFixtures(data?.response, key);
+    noStatsHistoryCache.set(key, {at: Date.now(), value});
+    return value;
+  } catch (e) {
+    console.warn(`[AI NO-STATS HISTORY] team=${key} | ${e.message}`);
+    noStatsHistoryCache.set(key, {at: Date.now(), value: null});
+    return null;
+  }
+}
+async function observeNoStats(match, minute) {
+  const candidates = [match, ...(match.crossSourceMatches || [])];
+  const api = candidates.find(c => c.source === 'apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
+  const eventResult = await noStatsEvents(match);
+  const homeId = api?.raw?.teams?.home?.id, awayId = api?.raw?.teams?.away?.id;
+  const homeHistory = await noStatsHistory(homeId);
+  const awayHistory = await noStatsHistory(awayId);
+  const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
+    eventSource: eventResult.source, homeHistory, awayHistory});
+  noStatsRecords.set(record.key, record);
+  // Bounded memory; no writes to Audit and no Telegram alerts.
+  if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
+  console.log(`[AI NO-STATS] ${record.home} vs ${record.away} | ${record.evidence} | events=${record.eventsAvailable} | shadow only`);
+}
+
 // ==========================================================
 // 47. SCAN ONE MATCH
 // ==========================================================
@@ -7306,6 +7370,12 @@ async function analyzeOneMatch(
       match
     );
 
+
+  // Independent NO-STATS shadow monitoring, no effect on existing decision path.
+  if (getCoreStatsCoverage(stats) === 0) {
+    try { await observeNoStats(match, minute); }
+    catch (error) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName} | ${error.message}`); }
+  }
 
   // ======================================================
   // MOMENTUM
@@ -7730,6 +7800,7 @@ async function scanLiveMatches() {
     );
 
 
+    noStatsScanBudget = {events: 0, history: 0};
     // ====================================================
     // ANALYZE
     //
@@ -7854,6 +7925,14 @@ async function scanLiveMatches() {
   }
 }
 
+
+// Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
+app.get('/api/ai-no-stats', (req, res) => {
+  const now = Date.now();
+  const records = [...noStatsRecords.values()].filter(x => now - Date.parse(x.updatedAt) < 2 * 60 * 60 * 1000)
+    .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:false, count:records.length, records});
+});
 
 // ==========================================================
 // 49. EXPRESS ROUTES
