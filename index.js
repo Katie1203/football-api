@@ -6581,7 +6581,7 @@ async function sendTelegramAlert(
     `🔔 AI Goal dự đoán còn ≥1 bàn: ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).verdict} | ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).mode} (RUNG yêu cầu Rule V4 >60%)`,
     ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
-    `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
+    `📈 RULE: ${percentage.toFixed(1)}% | AI Goal FT: ${prediction.text || 'N/A'} | Còn bàn: ${prediction.expectedExtraGoals ?? 'Chưa xác định'}`
   ];
   const messageLines = [
     title,
@@ -7298,19 +7298,55 @@ async function analyzeOneMatch(
 
 
 
+// FT projection from AI Goal V4 only; does not use Rule to choose score.
+// AI Goal estimates P(>=1 additional goal), NOT a trained exact FT score.
+function predictFinalScoreFromAiGoal(homeScore, awayScore, aiGoal, stats) {
+  const h = Number(homeScore), a = Number(awayScore);
+  const p = Number(aiGoal?.percent);
+  const lean = aiGoal?.teamLean;
+  const pressure = calculateTeamPressure(stats);
+  const hp = Number(pressure?.home) || 0;
+  const ap = Number(pressure?.away) || 0;
+  const sum = hp + ap;
+  const base = {
+    home: h, away: a,
+    expectedExtraGoals: null,
+    likelyScorer: 'Chưa xác định',
+    confidence: 'CHƯA HIỆU CHUẨN FT',
+    homePressure: round1(hp), awayPressure: round1(ap),
+    homeShare: sum > 0 ? round1(hp / sum * 100) : null,
+    awayShare: sum > 0 ? round1(ap / sum * 100) : null,
+    source: 'ai-goal-v4-ft-one-goal-scenario',
+    exactScoreCalibrated: false
+  };
+  if (!Number.isFinite(h) || !Number.isFinite(a) ||
+      aiGoal?.percent == null || !Number.isFinite(p) || p < 0 || p > 100)
+    return {...base, text: 'Chưa đủ dữ liệu AI Goal'};
+  // Majority event probability, not an invented number of future goals.
+  if (p <= 50) return {...base, text: 'Chưa đủ cơ sở dự báo FT'};
+  if (lean !== 'HOME' && lean !== 'AWAY')
+    return {...base, text: 'Chưa xác định đội ghi bàn'};
+  const ph = h + (lean === 'HOME' ? 1 : 0);
+  const pa = a + (lean === 'AWAY' ? 1 : 0);
+  return {
+    ...base, home: ph, away: pa,
+    text: `${ph}-${pa} (kịch bản +1, tham khảo)`,
+    expectedExtraGoals: '≥1',
+    likelyScorer: lean === 'HOME' ? 'Chủ nhà' : 'Đội khách',
+    confidence: aiGoal.calibrated === true ? 'AI GOAL ĐÃ HIỆU CHUẨN' : 'AI GOAL CHƯA HIỆU CHUẨN'
+  };
+}
+
   // ======================================================
   // PREDICT FT SCORE
   // ======================================================
 
   const scorePrediction =
-    predictFinalScore(
+    predictFinalScoreFromAiGoal(
       match.homeScore,
       match.awayScore,
-      ai.efficiency,
-      minute,
-      stats,
-      momentum,
-      ai.styleType
+      aiGoal,
+      stats
     );
 
 
