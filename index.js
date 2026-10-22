@@ -115,14 +115,14 @@ async function fetchApiSportsStats(id) {
     const data = await apiSportsGet('/fixtures/statistics',{fixture:id});
     const teams = data?.response;
     if (!Array.isArray(teams) || teams.length !== 2) {
-      console.log(`[API SPORTS STATS] fixture=${id} | responseTeams=${Array.isArray(teams)?teams.length:'invalid'} | no stats payload`);
+      console.log(`[API SPORTS STATS] fixture=${id} | responseTeams=${Array.isArray(teams)?teams.length:'invalid'} | results=${data?.results ?? 'unknown'} | providerEmpty=true | no stats payload`);
       return result;
     }
     const fieldMap = {'Shots on Goal':'ShotsOnTarget','Total Shots':'TotalShots',
       'Corner Kicks':'Corners','Ball Possession':'Possession',
       'Attacks':'Attacks','Dangerous Attacks':'DangerousAttacks','Dangerous attacks':'DangerousAttacks',
       'Red Cards':'RedCards','Yellow Cards':'YellowCards',
-      'Shots off Goal':'ShotsOffTarget','Shots insidebox':'ShotsInsideBox','Shots inside box':'ShotsInsideBox','Blocked Shots':'BlockedShots',
+      'Shots off Goal':'ShotsOffTarget','Shots off Target':'ShotsOffTarget','Shots insidebox':'ShotsInsideBox','Shots inside box':'ShotsInsideBox','Shots Inside Box':'ShotsInsideBox','Blocked Shots':'BlockedShots','Shots Blocked':'BlockedShots',
       'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves','Expected Goals':'ExpectedGoals','expected_goals':'ExpectedGoals','xG':'ExpectedGoals'};
     for (let side=0;side<2;side++) {
       for (const row of teams[side].statistics || []) {
@@ -130,7 +130,8 @@ async function fetchApiSportsStats(id) {
           'shots on target':'ShotsOnTarget','shots on goal':'ShotsOnTarget',
           'shots off target':'ShotsOffTarget','shots off goal':'ShotsOffTarget',
           'shots inside box':'ShotsInsideBox','shots insidebox':'ShotsInsideBox',
-          'total shots':'TotalShots','corner kicks':'Corners',
+          'total shots':'TotalShots','shots total':'TotalShots','corner kicks':'Corners','corners':'Corners',
+          'ball possession':'Possession','possession':'Possession','expected goals':'ExpectedGoals',
           'dangerous attacks':'DangerousAttacks','attacks':'Attacks'
         })[String(row.type||'').trim().toLowerCase()];
         if (!suffix || row.value === null || row.value === undefined || row.value === '') continue;
@@ -3143,7 +3144,7 @@ async function fetchMatchDetailStats(
       .filter(x => x.h >= .55 && x.a >= .55)
       .sort((a,b) => b.h+b.a-a.h-a.a).slice(0,3);
     if (near.length) console.log(`[DA/ATT RESOLVER CANDIDATES] ${match.homeName} vs ${match.awayName} | `+
-      near.map(x=>`${x.m.source}:${x.m.id} home=${x.h.toFixed(2)} away=${x.a.toFixed(2)} minute=${x.m.minute}`).join(' | '));
+      near.map(x=>`${x.m.source}:${x.m.id} home=${x.h.toFixed(2)} away=${x.a.toFixed(2)} minute=${x.m.minute} accepted=${resolverSameMatch(match,x.m)||resolverExactSameFixture(match,x.m)}`).join(' | '));
   }
   if (sourceMatches.length === 1 && independentLiveSourceRegistry.length > 1) {
     console.log(`[DA/ATT RESOLVER] ${match.homeName} vs ${match.awayName} | NO_CROSS_PROVIDER_MATCH | candidates=${independentLiveSourceRegistry.length}`);
@@ -7012,11 +7013,17 @@ const RESOLVER_TEAM_ALIASES = [
   [/\bal[ -]?qadsiah\b/g, 'al qadsiah'],
   [/\b(?:uzb|sau|ksa)\b/g, ' '],
   [/\b(?:northeast|north east)\s+united\b/g, 'northeast united'],
+  // Provider transliteration/abbreviation aliases for verified senior clubs.
+  [/\bpersib(?:\s+bandung)?\b/g, 'persib bandung'],
+  [/\bmadura\s+(?:united|utd)\b/g, 'madura united'],
+  [/\b(?:cong\s+an\s+ha\s+noi|cong\s+an\s+hn|cahn)\b/g, 'cong an ha noi'],
   [/\b(?:atk\s+)?mohun\s+bagan(?:\s+sg)?\b/g, 'mohun bagan'],
 ];
 function resolverAliasTokens(name) {
   let normalized = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   for (const [pattern, replacement] of RESOLVER_TEAM_ALIASES) normalized = normalized.replace(pattern, replacement);
+  // Only spelling variants; youth/women/reserve suffixes remain significant.
+  normalized = normalized.replace(/\b(?:utd|untd)\b/g, 'united').replace(/\b(?:st|saint)\b/g, 'saint');
   return resolverTokens(normalized);
 }
 function resolverTeamScore(a, b) {
