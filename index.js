@@ -14,6 +14,7 @@ try {
 
 // Goal AI V4 is informational; it never changes Rule or Telegram decisions.
 const aiGoalPipeline = require('./v4_ai_goal_pipeline');
+const v4ScenarioAnalysis = require('./v4_scenario_analysis');
 const aiGoalBetDecision = require('./ai_goal_bet_verdict');
 let aiGoalV4;
 try {
@@ -173,6 +174,8 @@ const SCAN_INTERVAL_MS =
 
 const alertState = new Map();
 const sendingKeys = new Set();
+// In-flight identity locks prevent parallel provider aliases from sending the same first alert.
+const sendingFixtures = new Set();
 let auditHydrated = false;
 async function hydrateAlertState() {
   if (auditHydrated) return;
@@ -6571,21 +6574,52 @@ async function sendTelegramAlert(
   }
 
 
-  // Defensive send-time alias lock: avoid duplicate FIRST alerts from different
-  // provider fixture IDs. Follow-ups remain governed by the existing BIG BET rule.
+  // Atomically lock a fixture before the first await. The normal alert key alone
+  // is insufficient when two providers resolve the same match under different IDs.
+  const fixtureIdentity = {
+    homeName: item.homeName, awayName: item.awayName,
+    minute: Number(item.minute),
+    kickoff: item.kickoffUTC || item.kickoff || item.startTime || null
+  };
+  const sameActiveFixture = other => {
+    if (resolverTeamScore(other.homeName, fixtureIdentity.homeName) < .90 ||
+        resolverTeamScore(other.awayName, fixtureIdentity.awayName) < .90) return false;
+    if (Number.isFinite(Number(other.minute)) && Number.isFinite(fixtureIdentity.minute) &&
+        Math.abs(Number(other.minute) - fixtureIdentity.minute) > 20) return false;
+    const parseKickoff = value => {
+      if (!value) return null;
+      const n = Number(value);
+      const ms = Number.isFinite(n) && n > 1e9 ? (n < 1e12 ? n * 1000 : n) : Date.parse(value);
+      return Number.isFinite(ms) ? ms : null;
+    };
+    const left = parseKickoff(other.kickoff), right = parseKickoff(fixtureIdentity.kickoff);
+    return left == null || right == null || Math.abs(left - right) <= 30 * 60 * 1000;
+  };
+  if ([...sendingFixtures].some(sameActiveFixture)) {
+    console.log(`[ALERT DEDUP] BLOCK_INFLIGHT_FIXTURE ${item.homeName} vs ${item.awayName}`);
+    return false;
+  }
   const equivalentPrior = [...alertState.entries()].find(([key, prior]) =>
     key !== item.alertKey && prior && Number(prior.alertCount) > 0 &&
     Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL &&
-    resolverTeamScore(prior.homeName, item.homeName) >= .94 &&
-    resolverTeamScore(prior.awayName, item.awayName) >= .94 &&
-    (prior.lastMinute == null || item.minute == null || Math.abs(Number(prior.lastMinute)-Number(item.minute)) <= 20)
+    sameActiveFixture({homeName:prior.homeName,awayName:prior.awayName,
+      minute:prior.lastMinute,kickoff:prior.kickoff})
   );
   if (equivalentPrior) {
     console.log(`[ALERT DEDUP] BLOCK_ALIAS_DUPLICATE ${item.homeName} vs ${item.awayName} | existing=${equivalentPrior[0]}`);
     return false;
   }
   if (sendingKeys.has(item.alertKey)) return false;
+  // A second, stale FIRST_ALERT decision must never be promoted to alert #2.
+  // Genuine BIG BET #2 continues through its existing independent decision.
+  const currentPrior = alertState.get(item.alertKey);
+  if (currentPrior && Number(currentPrior.alertCount) > 0 &&
+      alertDecision?.reason === 'FIRST_ALERT') {
+    console.log(`[ALERT DEDUP] BLOCK_STALE_FIRST ${item.homeName} vs ${item.awayName}`);
+    return false;
+  }
   sendingKeys.add(item.alertKey);
+  sendingFixtures.add(fixtureIdentity);
   const percentage =
     safeNumber(
       item.ai.efficiency
@@ -6803,6 +6837,7 @@ async function sendTelegramAlert(
     return false;
   } finally {
     sendingKeys.delete(item.alertKey);
+    sendingFixtures.delete(fixtureIdentity);
   }
 }
 
@@ -7294,6 +7329,7 @@ async function analyzeOneMatch(
   const postGoal=postGoalState.get(alertKey);
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
+  const scenarioAnalysis = v4ScenarioAnalysis.analyze(stats, windows);
   if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
 
 
@@ -7433,6 +7469,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     ai,
     aiGoal,
+    scenarioAnalysis,
     trainingWindows: {five:windows.five,ten:windows.ten},
 
     scorePrediction,
