@@ -2,8 +2,6 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
-const ruleV4Scenarios = require('./rule_v4_scenarios');
-const v4ScenarioParallel = require('./v4_scenario_parallel');
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
 let ruleV4;
 try {
@@ -15,6 +13,7 @@ try {
 }
 
 // Goal AI V4 is informational; it never changes Rule or Telegram decisions.
+const aiGoalPipeline = require('./v4_ai_goal_pipeline');
 let aiGoalV4;
 try {
   aiGoalV4 = require('./ai_goal_v4');
@@ -105,75 +104,34 @@ function formatApiSportsMatch(raw) {
   };
 }
 const apiSportsStatsCache = new Map();
-async function fetchApiSportsStats(id, fixtureNames = {}) {
+async function fetchApiSportsStats(id) {
   const result = createEmptyStats();
   if (!APISPORTS_KEY || !id) return result;
   const cached = apiSportsStatsCache.get(String(id));
-  if (cached && Date.now()-cached.time < (cached.empty ? 300000 : 90000)) return cached.data;
+  if (cached && Date.now()-cached.time < 90000) return cached.data;
   try {
     const data = await apiSportsGet('/fixtures/statistics',{fixture:id});
-    const teams = Array.isArray(data?.response) ? data.response : [];
-    if (!teams.length) {
-      console.log(`[STATS DIAG] apisports:${id} | HTTP_OK | providerRows=0 | no statistics published`);
-      apiSportsStatsCache.set(String(id),{time:Date.now(),data:result,empty:true});
-      return result;
-    }
-    const fieldMap = {
-      shotsongoal:'ShotsOnTarget', shotsontarget:'ShotsOnTarget', totalshots:'TotalShots',
-      cornerkicks:'Corners', corners:'Corners', ballpossession:'Possession',
-      attacks:'Attacks', dangerousattacks:'DangerousAttacks', redcards:'RedCards',
-      yellowcards:'YellowCards', shotsoffgoal:'ShotsOffTarget', shotsofftarget:'ShotsOffTarget',
-      shotsinsidebox:'ShotsInsideBox', shotsinsidethebox:'ShotsInsideBox',
-      blockedshots:'BlockedShots', fouls:'Fouls', goalkeepersaves:'GoalkeeperSaves',
-      expectedgoals:'ExpectedGoals', xg:'ExpectedGoals', bigchances:'BigChances'
-    };
-    const norm = v => String(v ?? '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
-    const homeId = String(fixtureNames.homeId ?? '');
-    const awayId = String(fixtureNames.awayId ?? '');
-    const homeName = norm(fixtureNames.homeName);
-    const awayName = norm(fixtureNames.awayName);
-    let recognized = 0;
-    // Provider names may differ by FC, United, accents or transliteration.
-    // Accept alias matching only when exactly one fixture side matches strongly.
-    const aliasSide = (candidateName) => {
-      if (!candidateName || !fixtureNames.homeName || !fixtureNames.awayName) return -1;
-      const h = resolverTeamScore(candidateName, fixtureNames.homeName);
-      const a = resolverTeamScore(candidateName, fixtureNames.awayName);
-      if (h >= 0.93 && a < 0.75) return 0;
-      if (a >= 0.93 && h < 0.75) return 1;
-      return -1;
-    };
-    for (let i=0;i<teams.length;i++) {
-      const team = teams[i] || {};
-      const teamId = String(team.team?.id ?? '');
-      const teamName = norm(team.team?.name);
-      let side = -1;
-      if (homeId && teamId === homeId) side = 0;
-      else if (awayId && teamId === awayId) side = 1;
-      else if (homeName && teamName === homeName) side = 0;
-      else if (awayName && teamName === awayName) side = 1;
-      else if (team.team?.name) side = aliasSide(team.team.name);
-      if (side < 0 && teams.length === 2 && i < 2 && !homeId && !awayId && !homeName && !awayName) side = i;
-      if (side < 0) continue; // Never guess the side for an incomplete response.
-      for (const row of (Array.isArray(team.statistics) ? team.statistics : [])) {
-        const suffix = fieldMap[norm(row?.type)];
+    const teams = data?.response;
+    if (!Array.isArray(teams) || teams.length !== 2) return result;
+    const fieldMap = {'Shots on Goal':'ShotsOnTarget','Total Shots':'TotalShots',
+      'Corner Kicks':'Corners','Ball Possession':'Possession',
+      'Attacks':'Attacks','Dangerous Attacks':'DangerousAttacks','Dangerous attacks':'DangerousAttacks',
+      'Red Cards':'RedCards','Yellow Cards':'YellowCards',
+      'Shots off Goal':'ShotsOffTarget','Shots insidebox':'ShotsInsideBox','Shots inside box':'ShotsInsideBox','Blocked Shots':'BlockedShots',
+      'Fouls':'Fouls','Goalkeeper Saves':'GoalkeeperSaves','Expected Goals':'ExpectedGoals','expected_goals':'ExpectedGoals','xG':'ExpectedGoals'};
+    for (let side=0;side<2;side++) {
+      for (const row of teams[side].statistics || []) {
+        const suffix=fieldMap[row.type];
         if (!suffix || row.value === null || row.value === undefined || row.value === '') continue;
-        const n = Number(String(row.value).replace('%','').replace(',','.').trim());
-        if (Number.isFinite(n) && n >= 0) {
-          const field = `${side===0?'home':'away'}${suffix}`;
-          result[field]=n; result._present[field]=true; recognized++;
-        }
+        const n=Number(String(row.value).replace('%','').trim());
+        if (Number.isFinite(n) && n>=0) { const field = `${side===0?'home':'away'}${suffix}`; result[field]=n; result._present[field]=true; }
       }
     }
-    result.hasData = recognized > 0;
-    if (result.hasData) result.source='apisports';
-    else console.log(`[STATS DIAG] apisports:${id} | HTTP_OK | providerRows=${teams.length} | mappedFields=0 | teamMatch=${Boolean(homeId||awayId||homeName||awayName)}`);
-    apiSportsStatsCache.set(String(id),{time:Date.now(),data:result,empty:!result.hasData});
+    result.hasData=Array.isArray(teams[0].statistics) && teams[0].statistics.length>0;
+    result.source='apisports';
+    apiSportsStatsCache.set(String(id),{time:Date.now(),data:result});
     return result;
-  } catch(e) {
-    logSourceError('API-Football',`STATS fixture=${id}`,e);
-    return result;
-  }
+  } catch(e) { logSourceError('API-Football','STATS',e); return result; }
 }
 // ==========================================================
 // 2. ALERT / CACHE CONFIG
@@ -181,6 +139,7 @@ async function fetchApiSportsStats(id, fixtureNames = {}) {
 
 // >= 58% gửi Telegram
 const MIN_SEND_PERCENTAGE = 65.0;
+const MIN_RUNG_RULE_V4_PERCENTAGE = 60.0; // Strictly greater than 60 for Telegram RUNG
 
 // >= 75% BIG BET
 const BIG_BET_PERCENTAGE = 75.0;
@@ -920,19 +879,19 @@ function normalizeProviderMinute(raw, source) {
 function parseVerifiedProviderStats(payload, source) {
   const out = createEmptyStats();
   const aliases = {
-    'total shots':'TotalShots','total_shots':'TotalShots','totalshots':'TotalShots',
-    'shots on target':'ShotsOnTarget','ShotsOnTarget':'ShotsOnTarget','shotsontarget':'ShotsOnTarget','shots on goal':'ShotsOnTarget',
-    'corner kicks':'Corners','corners':'Corners','cornerkicks':'Corners',
+    'total shots':'TotalShots','total_shots':'TotalShots',
+    'shots on target':'ShotsOnTarget','ShotsOnTarget':'ShotsOnTarget',
+    'corner kicks':'Corners','corners':'Corners',
     'ball possession':'Possession','BallPossesion':'Possession',
     'blocked shots':'BlockedShots','blocked_shots':'BlockedShots',
     'shots off target':'ShotsOffTarget','ShotsOffTarget':'ShotsOffTarget',
-    'shots inside the box':'ShotsInsideBox','shots_inside_box':'ShotsInsideBox','shots insidebox':'ShotsInsideBox',
+    'shots inside the box':'ShotsInsideBox','shots_inside_box':'ShotsInsideBox',
     'red cards':'RedCards','red_cards':'RedCards',
     'dangerous attacks':'DangerousAttacks','dangerous_attacks':'DangerousAttacks',
-    'total attacks':'Attacks','attacks':'Attacks','big chances':'BigChances','expected goals':'ExpectedGoals','xg':'ExpectedGoals'
+    'total attacks':'Attacks','attacks':'Attacks'
   };
   function put(name, values) {
-    const field = aliases[name] || aliases[String(name || '').toLowerCase()] || aliases[String(name || '').toLowerCase().replace(/_/g,' ')];
+    const field = aliases[name] || aliases[String(name || '').toLowerCase()];
     if (!field || !Array.isArray(values)) return;
     for (let i=0; i<2; i++) {
       const raw = values[i];
@@ -947,11 +906,11 @@ function parseVerifiedProviderStats(payload, source) {
     const rows = payload?.match ?? payload?.data?.match;
     if (Array.isArray(rows)) for (const r of rows) put(r.name, [r.home_team, r.away_team]);
   } else if (source === 'live-football') {
-    const groups = payload?.response?.stats ?? payload?.data?.response?.stats ?? payload?.data?.stats ?? payload?.stats ?? payload?.response?.statistics ?? payload?.statistics;
+    const groups = payload?.response?.stats ?? payload?.stats;
     if (Array.isArray(groups)) for (const g of groups) {
-      for (const r of (Array.isArray(g.stats) ? g.stats : Array.isArray(g.statistics) ? g.statistics : [])) {
-        const values = Array.isArray(r.rawStats) ? r.rawStats.map(v=>v?.value) : Array.isArray(r.stats) ? r.stats : [r.home ?? r.home_team, r.away ?? r.away_team];
-        put(r.key || r.name || r.type || r.title, values);
+      for (const r of (Array.isArray(g.stats) ? g.stats : [])) {
+        const values = Array.isArray(r.rawStats) ? r.rawStats.map(v=>v?.value) : r.stats;
+        put(r.key, values);
       }
     }
   }
@@ -1460,11 +1419,7 @@ async function fetchLiveMatchesFromFotMob() {
 
 function parseFotMobTeamStats(data) {
   const result = createEmptyStats();
-  const periodStats = data?.content?.stats?.Periods?.All?.stats ??
-    data?.content?.stats?.Periods?.all?.stats ??
-    data?.stats?.Periods?.All?.stats ??
-    data?.stats?.Periods?.all?.stats ?? [];
-  const sections = Array.isArray(periodStats) ? periodStats : [];
+  const sections = data?.content?.stats?.Periods?.All?.stats || [];
   const names = {
     'BallPossesion': ['homePossession', 'awayPossession'],
     'total_shots': ['homeTotalShots', 'awayTotalShots'],
@@ -1490,21 +1445,12 @@ function parseFotMobTeamStats(data) {
         yellowcards: 'yellow_cards', redcards: 'red_cards'
       };
       const keys = names[item.key] || names[aliases[normalizedKey]];
-      if (!keys) continue;
-      const pairs = Array.isArray(item.stats) ? item.stats :
-        item.stats && typeof item.stats === 'object'
-          ? [item.stats.home ?? item.stats.homeValue, item.stats.away ?? item.stats.awayValue]
-          : [item.home ?? item.homeValue, item.away ?? item.awayValue];
+      if (!keys || !Array.isArray(item.stats)) continue;
       for (let i = 0; i < 2; i++) {
-        const raw = item.rawStats?.[i]?.value ?? item.rawStats?.[i] ?? pairs[i];
-        const numeric = typeof raw === 'object' && raw !== null ? (raw.value ?? raw.displayValue) : raw;
-        if (numeric === null || numeric === undefined || numeric === '') continue;
-        const cleaned = String(numeric).replace('%','').replace(',','.').trim();
-        if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(cleaned)) continue;
-        const value = Number(cleaned);
-        if (Number.isFinite(value) && value >= 0) {
-          result[keys[i]] = value;
-          result._present[keys[i]] = true;
+        const raw = item.rawStats?.[i]?.value ?? item.stats[i];
+        if (raw !== null && raw !== undefined && raw !== '') {
+          const value = safeNumber(raw);
+          if (Number.isFinite(value)) { result[keys[i]] = value; result._present[keys[i]] = true; }
         }
       }
     }
@@ -1518,7 +1464,7 @@ async function fetchFotMobStats(id) {
   if (!FOTMOB_KEY || !id) return createEmptyStats();
   const cacheKey = String(id);
   const cached = fotmobDetailCache.get(cacheKey);
-  if (cached && Date.now() - cached.time < (getCoreStatsCoverage(cached.stats) ? FOTMOB_CACHE_MS : 300000)) return cached.stats;
+  if (cached && Date.now() - cached.time < FOTMOB_CACHE_MS) return cached.stats;
   try {
     const response = await axios.get(`https://${FOTMOB_HOST}/api/v1/matches/${encodeURIComponent(id)}`, {
       headers: { 'x-rapidapi-key': FOTMOB_KEY.trim(), 'x-rapidapi-host': FOTMOB_HOST },
@@ -1544,12 +1490,7 @@ async function fetchLiveFootballDetailStats(eventId) {
       timeout: 10000
     });
     const parsed = parseVerifiedProviderStats(response.data, 'live-football');
-    const fallback = parseStatsFromRawMatch(response.data);
-    // Each parser can recognize different legitimate fields in the same response.
-    // Only fill genuinely missing fields; never fabricate statistics.
-    mergeMissingStats(parsed, fallback, {source:'live-football-raw'});
-    if (!parsed.hasData) console.log(`[STATS DIAG] live-football:${eventId} | HTTP_OK | JSON keys=${Object.keys(response.data || {}).slice(0,12).join(',') || 'none'} | mappedFields=0`);
-    return parsed;
+    return parsed.hasData ? parsed : parseStatsFromRawMatch(response.data);
   } catch (error) {
     logSourceError('LiveFootball', 'DETAIL', error);
     return createEmptyStats();
@@ -2777,7 +2718,7 @@ async function fetchSofaScoreStats(
       }
 
 
-      mergeStats(stats, parseVerifiedProviderStats(r.data, 'sofascore'));
+      mergeStats(stats, parseVerifiedProviderStats(r.data, 'flashscore'));
       parseDirectKeys(
         r.data,
         stats
@@ -2836,7 +2777,7 @@ async function fetchFlashScoreStats(
 
 
   const cached = flashScoreStatsCache.get(String(matchId));
-  if (cached && Date.now() - cached.time < (cached.empty ? 300000 : 90000)) return cached.data;
+  if (cached && Date.now() - cached.time < 90000) return cached.data;
 
   // Override via env when the subscribed FlashScore API exposes another route.
   const url = process.env.FLASHSCORE_STATS_URL_TEMPLATE
@@ -2896,7 +2837,7 @@ async function fetchFlashScoreStats(
 
         stats.source =
           'flashscore';
-        flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats, empty:!stats.hasData});
+        flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats});
         return stats;
       }
 
@@ -2910,7 +2851,7 @@ async function fetchFlashScoreStats(
 
   if (lastError) logSourceError('FlashScore', `STATS matchId=${matchId}`, lastError);
   else console.log(`[Source FlashScore] STATS matchId=${matchId} | Không có chỉ số`);
-  flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats, empty:!stats.hasData});
+  flashScoreStatsCache.set(String(matchId), {time:Date.now(), data:stats});
   return stats;
 }
 
@@ -3055,7 +2996,7 @@ const providerStatsRequests = new Map();
 const providerStatsCounters = {network:0, reused:0, skippedUnavailable:0};
 // Avoid retrying a provider that has no useful stats for the same native fixture every scan.
 // This is a per-provider negative cache, NOT a quota circuit breaker.
-const EMPTY_PROVIDER_CACHE_MS = 5 * 60 * 1000; // Negative cache aligned with the 5-minute scan interval to conserve API quota.
+const EMPTY_PROVIDER_CACHE_MS = 10 * 60 * 1000;
 // Capability observations never block a provider from supplying missing CORE stats.
 // Only suppress optional-only retries when provider repeatedly lacks those fields.
 const providerOptionalUnsupported=new Map();
@@ -3119,7 +3060,7 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
   if (sourceMatch.source === 'fotmob') {
     return fetchFotMobStats(sourceMatch.id);
   }
-  if (sourceMatch.source === 'apisports') return fetchApiSportsStats(sourceMatch.id, {homeName:sourceMatch.homeName, awayName:sourceMatch.awayName, homeId:sourceMatch.raw?.teams?.home?.id, awayId:sourceMatch.raw?.teams?.away?.id});
+  if (sourceMatch.source === 'apisports') return fetchApiSportsStats(sourceMatch.id);
 
   return createEmptyStats();
 }
@@ -5482,7 +5423,7 @@ function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awaySc
   // conditional correction from settled WIN/LOSS data. No arbitrary uplift.
   if (ruleV3?.model === 'rule-v4-audit-logistic' &&
       Number.isFinite(Number(ruleV3.efficiency))) {
-    const prediction=aiGoalV4.predict(stats,Number(ruleV3.efficiency));
+    const prediction=aiGoalPipeline.predict(stats,windows,Number(ruleV3.efficiency)) || aiGoalV4.predict(stats,Number(ruleV3.efficiency),windows);
     if(prediction) return {...prediction,divergence:round1(Number(ruleV3.efficiency)-prediction.percent),
       divergenceFlag:false};
     return {percent:null,ruleScore:Number(ruleV3.efficiency),calibrated:false,
@@ -5649,8 +5590,8 @@ function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, st
   if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute >= 89)
     return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
   if (!Number.isFinite(current)) return {send:false,bigBet:false,reason:'STATS_MISSING_DYNAMIC_WINDOW'};
-  if (current <= MIN_SEND_PERCENTAGE)
-    return {send:false,bigBet:false,reason:`RULE_BELOW_${MIN_SEND_PERCENTAGE}`};
+  if (current <= MIN_RUNG_RULE_V4_PERCENTAGE)
+    return {send:false,bigBet:false,reason:`RULE_V4_NOT_ABOVE_${MIN_RUNG_RULE_V4_PERCENTAGE}`};
   const previous = alertState.get(matchId);
   if (!previous) return {send:true,bigBet:false,reason:'FIRST_ALERT'};
   if (previous.alertCount >= MAX_ALERTS_PER_MATCH)
@@ -6762,7 +6703,6 @@ async function sendTelegramAlert(
     v3TelegramDetail(item.ai, st, item.minute),
     `🧠 RULE: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
-    ...(alertNumber === 1 ? ['🔔 Tín hiệu RUNG lần 1: AI Goal >65% (Rule chỉ tham khảo)'] : []),
     ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | Còn bàn: +${prediction.expectedExtraGoals ?? '?'} | Dự đoán FT: ${prediction.text || 'N/A'}`
@@ -7009,11 +6949,6 @@ const RESOLVER_TEAM_ALIASES = [
   [/\b(?:uzb|sau|ksa)\b/g, ' '],
   [/\b(?:northeast|north east)\s+united\b/g, 'northeast united'],
   [/\b(?:atk\s+)?mohun\s+bagan(?:\s+sg)?\b/g, 'mohun bagan'],
-  // Cross-provider aliases observed in the same LIVE scan; identity checks
-  // still require BOTH teams, compatible clock and compatible kickoff.
-  [/\bsabah\s+(?:fk|baku)\b/g, 'sabah baku'],
-  [/\b(?:borussia\s+)?dortmund\b/g, 'borussia dortmund'],
-  [/\bslavia\s+(?:praha|prague)\b/g, 'slavia prague'],
 ];
 function resolverAliasTokens(name) {
   let normalized = String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
@@ -7355,7 +7290,6 @@ async function analyzeOneMatch(
     postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current,unverified:true});
   }
   const postGoal=postGoalState.get(alertKey);
-  const scenarioV4 = ruleV4Scenarios.detect(stats, windows);
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
   if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
@@ -7382,27 +7316,16 @@ async function analyzeOneMatch(
   // ALERT DECISION
   // ======================================================
 
-  // AI GOAL RUNG (first alert only): use AI Goal >65% as the primary
-  // probability gate. Existing Rule-based second-alert/BIG BET logic stays intact.
-  const hasPriorAlert = alertState.has(alertKey);
-  const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
-  const alertDecision = shouldSendAlert(
-    alertKey,
-    hasPriorAlert ? ai.efficiency : aiGoalPercent,
-    minute,
-    momentum,
-    stats,
-    match.homeScore,
-    match.awayScore
-  );
-  if (!hasPriorAlert) {
-    if (alertDecision.reason === `RULE_BELOW_${MIN_SEND_PERCENTAGE}`)
-      alertDecision.reason = `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`;
-    else if (alertDecision.reason === 'STATS_MISSING_DYNAMIC_WINDOW')
-      alertDecision.reason = 'AI_GOAL_UNAVAILABLE';
-    else if (alertDecision.send)
-      alertDecision.reason = 'AI_GOAL_FIRST_ALERT';
-  }
+  const alertDecision =
+    shouldSendAlert(
+      alertKey,
+      ai.efficiency,
+      minute,
+      momentum,
+      stats,
+      match.homeScore,
+      match.awayScore
+    );
 
 
   // After a verified score change, require fresh post-goal evidence before first alert.
@@ -7417,11 +7340,19 @@ async function analyzeOneMatch(
     }
   }
 
-  // AI Goal is display-only: do not block an otherwise eligible Rule alert.
-  // Rule threshold, post-goal evidence and BIG BET checks remain unchanged.
-  console.log(`[V4 SHADOW] ${match.homeName} vs ${match.awayName} | ${minute}' | Rule=${ai.efficiency == null ? 'N/A' : ai.efficiency+'%'} | Model=${ai.model || 'N/A'} | Scenario=${scenarioV4.groups.join(',') || 'NONE'} | Coverage=${JSON.stringify(scenarioV4.coverage)} | Decision=${alertDecision.reason || 'UNKNOWN'} | Send=${alertDecision.send}`);
-  // Observation-only parallel dataset; does not affect Rule, AI Goal, Telegram or BIG BET.
-  try { v4ScenarioParallel.observe({key:alertKey,match,minute,stats,rule:ai.efficiency,aiGoal:aiGoal.percent,scenario:scenarioV4,decision:alertDecision}); } catch (e) { console.warn('[V4 PARALLEL DATA ERROR]', e.message); }
+  // Telegram RUNG requires Rule V4 >60% AND AI Goal >65%.
+  // Preserve the existing Rule, BIG BET and POST GOAL calculations.
+  if (alertDecision.send) {
+    const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
+    if (!Number.isFinite(aiGoalPercent) || aiGoalPercent <= MIN_SEND_PERCENTAGE) {
+      alertDecision.send = false;
+      alertDecision.bigBet = false;
+      alertDecision.reason = Number.isFinite(aiGoalPercent)
+        ? `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`
+        : 'AI_GOAL_PROBABILITY_UNAVAILABLE';
+      console.log(`[AI GOAL GATE] ${match.homeName} vs ${match.awayName} | Rule=${ai.efficiency}% | AI Goal=${Number.isFinite(aiGoalPercent) ? aiGoalPercent+'%' : 'N/A'} | BLOCK TELEGRAM`);
+    }
+  }
 
   const compactGoalTimeline =
     extractGoalTimeline(
@@ -7482,8 +7413,6 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     ruleConfidence,
 
-    scenarioV4,
-
     alertKey,
 
     minute,
@@ -7496,6 +7425,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     ai,
     aiGoal,
+    trainingWindows: {five:windows.five,ten:windows.ten},
 
     scorePrediction,
 
@@ -7520,21 +7450,12 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
       result,
       alertDecision
     );
+    result.telegramSent = Boolean(sent);
     if (!sent) console.error(`[Telegram NOT SENT] ${match.homeName} vs ${match.awayName} | Rule ${ai.efficiency}%`);
   } else if (alertDecision.send) {
     console.log(`[Telegram BLOCK] BEFORE_65 | ${match.homeName} vs ${match.awayName}`);
   }
 
-  // Per-match status: show the green icon only when Telegram delivery
-  // has been recorded in alertState (this scan or an earlier scan).
-  // Do not confuse passing the thresholds with an actual sent alert.
-  if (result.alertKey && alertState.has(result.alertKey)) {
-    const ruleText = result.ai?.efficiency == null || !Number.isFinite(Number(result.ai.efficiency))
-      ? 'N/A' : `${result.ai.efficiency}%`;
-    const goalText = result.aiGoal?.percent == null || !Number.isFinite(Number(result.aiGoal.percent))
-      ? 'N/A' : `${result.aiGoal.percent}%`;
-    console.log(`[MATCH ALERT STATUS] ${minute}' | Rule ${ruleText} | AI Goal ${goalText} | ${match.homeName} ${match.homeScore}-${match.awayScore} ${match.awayName} | 🟢 ĐÃ GỬI CẢNH BÁO`);
-  }
 
   return result;
 }
@@ -7763,19 +7684,11 @@ async function scanLiveMatches() {
       ranked.slice(0, 10)
     ) {
 
-      const ruleText = item.ai?.efficiency == null || !Number.isFinite(Number(item.ai.efficiency))
-        ? 'N/A'
-        : `${item.ai.efficiency}%`;
-      const aiGoalText = item.aiGoal?.percent == null || !Number.isFinite(Number(item.aiGoal.percent))
-        ? 'N/A'
-        : `${item.aiGoal.percent}%`;
-      // Mark only alerts that were successfully recorded after Telegram sending.
-      // A passing probability threshold alone must never show as sent.
-      const sentIcon = item.alertKey && alertState.has(item.alertKey)
-        ? ' | 🟢 ĐÃ GỬI CẢNH BÁO'
-        : '';
+      const ruleDisplay = item.ai?.efficiency == null ? 'N/A' : item.ai.efficiency + '%';
+      const aiGoalDisplay = item.aiGoal?.percent == null ? 'N/A' : item.aiGoal.percent + '%';
+      const sentLabel = item.telegramSent === true ? ' | 🟢 ĐÃ GỬI CẢNH BÁO' : '';
       console.log(
-        `${item.minute}' | Rule ${ruleText} | AI Goal ${aiGoalText} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentIcon}`
+        `${item.minute}' | Rule ${ruleDisplay} | AI Goal ${aiGoalDisplay} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentLabel}`
       );
     }
 
@@ -7979,6 +7892,11 @@ app.get(
 
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
+// AI Goal scenario training: read settled audit records; does not modify audit or Telegram logic.
+const aiGoalOnlineTrainer = require('./ai_goal_online_trainer');
+const trainAiGoalScenarios = () => aiGoalOnlineTrainer.trainFromAudit(audit).catch(e=>console.warn('[AI GOAL TRAIN]',e.message));
+setTimeout(trainAiGoalScenarios, 45 * 1000);
+setInterval(trainAiGoalScenarios, 60 * 60 * 1000);
 setInterval(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 5 * 60 * 1000);
 setTimeout(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 30 * 1000);
 

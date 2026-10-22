@@ -2,6 +2,7 @@
 // AI Goal V4: conditional prediction based on Rule V4 probability.
 // No change to Rule/Telegram gating. No arbitrary score/time/odds adjustments.
 const fs=require('fs'),path=require('path');
+const scenario=require('./v4_goal_scenarios');
 const FEATURES=['sot_quality','shot_balance','sot_balance','corner_pressure','shot_quality_alignment','big_chances_total'];
 const finite=x=>Number.isFinite(x);
 const pair=(stats,name)=>{
@@ -45,7 +46,30 @@ function teamAnalysis(stats){
   const teamLean=home>away?'HOME':away>home?'AWAY':'UNDETERMINED';
   return {teamLean,evidence:observations.join(' | ')||'Chưa đủ thống kê'};
 }
-function predict(stats,rulePercent){
+// Optional independently validated scenario calibration. Without a verified model,
+// preserve the original AI Goal exactly (no speculative boosts).
+let enhanced=null;
+try {
+  const m=JSON.parse(fs.readFileSync(path.join(__dirname,'ai_goal_v4_scenario_model.json'),'utf8'));
+  if(m.type==='ai_goal_v4_scenario_calibration_v1' && m.validation?.accepted===true &&
+     JSON.stringify(m.features)===JSON.stringify(scenario.FEATURES) &&
+     Array.isArray(m.weights)&&m.weights.length===scenario.FEATURES.length+1 &&
+     m.weights.every(Number.isFinite)&&Number.isFinite(m.bias)&&
+     Array.isArray(m.means)&&m.means.length===m.weights.length&&m.means.every(Number.isFinite)&&
+     Array.isArray(m.stds)&&m.stds.length===m.weights.length&&m.stds.every(v=>Number.isFinite(v)&&v>0))enhanced=m;
+} catch(_) { /* No validated model installed: use existing AI Goal. */ }
+function installScenarioModel(m){
+  if(m && m.type==='ai_goal_v4_scenario_calibration_v1' && m.validation?.accepted===true &&
+     JSON.stringify(m.features)===JSON.stringify(scenario.FEATURES) &&
+     Array.isArray(m.weights) && m.weights.length===scenario.FEATURES.length+1 &&
+     m.weights.every(Number.isFinite) && Number.isFinite(m.bias) &&
+     Array.isArray(m.means) && m.means.length===m.weights.length && m.means.every(Number.isFinite) &&
+     Array.isArray(m.stds) && m.stds.length===m.weights.length && m.stds.every(v=>Number.isFinite(v)&&v>0)){
+    enhanced=m;return true;
+  }
+  return false;
+}
+function predict(stats,rulePercent,windows,baseOnly=false){
   if(rulePercent===null||rulePercent===undefined||rulePercent==='')return null;
   const rule=Number(rulePercent);
   if(!finite(rule)||rule<0||rule>100)return null;
@@ -56,8 +80,17 @@ function predict(stats,rulePercent){
   for(let i=0;i<f.length;i++)z+=model.weights[i]*(f[i]-model.means[i])/model.stds[i];
   const p=1/(1+Math.exp(-Math.max(-35,Math.min(35,z))));
   const details=teamAnalysis(stats);
+  const sf=enhanced&&!baseOnly?scenario.extract(stats,windows):null;
+  if(enhanced&&sf){
+    const v=[Math.log(Math.max(.001,Math.min(.999,p))/(1-Math.max(.001,Math.min(.999,p)))),...sf];
+    const z2=enhanced.weights.reduce((acc,w,i)=>acc+w*(v[i]-enhanced.means[i])/enhanced.stds[i],enhanced.bias);
+    const ep=100/(1+Math.exp(-Math.max(-35,Math.min(35,z2))));
+    return {percent:Math.round(ep*10)/10,ruleScore:rule,delta:Math.round((ep-rule)*10)/10,
+      source:'ai-goal-v4-scenario-calibrated',label:'AI Goal V4 + 4 nhóm (đã kiểm định ngoại tuyến)',
+      calibrated:true,teamLean:details.teamLean,evidence:details.evidence,availableGroups:5};
+  }
   return {percent:Math.round(p*1000)/10,ruleScore:rule,delta:Math.round((p*100-rule)*10)/10,
     source:'ai-goal-v4-rule-conditional',label:'AI Goal V4 (Rule + phân tích bổ sung; chưa hiệu chuẩn độc lập)',
     calibrated:false,teamLean:details.teamLean,evidence:details.evidence,availableGroups:5};
 }
-module.exports={predict,teamAnalysis,modelLoaded:!!model,FEATURES};
+module.exports={predict,predictBase:(stats,rulePercent,windows)=>predict(stats,rulePercent,windows,true),teamAnalysis,modelLoaded:!!model,scenarioModelLoaded:!!enhanced,installScenarioModel,FEATURES};
