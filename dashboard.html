@@ -398,6 +398,7 @@ const oddsInline=x=>{
   ' · Odds ngụ ý '+scoreCell(o.marketImpliedPercent)+
   ' · AI kết hợp '+(o.probability==null?'Chưa đủ mẫu huấn luyện/kiểm định':scoreCell(o.probability))+
   ' · '+esc(o.modelStatus||'SHADOW')+' · FT '+esc(o.evaluation||'PENDING_FT')+
+  ' · Trạng thái Odds '+esc(o.oddsStatus||'CHƯA XÁC ĐỊNH')+
   ' · '+esc(o.marketLabel||'Không đủ kèo hợp lệ')+
   ' · Cập nhật '+esc(o.oddsUpdate||o.observedAt||'—')+'</div>';
 };

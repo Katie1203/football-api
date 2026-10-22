@@ -7027,45 +7027,96 @@ const oddsShadowStore = process.env.ODDS_SHADOW_STORE || './ai_goal_odds_samples
 const fsOdds = require('fs');
 let oddsShadowSamples = [];
 let oddsShadowModel = {ready:false,count:0,reason:'NEED_60_SETTLED_FIXTURES'};
-let aiGoalOddsScanCalls = 0;
-try {
-  const saved=JSON.parse(fsOdds.readFileSync(oddsShadowStore,'utf8'));
-  if(Array.isArray(saved)) oddsShadowSamples=saved.filter(x=>x&&x.fixtureId).slice(-5000);
-} catch(e) { if(e.code!=='ENOENT') console.warn('[ODDS SHADOW STORE]',e.message); }
-oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples);
-function persistOddsShadow() {
+// Persist shadow audit snapshots across restarts (mount a persistent disk on Render).
+function readShadowFile(file) {
+  try { const v=JSON.parse(fsOdds.readFileSync(file,'utf8')); return Array.isArray(v)?v:[]; }
+  catch(e) { if(e.code!=='ENOENT')console.warn('[SHADOW STORE READ]',file,e.message); return []; }
+}
+function writeShadowFile(file,rows) {
   try {
-    fsOdds.writeFileSync(oddsShadowStore+'.tmp',JSON.stringify(oddsShadowSamples));
-    fsOdds.renameSync(oddsShadowStore+'.tmp',oddsShadowStore);
-  } catch(e) { console.warn('[ODDS SHADOW STORE WRITE]',e.message); }
+    fsOdds.mkdirSync(require('path').dirname(file),{recursive:true});
+    const temp=file+'.tmp'; fsOdds.writeFileSync(temp,JSON.stringify(rows)); fsOdds.renameSync(temp,file);
+  } catch(e) { console.error('[SHADOW STORE WRITE]',file,e.message); }
+}
+function persistOddsShadow(){writeShadowFile(oddsShadowStore,oddsShadowSamples);}
+oddsShadowSamples=readShadowFile(oddsShadowStore);
+try { oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples); }
+catch(e) {console.warn('[ODDS SHADOW TRAIN]',e.message);}
+
+let aiGoalOddsScanCalls = 0;
+const ODDS_CALLS_PER_SCAN = 8;
+const ODDS_CACHE_MS = 120000;
+const oddsAttemptAt = new Map();
+let oddsScanRound = 0;
+let oddsScanSelected = new Set();
+// Resolve only an API-Sports-native fixture ID. Never reuse another provider's ID.
+function resolveOddsFixture(match) {
+  const candidates=[match,...(match.crossSourceMatches||[])];
+  const direct=candidates.filter(c=>c?.source==='apisports' && c.id);
+  const directUnique=[...new Map(direct.map(c=>[String(c.id),c])).values()];
+  if(directUnique.length===1) return {fixture:directUnique[0],status:'MATCHED_DIRECT'};
+  if(directUnique.length>1) return {fixture:null,status:'AMBIGUOUS_FIXTURE'};
+  const linked=independentLiveSourceRegistry.filter(c=>c?.source==='apisports' && c.id &&
+    (resolverSameMatch(match,c)||resolverExactSameFixture(match,c)||resolverStatsMatch(match,c)));
+  const unique=[...new Map(linked.map(c=>[String(c.id),c])).values()];
+  if(unique.length===1) return {fixture:unique[0],status:'MATCHED_REGISTRY'};
+  return {fixture:null,status:unique.length>1?'AMBIGUOUS_FIXTURE':'NO_FIXTURE_ID'};
+}
+function planOddsScan(matches) {
+  oddsScanRound++;
+  const ids=[...new Set(matches.map(m=>resolveOddsFixture(m).fixture?.id).filter(Boolean).map(String))];
+  // Rotate across eligible fixtures so later fixtures are not starved.
+  const start=ids.length?((oddsScanRound-1)*ODDS_CALLS_PER_SCAN)%ids.length:0;
+  const ordered=[...ids.slice(start),...ids.slice(0,start)];
+  oddsScanSelected=new Set(ordered.slice(0,ODDS_CALLS_PER_SCAN));
+  console.log(`[ODDS SHADOW DISCOVERY] eligible=${ids.length} scheduled=${oddsScanSelected.size} callsLimit=${ODDS_CALLS_PER_SCAN}`);
+}
+async function getOddsForMatch(match) {
+  if(!APISPORTS_KEY) return {status:'NO_API_KEY',fixtureId:null,payload:null};
+  const resolved=resolveOddsFixture(match);
+  if(!resolved.fixture) return {status:resolved.status,fixtureId:null,payload:null};
+  const id=String(resolved.fixture.id),now=Date.now();
+  const cached=aiGoalOddsCache.get(id);
+  if(cached && now-cached.at<ODDS_CACHE_MS) return {status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload};
+  if(!oddsScanSelected.has(id)) return {status:'WAITING_SCAN_SLOT',fixtureId:id,payload:null};
+  if(aiGoalOddsScanCalls>=ODDS_CALLS_PER_SCAN) return {status:'RATE_LIMIT_SCAN',fixtureId:id,payload:null};
+  aiGoalOddsScanCalls++;
+  oddsAttemptAt.set(id,now);
+  try {
+    const payload=await apiSportsGet('/odds/live',{fixture:id});
+    aiGoalOddsCache.set(id,{at:now,payload});
+    return {status:'FETCHED',fixtureId:id,payload};
+  } catch(e) {
+    console.warn(`[ODDS SHADOW FETCH] fixture=${id} | ${e.message}`);
+    return {status:'API_ERROR',fixtureId:id,payload:null};
+  }
+}
+function classifyOdds(assessment,payload) {
+  if(!Array.isArray(payload?.response)||!payload.response.length) return 'NO_ODDS';
+  if(assessment.blocked===true) return 'BLOCKED';
+  if(assessment.stopped===true) return 'STOPPED';
+  const quoteTime=Date.parse(assessment.oddsUpdate||'');
+  if(!Number.isFinite(quoteTime)||Math.abs(Date.now()-quoteTime)>10*60*1000) return 'STALE_ODDS';
+  if(assessment.marketImpliedPercent==null) {
+    const markets=payload.response[0]?.odds||[];
+    const vals=markets.flatMap(m=>Array.isArray(m.values)?m.values:[]);
+    return vals.length && vals.every(v=>v.suspended===true)?'SUSPENDED':'NO_SUITABLE_MARKET';
+  }
+  return 'VALID';
 }
 async function observeAiGoalOdds(match, minute, aiGoalPercent) {
-  if (!APISPORTS_KEY) return;
-  const candidates=[match,...(match.crossSourceMatches||[])];
-  const fixture=candidates.find(c=>c.source==='apisports' && c.id);
-  if (!fixture) return;
-  const id=String(fixture.id), now=Date.now();
-  let cached=aiGoalOddsCache.get(id);
-  if (!cached || now-cached.at>120000) {
-    if (aiGoalOddsScanCalls>=4) return;
-    aiGoalOddsScanCalls++;
-    try {
-      cached={at:now,payload:await apiSportsGet('/odds/live',{fixture:id})};
-      aiGoalOddsCache.set(id,cached);
-    } catch(e) { console.warn(`[AI GOAL ODDS SHADOW] fixture=${id} | ${e.message}`);return; }
-  }
+  const fetched=await getOddsForMatch(match);
   const total=Number(match.homeScore)+Number(match.awayScore);
-  if (!Number.isFinite(total)) return;
-  const assessment=aiGoalOddsShadow.evaluate(cached.payload,total,aiGoalPercent);
-  const quoteTime=Date.parse(assessment.oddsUpdate||'');
-  const fresh=Number.isFinite(quoteTime) && Math.abs(now-quoteTime)<=10*60*1000;
-  const valid=fresh && assessment.blocked!==true && assessment.marketImpliedPercent!==null;
-  const record={key:`apisports:${id}`,fixtureId:id,minute,score:`${match.homeScore}-${match.awayScore}`,
+  const assessment=fetched.payload && Number.isFinite(total)
+    ? aiGoalOddsShadow.evaluate(fetched.payload,total,aiGoalPercent):null;
+  const status=assessment?classifyOdds(assessment,fetched.payload):fetched.status;
+  const id=fetched.fixtureId;
+  const record={key:id?`apisports:${id}`:`${match.source}:${match.id}`,
+    fixtureId:id,minute,score:`${match.homeScore}-${match.awayScore}`,
     home:match.homeName,away:match.awayName,observedAt:new Date().toISOString(),
-    ...assessment,probability:null,evaluation:'PENDING_FT',
-    quoteValid:valid,modelStatus:oddsShadowModel.reason};
-  // A provisional market reference is NOT labelled as a trained combined AI forecast.
-  if(valid) {
+    ...(assessment||{}),probability:null,evaluation:'PENDING_FT',
+    quoteValid:status==='VALID',oddsStatus:status,modelStatus:oddsShadowModel.reason};
+  if(status==='VALID') {
     record.marketBaselinePercent=assessment.marketImpliedPercent;
     record.probability=aiGoalOddsShadow.predict(oddsShadowModel,record);
     record.calibrated=record.probability!==null;
@@ -7076,7 +7127,9 @@ async function observeAiGoalOdds(match, minute, aiGoalPercent) {
     }
   }
   aiGoalOddsRecords.set(record.key,record);
-  if (aiGoalOddsRecords.size>300) aiGoalOddsRecords.delete(aiGoalOddsRecords.keys().next().value);
+  if(aiGoalOddsRecords.size>300) aiGoalOddsRecords.delete(aiGoalOddsRecords.keys().next().value);
+  if(status!=='VALID') console.log(`[ODDS SHADOW STATUS] ${match.homeName} vs ${match.awayName} | ${status} | fixture=${id||'none'}`);
+  return record;
 }
 let oddsFtAuditBusy=false;
 async function auditAiGoalOddsFt() {
@@ -7084,15 +7137,17 @@ async function auditAiGoalOddsFt() {
   oddsFtAuditBusy=true;
   try {
     const pending=oddsShadowSamples.filter(x=>x.outcome==null &&
-      Date.now()-Date.parse(x.observedAt)>90*60*1000).slice(0,4);
+      Date.now()-Date.parse(x.observedAt)>20*60*1000).slice(0,4);
     let changed=false;
     for(const row of pending) {
       try {
         const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
         const f=response?.response?.[0];
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
         if(!['FT','AET','PEN'].includes(status))continue;
-        const finalGoals=Number(f?.goals?.home)+Number(f?.goals?.away);
+        if(f?.goals?.home==null||f?.goals?.away==null)continue;
+        const finalGoals=Number(f.goals.home)+Number(f.goals.away);
         if(!Number.isFinite(finalGoals))continue;
         row.outcome=finalGoals>row.observedGoals?1:0;
         row.ftScore=`${f.goals.home}-${f.goals.away}`;
@@ -7111,6 +7166,11 @@ async function auditAiGoalOddsFt() {
 setInterval(()=>auditAiGoalOddsFt().catch(e=>console.warn('[ODDS SHADOW FT]',e.message)),10*60*1000);
 // AI NO-STATS: separate observation-only pipeline, never used by Rule/AI Goal/Telegram.
 const noStatsRecords = new Map();
+const noStatsStore=process.env.NO_STATS_SHADOW_STORE || './ai_no_stats_ft_samples.json';
+const noStatsSamples=readShadowFile(noStatsStore);
+const noStatsSettledByFixture=new Map(noStatsSamples.filter(x=>x.outcome!==null).map(x=>[String(x.fixtureId),x]));
+function persistNoStatsShadow(){writeShadowFile(noStatsStore,noStatsSamples);}
+
 const noStatsEventCache = new Map();
 const noStatsHistoryCache = new Map();
 const NO_STATS_EVENT_TTL = 3 * 60 * 1000;
@@ -7165,12 +7225,80 @@ async function observeNoStats(match, minute) {
   const awayHistory = await noStatsHistory(awayId);
   const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
     eventSource: eventResult.source, homeHistory, awayHistory});
+  // Odds are display-only for NO-STATS in this narrowly scoped resolver fix.
+  const odds=await getOddsForMatch(match);
+  const totalGoals=Number(match.homeScore)+Number(match.awayScore);
+  const assessment=odds.payload && Number.isFinite(totalGoals)
+    ? aiGoalOddsShadow.evaluate(odds.payload,totalGoals,null):null;
+  record.oddsStatus=assessment?classifyOdds(assessment,odds.payload):odds.status;
+  record.oddsFixtureId=odds.fixtureId;
+  if(assessment && record.oddsStatus==='VALID') {
+    record.oddsLive={market:assessment.marketLabel,marketImpliedPercent:assessment.marketImpliedPercent,
+      updatedAt:assessment.oddsUpdate,blocked:assessment.blocked};
+  }
+  // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
+  const resolved=resolveOddsFixture(match);
+  record.fixtureId=resolved.fixture?String(resolved.fixture.id):null;
+  record.auditStatus=record.fixtureId?'PENDING_FT':resolved.status;
+  const settled=record.fixtureId && noStatsSettledByFixture.get(record.fixtureId);
+  if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
+  else if(record.fixtureId && !noStatsSamples.some(x=>String(x.fixtureId)===record.fixtureId)) {
+    const observedGoals=Number(match.homeScore)+Number(match.awayScore);
+    if(Number.isFinite(observedGoals)) {
+      noStatsSamples.push({fixtureId:record.fixtureId,home:record.home,away:record.away,
+        observedAt:record.updatedAt,observedGoals,score:record.score,minute:record.minute,
+        probability:record.probability,outcome:null,evaluation:'PENDING_FT'});
+      if(noStatsSamples.length>5000)noStatsSamples.splice(0,noStatsSamples.length-5000);
+      persistNoStatsShadow();
+    }
+  }
   noStatsRecords.set(record.key, record);
   // Bounded memory; no writes to Audit and no Telegram alerts.
   if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
   console.log(`[AI NO-STATS] ${record.home} vs ${record.away} | ${record.evidence} | events=${record.eventsAvailable} | shadow only`);
 }
 
+// FT reconciliation for independent NO-STATS shadow predictions.
+// Use final API-Sports score, never the current LIVE score or the production alert audit.
+let noStatsFtAuditBusy=false;
+async function auditNoStatsFt() {
+  if(noStatsFtAuditBusy||!APISPORTS_KEY)return;
+  noStatsFtAuditBusy=true;
+  try {
+    const pending=noStatsSamples.filter(x=>x.outcome===null && x.fixtureId &&
+      Date.now()-Date.parse(x.observedAt)>20*60*1000).slice(0,6);
+    let changed=false;
+    for(const row of pending) {
+      try {
+        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const f=response?.response?.[0];
+        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
+        const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        if(['CANC','ABD','PST','SUSP'].includes(status)) {
+          row.outcome='VOID';row.evaluation='VOID';row.settledAt=new Date().toISOString();changed=true;continue;
+        }
+        if(!['FT','AET','PEN'].includes(status))continue;
+        if(f?.goals?.home==null||f?.goals?.away==null)continue;
+        const goals=Number(f.goals.home)+Number(f.goals.away);
+        if(!Number.isFinite(goals))continue;
+        row.outcome=goals>row.observedGoals?1:0;
+        row.evaluation=row.outcome===1?'WIN':'LOSS';
+        row.ftScore=`${f.goals.home}-${f.goals.away}`;
+        row.settledAt=new Date().toISOString();changed=true;
+        noStatsSettledByFixture.set(String(row.fixtureId),row);
+      } catch(e) {console.warn('[NO-STATS FT]',row.fixtureId,e.message);}
+    }
+    if(changed) {
+      persistNoStatsShadow();
+      for(const record of noStatsRecords.values()) {
+        const settled=record.fixtureId && noStatsSettledByFixture.get(String(record.fixtureId));
+        if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
+      }
+    }
+  } finally {noStatsFtAuditBusy=false;}
+}
+setInterval(()=>auditNoStatsFt().catch(e=>console.warn('[NO-STATS FT]',e.message)),5*60*1000);
+setTimeout(()=>auditNoStatsFt().catch(e=>console.warn('[NO-STATS FT]',e.message)),60*1000);
 // ==========================================================
 // 47. SCAN ONE MATCH
 // ==========================================================
@@ -7717,7 +7845,8 @@ async function scanLiveMatches() {
 
 
     noStatsScanBudget = {events: 0, history: 0};
-  aiGoalOddsScanCalls = 0;
+    aiGoalOddsScanCalls = 0;
+    planOddsScan(eligibleMatches);
     // ====================================================
     // ANALYZE
     //
@@ -7848,6 +7977,7 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
     model:{...oddsShadowModel,weights:undefined},
     samples:oddsShadowSamples.length,
     settled:oddsShadowSamples.filter(x=>x.outcome!==null).length,
+    history:oddsShadowSamples.slice(-200).reverse(),
     count:aiGoalOddsRecords.size,records:[...aiGoalOddsRecords.values()]});
 });
 
@@ -7856,7 +7986,9 @@ app.get('/api/ai-no-stats', (req, res) => {
   const now = Date.now();
   const records = [...noStatsRecords.values()].filter(x => now - Date.parse(x.updatedAt) < 2 * 60 * 60 * 1000)
     .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:false, count:records.length, records});
+  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:false, count:records.length, settled:noStatsSamples.filter(x=>x.outcome!==null).length,
+    pending:noStatsSamples.filter(x=>x.outcome===null).length,
+    history:noStatsSamples.slice(-200).reverse(), records});
 });
 
 // ==========================================================
