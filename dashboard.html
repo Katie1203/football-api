@@ -403,6 +403,7 @@ main>.tabs button{white-space:nowrap}
   #audit-list .audit-scroll .match-teams .team-away {font-size:14px!important}
   #audit-list .audit-scroll .match-teams .match-score {font-size:22px!important}
 }
+.match-live-score{font-size:11px;color:#a4d5be;text-align:center;margin:1px 0 3px}.match-live-score b{color:#f0fff6;font-size:12px}
 </style>
 <style>
 /* AI detail panel opens inside the selected match card */
@@ -500,6 +501,7 @@ async function load(){try{const r=await fetch('/api/audit?status='+filter+'&v=L1
  '<div class="match-left">'+
  '<div class="match-head-left"><input type="checkbox" data-id="'+esc(x.id)+'" '+(selected.has(x.id)?'checked':'')+' onchange="toggleId(this)" aria-label="Chọn bản ghi"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-date">'+esc(new Date(x.createdAt).toLocaleString('vi-VN'))+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
  '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.homeScore)+' – '+esc(x.awayScore)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
+ '<div class="match-live-score">Cảnh báo: <b>'+esc(x.homeScore)+'–'+esc(x.awayScore)+'</b> · '+(x.ftHome!=null&&x.ftAway!=null?'FT: <b>'+esc(x.ftHome)+'–'+esc(x.ftAway)+'</b>':x.liveHomeScore!=null&&x.liveAwayScore!=null?'LIVE: <b>'+esc(x.liveHomeScore)+'–'+esc(x.liveAwayScore)+'</b> · '+((x.liveHomeScore+x.liveAwayScore)>(x.homeScore+x.awayScore)?'<span class="win">LIVE WIN (tạm thời)</span>':'Chờ bàn tiếp theo'):'LIVE: Chờ cập nhật')+'</div>'+
  '<div class="match-status-inline"><span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span> '+signalStrengthCell(x)+bigBetSignalCell(x)+'</div>'+
  '<div class="match-scenarios"><div class="match-scenarios-title">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div></div></div>'+
  '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>AI Goal + Odds (SHADOW)</small><strong>'+(oddsMatchFor(x)?.probability==null?'—':scoreCell(oddsMatchFor(x).probability))+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong><div class="match-ft-score">FT: <b>'+(x.ftHome==null||x.ftAway==null?'Đang chờ':esc(x.ftHome)+' – '+esc(x.ftAway))+'</b></div></div></div>'+

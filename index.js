@@ -8087,6 +8087,8 @@ async function scanLiveMatches() {
       ).toFixed(1);
 
 
+    try { await audit.updateLiveScores(uniqueMatches); }
+    catch(e) { console.warn('[AUDIT LIVE SCORE]',e.message); }
     try { scanObserver.recordScan({totalLive:liveMatches.length,uniqueLive:uniqueMatches.length,eligible:eligibleMatches,results,candidates:uniqueMatches}); }
     catch(e) { console.warn('[SCAN OBSERVER]',e.message); }
 

@@ -36,6 +36,40 @@ function captureSpike(spike){if(!spike)return null;
 }
 async function addAlert(item,number,messageId){const id=`${item.alertKey}|${number}|${messageId}`;const rec=scoreResults({id,matchKey:item.alertKey,source:item.source||'',sourceId:String(item.id||''),sourceIds:{...(item.sourceIds||{}),...((item.source && item.id)?{[item.source]:String(item.id)}:{})},home:item.homeName,away:item.awayName,league:item.league,kickoffUTC:(()=>{const raw=item.kickoffUTC||item.kickoff||item.startTime||item.raw?.fixture?.date||item.raw?.startTime||item.raw?.startTimestamp;const n=typeof raw==='number'?(raw<1e12?raw*1000:raw):raw;const d=new Date(n);return raw&&Number.isFinite(d.getTime())?d.toISOString():null;})(),alertNumber:number,alertType:item.alertDecision?.bigBet?'BIG BET':'ALERT',minute:Number(item.minute),homeScore:Number(item.homeScore),awayScore:Number(item.awayScore),rule:safeNum(item.ai?.efficiency),v3Components:item.ai?.v3Components?JSON.parse(JSON.stringify(item.ai.v3Components)):null,aiGoalProbability:item.aiGoal?.percent==null?null:safeNum(item.aiGoal.percent),aiGoalCalibrated:item.aiGoal?.calibrated===true,scenarioAnalysis:item.scenarioAnalysis?clone(item.scenarioAnalysis):null,momentum:safeNum(item.momentum?.score),ruleConfidence:captureConfidence(item.ruleConfidence),spike:captureSpike(item.alertDecision?.spike),alertReason:String(item.alertDecision?.reason||""),liveStats:captureLiveStats(item.stats),trainingWindows:item.trainingWindows?JSON.parse(JSON.stringify({five:item.trainingWindows.five,ten:item.trainingWindows.ten})):null,overLine:item.odds?.found?safeNum(item.odds.point):null,overPrice:item.odds?.found?safeNum(item.odds.price):null,telegramMessageId:messageId,createdAt:new Date().toISOString(),ftHome:null,ftAway:null,settledAt:null});await save(rec);return rec;}
 async function settleMatch(matchKey,h,a){await init();if(!Number.isInteger(h)||!Number.isInteger(a)||h<0||a<0)throw Error('FT must be nonnegative integers');let count=0;for(const r of records.filter(x=>x.matchKey===matchKey&&x.ftHome==null)){const next=scoreResults({...r,ftHome:h,ftAway:a,settledAt:new Date().toISOString()});await save(next);count++;}return count;}
+// Update display-only LIVE score of sent V4 alerts; preserve original alert score and FT audit.
+async function updateLiveScores(matches=[]){
+ await init();
+ const normalize=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+ const byId=new Map(),byName=new Map();
+ for(const m of matches){
+  const home=String(m.homeName||m.home||''),away=String(m.awayName||m.away||'');
+  const h=Number(m.homeScore),w=Number(m.awayScore);
+  if(!home||!away||!Number.isInteger(h)||!Number.isInteger(w)||h<0||w<0)continue;
+  const entry={h,w,minute:Number(m.minute),home,away};
+  const ids=[m.sourceIds?.apisports,m.sourceIds?.sofascore,m.sourceIds?.livescore,m.id];
+  for(const id of ids)if(id!=null&&String(id))byId.set(String(id),entry);
+  byName.set(normalize(home)+'|'+normalize(away),entry);
+ }
+ let updated=0;
+ for(const r of records){
+  if(r.ftHome!=null||r.ftAway!=null)continue;
+  let m=null;
+  for(const id of [r.sourceIds?.apisports,r.sourceIds?.sofascore,r.sourceIds?.livescore,r.sourceId]){
+   if(id!=null&&byId.has(String(id))){const candidate=byId.get(String(id));
+    if(normalize(candidate.home)===normalize(r.home)&&normalize(candidate.away)===normalize(r.away)){m=candidate;break;}
+   }
+  }
+  if(!m)m=byName.get(normalize(r.home)+'|'+normalize(r.away));
+  if(!m)continue;
+  const before=Number(r.homeScore)+Number(r.awayScore),current=m.h+m.w;
+  if(current<before)continue;
+  const prev=Number(r.liveHomeScore)+Number(r.liveAwayScore);
+  if(r.liveHomeScore!=null&&r.liveAwayScore!=null&&current<prev)continue;
+  if(r.liveHomeScore===m.h&&r.liveAwayScore===m.w)continue;
+  await save({...r,liveHomeScore:m.h,liveAwayScore:m.w,liveMinute:Number.isFinite(m.minute)?m.minute:null,liveUpdatedAt:new Date().toISOString()});updated++;
+ }
+ return updated;
+}
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
 function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
@@ -343,4 +377,4 @@ async function reconcile(){
 }
 
 async function getSettledTrainingRows(){await init();return records.filter(r=>r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores};
