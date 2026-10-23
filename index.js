@@ -7219,6 +7219,106 @@ async function noStatsHistory(teamId) {
     return null;
   }
 }
+// Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
+const NO_STATS_ALERT_MINUTE_MIN = 65;
+const NO_STATS_ALERT_MINUTE_MAX = 88;
+const NO_STATS_ALERT_EXPECTED_GOALS = 0.88;
+const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
+const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
+const noStatsSendingKeys = new Set();
+// Persist only successfully sent AI NO-STATS alerts, separately from shadow observations.
+const noStatsAlertAuditStore=process.env.NO_STATS_ALERT_AUDIT_STORE || './ai_no_stats_alert_audit.json';
+const noStatsAlertAudit=readShadowFile(noStatsAlertAuditStore).filter(x=>x&&x.key);
+function persistNoStatsAlertAudit(){writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);}
+// Track score progression after the original AI NO-STATS Telegram alert.
+// A LIVE win is provisional; only the FT audit settles WIN/LOSS.
+function updateNoStatsAlertLiveScore(record) {
+  const key=noStatsAlertKey(record);
+  const row=noStatsAlertAudit.find(x=>x.key===key);
+  if(!row || row.evaluation!=='PENDING_FT') return;
+  if(row.fixtureId && record.fixtureId && String(row.fixtureId)!==String(record.fixtureId)) return;
+  const match=String(record.score||'').trim().match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+  if(!match) return;
+  const goals=Number(match[1])+Number(match[2]);
+  const previous=String(row.liveScore||row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+  const previousGoals=previous?Number(previous[1])+Number(previous[2]):-1;
+  if(goals<previousGoals) return; // Ignore stale cross-source snapshots.
+  const next=`${match[1]}-${match[2]}`;
+  if(row.liveScore===next && row.liveMinute===record.minute) return;
+  row.liveScore=next;
+  row.liveMinute=record.minute;
+  row.liveUpdatedAt=new Date().toISOString();
+  row.liveGoalsAfterAlert=Number.isFinite(row.observedGoals)?Math.max(0,goals-row.observedGoals):null;
+  row.liveResult=row.liveGoalsAfterAlert==null?'PENDING_LIVE':row.liveGoalsAfterAlert>0?'LIVE_WIN':'LIVE_WAIT';
+  persistNoStatsAlertAudit();
+}
+function noStatsAlertView(){
+ const records=noStatsAlertAudit.slice().reverse();
+ const wins=records.filter(x=>x.evaluation==='WIN').length;
+ const losses=records.filter(x=>x.evaluation==='LOSS').length;
+ const pending=records.filter(x=>x.evaluation==='PENDING_FT').length;
+ const voids=records.filter(x=>x.evaluation==='VOID').length;
+ return {ok:true,source:'AI NO-STATS',summary:{sent:records.length,wins,losses,pending,voids,
+   settled:wins+losses,winRate:wins+losses?+(100*wins/(wins+losses)).toFixed(1):null},records};
+}
+function noStatsLiveView(){return [...noStatsRecords.values()].filter(x=>{
+ const m=Number(x.minute);return Number.isFinite(m)&&m>=46&&m<=88&&Date.now()-Date.parse(x.updatedAt)<15*60*1000;
+ }).map(x=>({fixtureId:x.fixtureId,home:x.home,away:x.away,league:x.league,
+  minute:x.minute,probability:x.probability,expectedRemainingGoals:x.expectedRemainingGoals,
+  at:x.updatedAt,alertSent:noStatsAlertAudit.some(a=>a.key===noStatsAlertKey(x))}));}
+
+function noStatsAlertKey(record) {
+  // Team identity is stable across provider IDs; date avoids collisions on future fixtures.
+  const day = String(record.updatedAt || '').slice(0, 10);
+  return `${day}:${createMatchKey(record.home, record.away)}`;
+}
+async function maybeSendNoStatsAlert(record) {
+  const minute = Number(record.minute);
+  const lambda = Number(record.expectedRemainingGoals);
+  if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
+      minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
+      lambda < NO_STATS_ALERT_EXPECTED_GOALS) return false;
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
+  const key = noStatsAlertKey(record);
+  if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
+  noStatsSendingKeys.add(key);
+  try {
+    const message = [
+      '🔔 AI NO-STATS | CẢNH BÁO CÒN BÀN',
+      `🏆 ${record.league || 'Không rõ giải'}`,
+      `⚽ ${record.home} ${record.score} ${record.away}`,
+      `⏱ Phút ${minute}`,
+      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.88)`,
+      `🎯 Xác suất AI NO-STATS: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
+      'Nguồn: AI NO-STATS (độc lập V4)'
+    ].join('\\n');
+    const response = await axios.post(
+      `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
+      {chat_id: TELEGRAM_CHAT_ID, text: message, disable_web_page_preview: true},
+      {timeout: 10000}
+    );
+    if (!response?.data?.ok) return false;
+    noStatsSentKeys.add(key);
+    writeShadowFile(noStatsAlertStore, [...noStatsSentKeys]);
+    if(!noStatsAlertAudit.some(x=>x.key===key)){
+      const [h,a]=String(record.score||'').split(/\s*[-–:]\s*/).map(Number);
+      noStatsAlertAudit.push({key,source:'AI NO-STATS',fixtureId:record.fixtureId||null,
+        league:record.league,home:record.home,away:record.away,minute,
+        score:record.score,observedGoals:Number.isFinite(h)&&Number.isFinite(a)?h+a:null,
+        expectedRemainingGoals:lambda,probability:record.probability,
+        sentAt:new Date().toISOString(),evaluation:'PENDING_FT',ftScore:null,
+        liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT'});
+      persistNoStatsAlertAudit();
+    }
+    console.log(`[AI NO-STATS ALERT SENT] ${record.home} vs ${record.away} | ${minute}' | lambda=${lambda}`);
+    return true;
+  } catch (error) {
+    console.warn(`[AI NO-STATS ALERT ERROR] ${record.home} vs ${record.away} | ${error.message}`);
+    return false;
+  } finally {
+    noStatsSendingKeys.delete(key);
+  }
+}
 async function observeNoStats(match, minute) {
   const candidates = [match, ...(match.crossSourceMatches || [])];
   const api = candidates.find(c => c.source === 'apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
@@ -7269,6 +7369,9 @@ async function observeNoStats(match, minute) {
     }
   }
   noStatsRecords.set(record.key, record);
+  try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
+  await maybeSendNoStatsAlert(record);
+  updateNoStatsAlertLiveScore(record);
   // Bounded memory; no writes to Audit and no Telegram alerts.
   if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
   console.log(`[AI NO-STATS] ${record.home} vs ${record.away} | ${record.evidence} | events=${record.eventsAvailable} | shadow only`);
@@ -7304,6 +7407,30 @@ async function auditNoStatsFt() {
         noStatsSettledByFixture.set(String(row.fixtureId),row);
       } catch(e) {console.warn('[NO-STATS FT]',row.fixtureId,e.message);}
     }
+    // Settle AI NO-STATS Telegram alerts independently at the original alert score.
+    let alertChanged=false;
+    for(const row of noStatsAlertAudit.filter(x=>x.evaluation==='PENDING_FT'&&x.fixtureId&&
+      Date.now()-Date.parse(x.sentAt)>20*60*1000).slice(0,6)){
+      try{
+        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const f=response?.response?.[0];
+        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
+        const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        if(['CANC','ABD','PST','SUSP'].includes(status)){
+          row.evaluation='VOID';row.settledAt=new Date().toISOString();alertChanged=true;continue;
+        }
+        if(!['FT','AET','PEN'].includes(status)||f?.goals?.home==null||f?.goals?.away==null)continue;
+        const total=Number(f.goals.home)+Number(f.goals.away);
+        if(!Number.isFinite(total)||!Number.isFinite(row.observedGoals))continue;
+        row.evaluation=total>row.observedGoals?'WIN':'LOSS';
+        row.ftScore=`${f.goals.home}-${f.goals.away}`;
+        row.liveScore=row.ftScore;
+        row.liveGoalsAfterAlert=Math.max(0,total-row.observedGoals);
+        row.liveResult=row.evaluation;
+        row.settledAt=new Date().toISOString();alertChanged=true;
+      }catch(e){console.warn('[NO-STATS ALERT FT]',row.fixtureId,e.message);}
+    }
+    if(alertChanged)persistNoStatsAlertAudit();
     if(changed) {
       persistNoStatsShadow();
       noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
@@ -8169,6 +8296,8 @@ app.get(
 // 50. START SERVER
 // ==========================================================
 
+app.locals.noStatsAlertView=noStatsAlertView;
+app.locals.noStatsLiveView=noStatsLiveView;
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
 // AI Goal scenario training: read settled audit records; does not modify audit or Telegram logic.

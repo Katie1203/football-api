@@ -48,6 +48,24 @@ function recordScan({totalLive,uniqueLive,eligible,results,candidates=[]}){
  }
  if(rows.length>MAX)rows.splice(0,rows.length-MAX);persist();
 }
+// Attach existing AI NO-STATS observations to the same fixture row, never add duplicates.
+function attachNoStats(record){
+ if(!record || !record.home || !record.away) return;
+ const norm=x=>String(x||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+ const id=record.fixtureId==null?'':String(record.fixtureId);
+ const candidates=rows.filter(r=>(id && r.fixtureId && String(r.fixtureId)===id) ||
+   (norm(r.home)===norm(record.home)&&norm(r.away)===norm(record.away)&&
+    (!record.league||!r.league||norm(r.league)===norm(record.league))));
+ if(!candidates.length)return;
+ for(const r of candidates){
+  r.noStatsProbability=numeric(record.probability);
+  r.noStatsExpectedGoals=numeric(record.expectedRemainingGoals);
+  r.noStatsModel=record.probabilityModel||null;
+  r.noStatsAudit=record.evaluation||record.auditStatus||'PENDING_FT';
+  r.noStatsUpdatedAt=record.updatedAt||new Date().toISOString();
+ }
+ persist();
+}
 function liveView(){
  const count=fn=>liveNow.filter(fn).length;
  return {ok:true,last,summary:{total:liveNow.length,eligible:count(x=>x.inWindow),analyzed:count(x=>x.analyzed),both:count(x=>x.goal>65&&x.rule>65),aiOnly:count(x=>x.goal>65&&!(x.rule>65)),ruleOnly:count(x=>x.rule>65&&!(x.goal>65)),neither:count(x=>!(x.goal>65)&&!(x.rule>65))},
@@ -61,11 +79,13 @@ function view({page=1,limit=60,group='',status='',q=''}={}){
  if(group==='rule_lte65')filtered=filtered.filter(x=>x.ruleGroup==='LTE65');
  if(group==='goal_gt65')filtered=filtered.filter(x=>x.goalGroup==='GT65');
  if(group==='goal_lte65')filtered=filtered.filter(x=>x.goalGroup==='LTE65');
+ if(group==='no_stats_ge088')filtered=filtered.filter(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals>=0.88);
+ if(group==='no_stats_lt088')filtered=filtered.filter(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals<0.88);
  if(group==='not_qualified')filtered=filtered.filter(x=>x.rule===null||x.goal===null||x.rule<=65||x.goal<=65);
  if(status)filtered=filtered.filter(x=>x.outcome===status);
  if(q)filtered=filtered.filter(x=>[x.home,x.away,x.league].join(' ').toLowerCase().includes(String(q).toLowerCase()));
  const recent=rows.filter(x=>x.lastAt===last.at),count=(fn)=>recent.filter(fn).length;
- return {ok:true,last,training:trainingSummary(),summary:{scannedTotal:rows.length,uniqueFixtures:new Set(rows.map(x=>x.key)).size,liveTracked:recent.length,ruleGT65:count(x=>x.ruleGroup==='GT65'),ruleLTE65:count(x=>x.ruleGroup==='LTE65'),goalGT65:count(x=>x.goalGroup==='GT65'),goalLTE65:count(x=>x.goalGroup==='LTE65'),noData:count(x=>x.reason==='NO_ANALYSIS'||x.rule===null||x.goal===null),settled:rows.filter(x=>x.outcome!=='PENDING_FT').length},total:filtered.length,page,limit,rows:filtered.slice().reverse().slice((page-1)*limit,page*limit)};
+ return {ok:true,last,training:trainingSummary(),summary:{scannedTotal:rows.length,uniqueFixtures:new Set(rows.map(x=>x.key)).size,liveTracked:recent.length,ruleGT65:count(x=>x.ruleGroup==='GT65'),ruleLTE65:count(x=>x.ruleGroup==='LTE65'),goalGT65:count(x=>x.goalGroup==='GT65'),goalLTE65:count(x=>x.goalGroup==='LTE65'),noStatsAvailable:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined),noStatsQualified:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals>=0.88),noData:count(x=>x.reason==='NO_ANALYSIS'||x.rule===null||x.goal===null),settled:rows.filter(x=>x.outcome!=='PENDING_FT').length},total:filtered.length,page,limit,rows:filtered.slice().reverse().slice((page-1)*limit,page*limit)};
 }
 let reconciling=false;
 async function reconcile(apiGet){if(reconciling)return;reconciling=true;try{
@@ -84,4 +104,4 @@ async function reconcile(apiGet){if(reconciling)return;reconciling=true;try{
  }
  if(changed)persist();
  }finally{reconciling=false;}}
-module.exports={recordScan,view,reconcile,trainingSummary,liveView};
+module.exports={recordScan,view,reconcile,trainingSummary,liveView,attachNoStats};
