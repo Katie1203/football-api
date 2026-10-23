@@ -3,10 +3,9 @@ const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
 const aiNoStats = require('./ai_no_stats');
-const aiNoStatsOddsTrainer = require('./ai_no_stats_odds_trainer');
 const aiNoStatsHistoryTrainer = require('./ai_no_stats_history_trainer');
-const aiGoalOddsShadow = require('./ai_goal_odds_shadow');
 const scanObserver = require('./scan_observer');
+const aiGoalOddsShadow = require('./ai_goal_odds_shadow');
 
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
 let ruleV4;
@@ -7118,11 +7117,11 @@ async function observeAiGoalOdds(match, minute, aiGoalPercent) {
     fixtureId:id,minute,score:`${match.homeScore}-${match.awayScore}`,
     home:match.homeName,away:match.awayName,observedAt:new Date().toISOString(),
     ...(assessment||{}),probability:null,evaluation:'PENDING_FT',
-    quoteValid:status==='VALID',oddsStatus:status,modelStatus:oddsShadowModel.ready?'VALIDATED':'PROVISIONAL_UNCALIBRATED · '+oddsShadowModel.reason};
+    quoteValid:status==='VALID',oddsStatus:status,modelStatus:oddsShadowModel.reason};
   if(status==='VALID') {
     record.marketBaselinePercent=assessment.marketImpliedPercent;
     record.probability=aiGoalOddsShadow.predict(oddsShadowModel,record);
-    record.calibrated=Boolean(oddsShadowModel.ready);
+    record.calibrated=record.probability!==null;
     if(!oddsShadowSamples.some(x=>x.fixtureId===id)) {
       oddsShadowSamples.push({...record,observedGoals:total,outcome:null});
       oddsShadowSamples=oddsShadowSamples.slice(-5000);
@@ -7174,9 +7173,6 @@ const noStatsSamples=readShadowFile(noStatsStore);
 const noStatsSettledByFixture=new Map(noStatsSamples.filter(x=>x.outcome!==null).map(x=>[String(x.fixtureId),x]));
 function persistNoStatsShadow(){writeShadowFile(noStatsStore,noStatsSamples);}
 let noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
-let noStatsOddsModel=aiNoStatsOddsTrainer.train(noStatsSamples);
-function refreshNoStatsOddsModel(){noStatsOddsModel=aiNoStatsOddsTrainer.train(noStatsSamples);noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);}
-
 
 const noStatsEventCache = new Map();
 const noStatsHistoryCache = new Map();
@@ -7243,45 +7239,23 @@ async function observeNoStats(match, minute) {
     record.oddsLive={market:assessment.marketLabel,marketImpliedPercent:assessment.marketImpliedPercent,
       updatedAt:assessment.oddsUpdate,blocked:assessment.blocked};
   }
-  // History calibration upgrades the ORIGINAL NO-STATS probability only after
-  // chronological out-of-sample validation. Otherwise preserve Poisson unchanged.
+  // Calibrate Poisson only when chronological FT holdout beats baseline.
+  // This block does not alter Odds retrieval, quote classification or Telegram.
   record.baselineProbability=record.probability;
   record.baselineExpectedRemainingGoals=record.expectedRemainingGoals;
   const learnedProbability=aiNoStatsHistoryTrainer.predict(noStatsHistoryModel,record.baselineProbability);
-  if(learnedProbability!=null) {
+  if(learnedProbability!=null){
     record.probability=learnedProbability;
     record.expectedRemainingGoals=+(-Math.log(1-learnedProbability/100)).toFixed(2);
     record.probabilityModel='POISSON_HISTORY_FT_CALIBRATED';
     record.calibrated=true;
-    record.note='Poisson gốc đã được hiệu chuẩn bằng lịch sử FT; kiểm định ngoài mẫu đạt yêu cầu.';
+    record.note='Poisson đã hiệu chuẩn bằng FT; vượt qua kiểm định ngoài mẫu.';
   }
   record.historyLearningStatus=noStatsHistoryModel.reason;
-  // Keep training input snapshots on the ORIGINAL baseline scale to avoid
-  // training the next version on predictions made by the previous version.
-  // Odds + NO-STATS shadow forecast. No effect on the production AI/Rule.
-  record.marketImpliedPercent=record.oddsLive?.marketImpliedPercent??null;
-  record.combinedProbability=aiNoStatsOddsTrainer.predict(noStatsOddsModel,record);
-  record.combinedModelStatus=noStatsOddsModel.ready?'VALIDATED':'PROVISIONAL_UNCALIBRATED · '+noStatsOddsModel.reason;
-  record.combinedCalibrated=Boolean(noStatsOddsModel.ready);
   // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
   const resolved=resolveOddsFixture(match);
   record.fixtureId=resolved.fixture?String(resolved.fixture.id):null;
   record.auditStatus=record.fixtureId?'PENDING_FT':resolved.status;
-  // A fixture may be seen before its first valid Odds quote. Upgrade its
-  // still-pending snapshot only when BOTH model inputs exist at the new time.
-  const pendingSample=record.fixtureId && noStatsSamples.find(x=>String(x.fixtureId)===record.fixtureId && x.outcome===null);
-  if(pendingSample && pendingSample.marketImpliedPercent==null &&
-      record.oddsStatus==='VALID' && record.probability!=null && record.marketImpliedPercent!=null) {
-    const currentGoals=Number(match.homeScore)+Number(match.awayScore);
-    if(Number.isFinite(currentGoals)) {
-      Object.assign(pendingSample,{observedAt:record.updatedAt,observedGoals:currentGoals,
-        score:record.score,minute:record.minute,probability:record.baselineProbability,
-        marketImpliedPercent:record.marketImpliedPercent,oddsMarket:record.oddsLive?.market??null,
-        oddsUpdatedAt:record.oddsLive?.updatedAt??null,
-        combinedProbability:record.combinedProbability,combinedModelStatus:record.combinedModelStatus});
-      persistNoStatsShadow();
-    }
-  }
   const settled=record.fixtureId && noStatsSettledByFixture.get(record.fixtureId);
   if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
   else if(record.fixtureId && !noStatsSamples.some(x=>String(x.fixtureId)===record.fixtureId)) {
@@ -7289,13 +7263,7 @@ async function observeNoStats(match, minute) {
     if(Number.isFinite(observedGoals)) {
       noStatsSamples.push({fixtureId:record.fixtureId,home:record.home,away:record.away,
         observedAt:record.updatedAt,observedGoals,score:record.score,minute:record.minute,
-        probability:record.probability,
-        marketImpliedPercent:record.oddsStatus==='VALID'?record.marketImpliedPercent:null,
-        oddsMarket:record.oddsLive?.market??null,
-        oddsUpdatedAt:record.oddsLive?.updatedAt??null,
-        combinedProbability:record.combinedProbability,
-        combinedModelStatus:record.combinedModelStatus,
-        outcome:null,evaluation:'PENDING_FT'});
+        probability:record.baselineProbability,outcome:null,evaluation:'PENDING_FT'});
       if(noStatsSamples.length>5000)noStatsSamples.splice(0,noStatsSamples.length-5000);
       persistNoStatsShadow();
     }
@@ -7338,7 +7306,7 @@ async function auditNoStatsFt() {
     }
     if(changed) {
       persistNoStatsShadow();
-      refreshNoStatsOddsModel();
+      noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
       for(const record of noStatsRecords.values()) {
         const settled=record.fixtureId && noStatsSettledByFixture.get(String(record.fixtureId));
         if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
@@ -7730,13 +7698,10 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
     else console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | Over ${odds.point} @ ${odds.price}`);
     result.goalTimeline = await resolveVerifiedGoalHistory(match);
 
-    const telegramStartedAt = Date.now();
-    console.log(`[ALERT TIMING] decisionAt=${new Date(telegramStartedAt).toISOString()} | ${match.homeName} vs ${match.awayName} | minute=${minute}`);
     const sent = await sendTelegramAlert(
       result,
       alertDecision
     );
-    console.log(`[ALERT TIMING] sendCompletedAt=${new Date().toISOString()} | elapsedMs=${Date.now()-telegramStartedAt} | sent=${Boolean(sent)}`);
     result.telegramSent = Boolean(sent);
     if (!sent) console.error(`[Telegram NOT SENT] ${match.homeName} vs ${match.awayName} | Rule ${ai.efficiency}%`);
   } else if (alertDecision.send) {
@@ -7946,10 +7911,6 @@ async function scanLiveMatches() {
     }
 
 
-    // Passive snapshot of ALL eligible fixtures, including no-analysis / below-threshold.
-    try { scanObserver.recordScan({totalLive:liveMatches.length,uniqueLive:uniqueMatches.length,eligible:eligibleMatches,results,candidates:uniqueMatches}); }
-    catch(e) { console.warn('[SCAN OBSERVER]',e.message); }
-
     // ====================================================
     // SORT LOG
     // ====================================================
@@ -7999,6 +7960,9 @@ async function scanLiveMatches() {
       ).toFixed(1);
 
 
+    try { scanObserver.recordScan({totalLive:liveMatches.length,uniqueLive:uniqueMatches.length,eligible:eligibleMatches,results,candidates:uniqueMatches}); }
+    catch(e) { console.warn('[SCAN OBSERVER]',e.message); }
+
     console.log(
       `Scan hoàn tất trong ${duration}s`
     );
@@ -8028,8 +7992,6 @@ async function scanLiveMatches() {
 }
 
 
-// Read-only historical scan monitor; protected with the same dashboard authentication.
-// These routes are registered through audit.setup for consistent access control.
 app.get('/api/ai-goal-odds-shadow',(req,res)=>{
   res.json({ok:true,mode:'SHADOW_ONLY',calibrated:oddsShadowModel.ready,
     model:{...oddsShadowModel,weights:undefined},
@@ -8044,7 +8006,7 @@ app.get('/api/ai-no-stats', (req, res) => {
   const now = Date.now();
   const records = [...noStatsRecords.values()].filter(x => now - Date.parse(x.updatedAt) < 2 * 60 * 60 * 1000)
     .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:Boolean(noStatsHistoryModel.ready), historyModel:noStatsHistoryModel, combinedModel:noStatsOddsModel, count:records.length, settled:noStatsSamples.filter(x=>x.outcome!==null).length,
+  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:Boolean(noStatsHistoryModel.ready), historyModel:noStatsHistoryModel, count:records.length, settled:noStatsSamples.filter(x=>x.outcome!==null).length,
     pending:noStatsSamples.filter(x=>x.outcome===null).length,
     history:noStatsSamples.slice(-200).reverse(), records});
 });
@@ -8215,7 +8177,6 @@ const trainAiGoalScenarios = () => aiGoalOnlineTrainer.trainFromAudit(audit).cat
 setTimeout(trainAiGoalScenarios, 45 * 1000);
 setInterval(trainAiGoalScenarios, 60 * 60 * 1000);
 setInterval(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 5 * 60 * 1000);
-// Independent FT reconciliation for passive scan history; API-Sports fixture ID only.
 setInterval(()=>{if(APISPORTS_KEY)scanObserver.reconcile(apiSportsGet).catch(e=>console.warn('[SCAN HISTORY FT]',e.message));},10*60*1000);
 setTimeout(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 30 * 1000);
 
@@ -8266,42 +8227,20 @@ app.listen(
     );
 
 
-   // Adaptive scanning: retain normal 5-minute cadence; check again after
-   // 60 seconds only when the previous scan identified a near-threshold match.
-   // The existing send gates, score algorithms, and dedup locks are unchanged.
-   const FAST_RECHECK_MS = 60 * 1000;
-   const NEAR_GATE_POINTS = 10;
-   let nextScanDue = Date.now() + SCAN_INTERVAL_MS;
-   async function adaptiveScanTick() {
-     if (scanRunning) {
-       console.log('[FAST RECHECK] Previous scan still running; avoid overlap.');
-       nextScanDue = Date.now() + FAST_RECHECK_MS;
-       return;
-     }
-     const started = Date.now();
-     try {
-       const ranked = await scanLiveMatches();
-       const near = Array.isArray(ranked) && ranked.some(item => {
-         const rule = Number(item.ai?.efficiency);
-         const goal = Number(item.aiGoal?.percent);
-         return Number.isFinite(rule) && Number.isFinite(goal) &&
-           rule > MIN_RUNG_RULE_V4_PERCENTAGE - NEAR_GATE_POINTS &&
-           goal > MIN_SEND_PERCENTAGE - NEAR_GATE_POINTS &&
-           Number(item.minute) <= 88;
-       });
-       nextScanDue = Date.now() + (near ? FAST_RECHECK_MS : SCAN_INTERVAL_MS);
-       console.log(`[SCAN CADENCE] ${near ? 'NEAR_THRESHOLD_60S' : 'NORMAL_5MIN'} | durationMs=${Date.now()-started}`);
-     } catch (e) {
-       console.error('[Auto Scan]', e.message);
-       nextScanDue = Date.now() + SCAN_INTERVAL_MS;
-     }
-   }
-   // Fixed lightweight timer; the network scan itself runs only when due.
-   setInterval(() => {
-     if (Date.now() < nextScanDue) return;
-     nextScanDue = Date.now() + SCAN_INTERVAL_MS;
-     adaptiveScanTick().catch(e => console.error('[Adaptive Scan]', e.message));
-   }, 10 * 1000);
+   // Sau đó 5 phút / lần
+setInterval(
+  () => {
+    scanLiveMatches()
+      .catch(
+        e =>
+          console.error(
+            '[Auto Scan]',
+            e.message
+          )
+      );
+  },
+  SCAN_INTERVAL_MS
+);
 
   }
 );
