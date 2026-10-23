@@ -2951,7 +2951,9 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
     return createEmptyStats();
   }
 
-  if (sourceMatch.source === 'sofascore') return createEmptyStats();
+  if (sourceMatch.source === 'sofascore') {
+    return createEmptyStats(); // legacy provider disabled
+  }
 
   if (sourceMatch.source === 'flashscore') {
     return fetchFlashScoreStats(sourceMatch.id);
@@ -2959,7 +2961,9 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
 
   // Live Football hiện không có detail-stat endpoint riêng trong bản này.
   // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
-  if (sourceMatch.source === 'live-football') return createEmptyStats();
+  if (sourceMatch.source === 'live-football') {
+    return createEmptyStats(); // legacy provider disabled
+  }
 
   if (sourceMatch.source === 'apisports') return fetchApiSportsStats(sourceMatch.id);
 
@@ -6662,26 +6666,16 @@ async function sendTelegramAlert(
 let independentLiveSourceRegistry = [];
 
 async function fetchAllLiveMatches() {
-  // API-Sports is the primary LIVE provider; FlashScore is the only fallback.
-  // Do not call SofaScore or LiveFootball (their subscriptions are exhausted).
-  const [apisports, flash] = await Promise.allSettled([
-    fetchApiSportsLive(),
-    fetchLiveMatchesFromFlashScore()
-  ]);
-  const all = [];
-  if (apisports.status === 'fulfilled') {
-    for (const raw of apisports.value) all.push(formatApiSportsMatch(raw));
-  } else logSourceError('API-Football', 'LIVE', apisports.reason);
-  if (flash.status === 'fulfilled') {
-    for (const raw of flash.value) all.push(formatLiveMatch(raw, 'flashscore'));
-    console.log(`[Source FlashScore] LIVE ${flash.value.length} trận (fallback)`);
-  } else logSourceError('FlashScore', 'LIVE', flash.reason);
-  independentLiveSourceRegistry = all.filter(m => m && m.id != null && m.homeName && m.awayName);
-  if (!all.length) console.warn('[Live Discovery] API-Sports and FlashScore empty | check keys and subscriptions');
-  else console.log(`[Live Discovery] ${all.length} source records before dedup | API-Sports ${apisports.status === 'fulfilled' ? apisports.value.length : 0} | FlashScore ${flash.status === 'fulfilled' ? flash.value.length : 0}`);
+  const [api, flash] = await Promise.allSettled([fetchApiSportsLive(), fetchLiveMatchesFromFlashScore()]);
+  const all=[];
+  if(api.status==='fulfilled')for(const raw of api.value)all.push(formatApiSportsMatch(raw));
+  else logSourceError('API-Football','LIVE',api.reason);
+  if(flash.status==='fulfilled')for(const raw of flash.value)all.push(formatLiveMatch(raw,'flashscore'));
+  else logSourceError('FlashScore','LIVE',flash.reason);
+  independentLiveSourceRegistry=all.filter(m=>m&&m.id!=null&&m.homeName&&m.awayName);
+  console.log(`[Live Discovery] API-Sports=${api.status==='fulfilled'?api.value.length:0} FlashScore=${flash.status==='fulfilled'?flash.value.length:0}`);
   return all;
 }
-
 
 // ==========================================================
 // 45. DEDUPLICATE MATCHES
@@ -7121,7 +7115,34 @@ const noStatsSendingKeys = new Set();
 // Persist only successfully sent AI NO-STATS alerts, separately from shadow observations.
 const noStatsAlertAuditStore=process.env.NO_STATS_ALERT_AUDIT_STORE || './ai_no_stats_alert_audit.json';
 const noStatsAlertAudit=readShadowFile(noStatsAlertAuditStore).filter(x=>x&&x.key);
-function persistNoStatsAlertAudit(){writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);}
+let noStatsAlertReady=null;
+async function ensureNoStatsAlertReady(){
+ if(noStatsAlertReady)return noStatsAlertReady;
+ noStatsAlertReady=(async()=>{
+   const remote=await audit.loadNoStatsAlertRecords();
+   const merged=new Map(remote.filter(x=>x?.key).map(x=>[x.key,x]));
+   for(const row of noStatsAlertAudit)if(!merged.has(row.key)){
+     merged.set(row.key,row);
+     await audit.saveNoStatsAlertRecord(row); // migrate existing local alerts to PostgreSQL
+   }
+   noStatsAlertAudit.splice(0,noStatsAlertAudit.length,...merged.values());
+   for(const row of noStatsAlertAudit)noStatsSentKeys.add(row.key);
+   writeShadowFile(noStatsAlertStore,[...noStatsSentKeys]);
+   writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
+   console.log(`[AI NO-STATS STORAGE] restored ${noStatsAlertAudit.length} alerts`);
+ })().catch(e=>{noStatsAlertReady=null;console.error('[AI NO-STATS STORAGE]',e.message);throw e;});
+ return noStatsAlertReady;
+}
+let noStatsAlertWriteQueue=Promise.resolve();
+function persistNoStatsAlertAudit(){
+ writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
+ const snapshot=noStatsAlertAudit.map(x=>({...x}));
+ noStatsAlertWriteQueue=noStatsAlertWriteQueue.then(async()=>{
+   for(const row of snapshot)await audit.saveNoStatsAlertRecord(row);
+ }).catch(e=>console.error('[AI NO-STATS PERSIST]',e.message));
+ return noStatsAlertWriteQueue;
+}
+ensureNoStatsAlertReady().catch(()=>{});
 // Track score progression after the original AI NO-STATS Telegram alert.
 // A LIVE win is provisional; only the FT audit settles WIN/LOSS.
 function updateNoStatsAlertLiveScore(record) {
@@ -7150,8 +7171,16 @@ function noStatsAlertView(){
  const losses=records.filter(x=>x.evaluation==='LOSS').length;
  const pending=records.filter(x=>x.evaluation==='PENDING_FT').length;
  const voids=records.filter(x=>x.evaluation==='VOID').length;
+ const overDecided=records.filter(x=>x.overResult==='WIN'||x.overResult==='LOSS');
+ const overWins=overDecided.filter(x=>x.overResult==='WIN').length;
+ const over={wins:overWins,losses:overDecided.length-overWins,
+  push:records.filter(x=>x.overResult==='PUSH').length,
+  noLine:records.filter(x=>x.overLine==null).length,
+  rate:overDecided.length?+(100*overWins/overDecided.length).toFixed(1):null};
+ const goalRate=wins+losses?+(100*wins/(wins+losses)).toFixed(1):null;
  return {ok:true,source:'AI NO-STATS',summary:{sent:records.length,wins,losses,pending,voids,
-   settled:wins+losses,winRate:wins+losses?+(100*wins/(wins+losses)).toFixed(1):null},records};
+   settled:wins+losses,winRate:goalRate,over},
+   byAlert:[{number:1,sent:records.length,settled:wins+losses,goal:{wins,losses,rate:goalRate},over}],records};
 }
 function noStatsLiveView(){return [...noStatsRecords.values()].filter(x=>{
  const m=Number(x.minute);return Number.isFinite(m)&&m>=46&&m<=88&&Date.now()-Date.parse(x.updatedAt)<15*60*1000;
@@ -7165,6 +7194,7 @@ function noStatsAlertKey(record) {
   return `${day}:${createMatchKey(record.home, record.away)}`;
 }
 async function maybeSendNoStatsAlert(record) {
+  try { await ensureNoStatsAlertReady(); } catch(e) { return false; }
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
@@ -7175,34 +7205,15 @@ async function maybeSendNoStatsAlert(record) {
   if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
   noStatsSendingKeys.add(key);
   try {
-    // Goal progression is taken only from verified API-Sports events.
-    // Never fabricate an intermediate score from the current result.
-    let goalProgression = 'Chưa đủ dữ liệu diễn biến tỷ số';
-    try {
-      const eventCandidates = [record.fixtureId].filter(Boolean);
-      for (const fixtureId of eventCandidates) {
-        const events = await fetchApiSportsGoalEvents(fixtureId);
-        const timeline = extractGoalTimelineV2(events, {
-          homeName: record.home, awayName: record.away,
-          homeScore: Number(String(record.score||'').split(/[-–:]/)[0]),
-          awayScore: Number(String(record.score||'').split(/[-–:]/)[1])
-        });
-        const current = String(record.score || '').match(/(\\d+)\\s*[-–:]\\s*(\\d+)/);
-        if (current && goalHistoryMatches(timeline, Number(current[1]), Number(current[2]))) {
-          goalProgression = typeof timeline === 'string' ? timeline : String(timeline);
-          break;
-        }
-      }
-    } catch (e) { console.warn('[NO-STATS GOAL TIMELINE]', e.message); }
     const message = [
-      '🔔 KÈO RUNGGG 🔔',
+      '🔔 AI NO-STATS | CẢNH BÁO CÒN BÀN',
       `🏆 ${record.league || 'Không rõ giải'}`,
-      `⚽ ${record.home} ${record.score} ${record.away} | ⏱ ${minute}′`,
-      `📌 Tỷ số: ${goalProgression}`,
-      `🔥 Bàn kỳ vọng: ${lambda.toFixed(2)}`,
-      `📊 Xác suất còn ≥1 bàn: ${record.probability == null || !Number.isFinite(Number(record.probability)) ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
-      '🎯 DỰ ĐOÁN: CÒN ÍT NHẤT 1 BÀN'
-    ].join('\\n');
+      `⚽ ${record.home} ${record.score} ${record.away}`,
+      `⏱ Phút ${minute}`,
+      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.88)`,
+      `🎯 Xác suất AI NO-STATS: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
+      'Nguồn: AI NO-STATS (độc lập V4)'
+    ].join('\n');
     const response = await axios.post(
       `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
       {chat_id: TELEGRAM_CHAT_ID, text: message, disable_web_page_preview: true},
@@ -7218,8 +7229,11 @@ async function maybeSendNoStatsAlert(record) {
         score:record.score,observedGoals:Number.isFinite(h)&&Number.isFinite(a)?h+a:null,
         expectedRemainingGoals:lambda,probability:record.probability,
         sentAt:new Date().toISOString(),evaluation:'PENDING_FT',ftScore:null,
-        liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT'});
-      persistNoStatsAlertAudit();
+        liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT',
+        alertNumber:1,telegramMessageId:response.data.result?.message_id||null,
+        overLine:record.oddsLive?.found===true&&Number.isFinite(Number(record.oddsLive?.line))?Number(record.oddsLive.line):null,
+        overResult:'NO_LINE'});
+      await persistNoStatsAlertAudit();
     }
     console.log(`[AI NO-STATS ALERT SENT] ${record.home} vs ${record.away} | ${minute}' | lambda=${lambda}`);
     return true;
@@ -7293,6 +7307,7 @@ async function observeNoStats(match, minute) {
 let noStatsFtAuditBusy=false;
 async function auditNoStatsFt() {
   if(noStatsFtAuditBusy||!APISPORTS_KEY)return;
+  try{await ensureNoStatsAlertReady();}catch(e){return;}
   noStatsFtAuditBusy=true;
   try {
     const pending=noStatsSamples.filter(x=>x.outcome===null && x.fixtureId &&
@@ -7325,23 +7340,36 @@ async function auditNoStatsFt() {
       try{
         const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
         const f=response?.response?.[0];
-        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
-        const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        const fixtureMatches=String(f?.fixture?.id)===String(row.fixtureId);
+        if(fixtureMatches&&f?.goals?.home!=null&&f?.goals?.away!=null){
+          const h=Number(f.goals.home),a=Number(f.goals.away);
+          const prev=String(row.liveScore||row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+          if(Number.isInteger(h)&&Number.isInteger(a)&&(!prev||h+a>=Number(prev[1])+Number(prev[2]))&&row.liveScore!==`${h}-${a}`){
+            row.liveScore=`${h}-${a}`;row.liveUpdatedAt=new Date().toISOString();
+            row.liveGoalsAfterAlert=Math.max(0,h+a-Number(row.observedGoals));alertChanged=true;
+          }
+        }
+        const status=fixtureMatches?String(f?.fixture?.status?.short||'').toUpperCase():'';
         if(['CANC','ABD','PST','SUSP'].includes(status)){
           row.evaluation='VOID';row.settledAt=new Date().toISOString();alertChanged=true;continue;
         }
-        if(!['FT','AET','PEN'].includes(status)||f?.goals?.home==null||f?.goals?.away==null)continue;
-        const total=Number(f.goals.home)+Number(f.goals.away);
-        if(!Number.isFinite(total)||!Number.isFinite(row.observedGoals))continue;
+        let finalScore=null;
+        if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
+          finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
+        if(!finalScore)finalScore=await audit.flashNoStatsFT(row);
+        if(!finalScore)continue;
+        const total=Number(finalScore.h)+Number(finalScore.a);
+        if(!Number.isFinite(total)||!Number.isFinite(row.observedGoals)||total<row.observedGoals)continue;
         row.evaluation=total>row.observedGoals?'WIN':'LOSS';
-        row.ftScore=`${f.goals.home}-${f.goals.away}`;
+        row.ftScore=`${finalScore.h}-${finalScore.a}`;
+        row.overResult=row.overLine==null?'NO_LINE':total>row.overLine?'WIN':total<row.overLine?'LOSS':'PUSH';
         row.liveScore=row.ftScore;
         row.liveGoalsAfterAlert=Math.max(0,total-row.observedGoals);
         row.liveResult=row.evaluation;
         row.settledAt=new Date().toISOString();alertChanged=true;
       }catch(e){console.warn('[NO-STATS ALERT FT]',row.fixtureId,e.message);}
     }
-    if(alertChanged)persistNoStatsAlertAudit();
+    if(alertChanged)await persistNoStatsAlertAudit();
     if(changed) {
       persistNoStatsShadow();
       noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
@@ -8210,6 +8238,7 @@ app.get(
 // ==========================================================
 
 app.locals.noStatsAlertView=noStatsAlertView;
+app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));

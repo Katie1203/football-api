@@ -13,6 +13,18 @@ const goals=r.ftHome+r.ftAway, before=r.homeScore+r.awayScore;
 const goalResult=goals>before?'WIN':'LOSS';let overResult='NO_LINE';
 if(r.overLine!=null){overResult=goals>r.overLine?'WIN':goals<r.overLine?'LOSS':'PUSH';}
 return {...r,goalResult,overResult};}
+// AI NO-STATS uses the same PostgreSQL connection as V4, in a separate table.
+// Local JSON remains a fallback if DATABASE_URL is not configured.
+async function loadNoStatsAlertRecords(){
+ if(!pool)return [];
+ await pool.query('CREATE TABLE IF NOT EXISTS promax_no_stats_alert_audit (key TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');
+ const {rows}=await pool.query('SELECT data FROM promax_no_stats_alert_audit ORDER BY created_at ASC LIMIT 10000');
+ return rows.map(x=>x.data);
+}
+async function saveNoStatsAlertRecord(row){
+ if(!pool)return;
+ await pool.query('INSERT INTO promax_no_stats_alert_audit (key,data) VALUES ($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET data=EXCLUDED.data',[row.key,JSON.stringify(row)]);
+}
 async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data);}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
@@ -75,9 +87,11 @@ function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
 function setup(app){const scanObserver=require('./scan_observer');app.get('/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'live-monitor.html'));});app.get('/api/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');const view=scanObserver.liveView();
  const noStats=typeof app.locals.noStatsLiveView==='function'?app.locals.noStatsLiveView():[];
- res.json({...view,noStats});});app.get('/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'scan-history.html'));});app.get('/api/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json(scanObserver.view(req.query));});app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/ai-no-stats',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'ai-no-stats.html'));});app.get('/api/no-stats-alerts',requireAuth,(req,res)=>{
+ res.json({...view,noStats});});app.get('/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'scan-history.html'));});app.get('/api/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json(scanObserver.view(req.query));});app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/ai-no-stats',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'ai-no-stats.html'));});app.get('/api/no-stats-alerts',requireAuth,async(req,res)=>{
  res.set('Cache-Control','no-store');
- res.json(typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]});
+ try{if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();
+ res.json(typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]});}
+ catch(e){res.status(503).json({ok:false,error:'NO-STATS history unavailable: '+e.message});}
 });
 app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);const globalSummary=summarize(records);res.json({ok:true,summary:total,globalSummary,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data});}catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/delete',requireAuth,async(req,res)=>{try{
@@ -340,12 +354,21 @@ async function reconcile(){
    rapidKey&&process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?safeBatch(d=>fetchFlashDate(d,rapidKey)):[]
   ]);
   const api=apiPairs.flatMap(x=>x[1]),flash=flashPairs.flatMap(x=>x[1]);
-  console.log(`[FT BATCH] pending=${pending.length} dates=${dates.length} apiSports=${api.length} flashScore=${flash.length} (actual fixtures, not date requests)`);
+  console.log(`[FT BATCH] pending=${pending.length} apiSports=${api.length} flashScore=${flash.length}`);
   for(const r of pending){
    try{
     const ids={...(r.sourceIds||{})};if(r.source&&r.sourceId&&!ids[r.source])ids[r.source]=String(r.sourceId);
     const candidates=[],reasons=[];
     const apiRow=uniqueFTFixture(api,r,x=>x.fixture?.id,x=>[x.teams?.home?.name,x.teams?.away?.name],x=>x.fixture?.date,ids.apisports);
+    if(apiRow && apiRow.goals?.home!=null && apiRow.goals?.away!=null){
+      const h=Number(apiRow.goals.home),a=Number(apiRow.goals.away);
+      if(Number.isInteger(h)&&Number.isInteger(a)&&h>=Number(r.homeScore)&&a>=Number(r.awayScore)&&
+        (r.liveHomeScore==null||h+a>=Number(r.liveHomeScore)+Number(r.liveAwayScore))&&
+        (r.liveHomeScore!==h||r.liveAwayScore!==a)){
+        for(const old of records.filter(x=>x.matchKey===r.matchKey&&x.ftHome==null))
+          await save({...old,liveHomeScore:h,liveAwayScore:a,liveUpdatedAt:new Date().toISOString()});
+      }
+    }
     if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);else reasons.push('APISPORTS_NOT_FINAL');if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}else reasons.push('APISPORTS_NOT_FOUND');
     const flashRow=uniqueFTFixture(flash,r,x=>x.match_id||x.id,x=>[x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name],kickoffFT,ids.flashscore);
     if(flashRow){const ft=flashFT(flashRow);if(ft)candidates.push(ft);else reasons.push('FLASHSCORE_NOT_FINAL');if(!ids.flashscore)ids.flashscore=String(flashRow.match_id||flashRow.id);}else reasons.push(process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?'FLASHSCORE_NOT_FOUND':'FLASHSCORE_DATE_ENDPOINT_UNCONFIGURED');
@@ -358,11 +381,10 @@ async function reconcile(){
     for(const {source,ft} of results){if(ft)candidates.push({...ft,source});else reasons.push(source.toUpperCase()+'_ID_NOT_CONFIRMED');}
     if(Object.keys(ids).some(k=>String(ids[k])!==String(r.sourceIds?.[k]||''))){for(const rec of records.filter(x=>x.matchKey===r.matchKey))await save({...rec,sourceIds:{...rec.sourceIds,...ids}});}
     const primary=candidates.filter(x=>x.source==='apisports');
-    const fallback=candidates.filter(x=>x.source==='flashscore');
-    const selected=primary.length?primary:fallback;
-    const distinct=new Set(selected.map(x=>`${x.h}-${x.a}`));
-    if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${selected.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
-    if(selected.length){const ft=selected[0];
+    const preferred=primary.length?primary:candidates.filter(x=>x.source==='flashscore');
+    const distinct=new Set(preferred.map(x=>`${x.h}-${x.a}`));
+    if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${candidates.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
+    if(preferred.length){const ft=preferred[0];
      // A valid FT cannot be below the score already seen when alerting.
      if(ft.h<Number(r.homeScore)||ft.a<Number(r.awayScore)){console.warn(`[AUDIT FT] SCORE_CONFLICT | ${r.home} vs ${r.away} | alert=${r.homeScore}-${r.awayScore} FT=${ft.h}-${ft.a}`);continue;}
      const n=await settleMatch(r.matchKey,ft.h,ft.a);
@@ -373,5 +395,17 @@ async function reconcile(){
  }catch(e){console.error('[AUDIT FT]',e.stack||e.message);}finally{checking=false;}
 }
 
+// Read-only FT fallback for an AI NO-STATS Telegram alert, using the same
+// verified FlashScore date resolver as the V4 audit. No unverified scores.
+async function flashNoStatsFT(row){
+ const key=(process.env.RAPIDAPI_KEY||'').trim();
+ if(!key)return null;
+ const r={home:row.home,away:row.away,createdAt:row.sentAt,kickoffUTC:null};
+ const dates=dateCandidates(r);
+ const matches=(await Promise.all(dates.map(d=>fetchFlashDate(d,key)))).flat();
+ const candidate=uniqueFTFixture(matches,r,x=>x.match_id||x.id,
+   x=>[x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name],kickoffFT,null);
+ return candidate?flashFT(candidate):null;
+}
 async function getSettledTrainingRows(){await init();return records.filter(r=>r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT};
