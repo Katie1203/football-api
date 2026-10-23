@@ -7194,7 +7194,8 @@ function noStatsAlertKey(record) {
   return `${day}:${createMatchKey(record.home, record.away)}`;
 }
 async function maybeSendNoStatsAlert(record) {
-  try { await ensureNoStatsAlertReady(); } catch(e) { return false; }
+  // Storage errors must never block a qualifying Telegram alert.
+  try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
@@ -7307,7 +7308,7 @@ async function observeNoStats(match, minute) {
 let noStatsFtAuditBusy=false;
 async function auditNoStatsFt() {
   if(noStatsFtAuditBusy||!APISPORTS_KEY)return;
-  try{await ensureNoStatsAlertReady();}catch(e){return;}
+  try{await ensureNoStatsAlertReady();}catch(e){console.warn('[AI NO-STATS STORAGE FT]',e.message);}
   noStatsFtAuditBusy=true;
   try {
     const pending=noStatsSamples.filter(x=>x.outcome===null && x.fixtureId &&

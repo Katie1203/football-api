@@ -13,19 +13,49 @@ const goals=r.ftHome+r.ftAway, before=r.homeScore+r.awayScore;
 const goalResult=goals>before?'WIN':'LOSS';let overResult='NO_LINE';
 if(r.overLine!=null){overResult=goals>r.overLine?'WIN':goals<r.overLine?'LOSS':'PUSH';}
 return {...r,goalResult,overResult};}
-// AI NO-STATS uses the same PostgreSQL connection as V4, in a separate table.
-// Local JSON remains a fallback if DATABASE_URL is not configured.
+// AI NO-STATS shares V4's promax_alert_audit table and database connection.
+// A namespaced id prevents collision with V4 alerts; source keeps the models separate.
+const noStatsAuditId=key=>'AI_NO_STATS:'+String(key);
 async function loadNoStatsAlertRecords(){
- if(!pool)return [];
- await pool.query('CREATE TABLE IF NOT EXISTS promax_no_stats_alert_audit (key TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');
- const {rows}=await pool.query('SELECT data FROM promax_no_stats_alert_audit ORDER BY created_at ASC LIMIT 10000');
- return rows.map(x=>x.data);
+ if(!pool){
+  return records.filter(r=>r?.source==='AI_NO_STATS').map(r=>r.noStatsPayload||r);
+ }
+ await init();
+ // Read shared audit, including records written by previous deployments.
+ const {rows}=await pool.query("SELECT data FROM promax_alert_audit WHERE LEFT(id,12) = 'AI_NO_STATS:' ORDER BY created_at ASC LIMIT 10000");
+ const merged=new Map(rows.map(x=>x.data?.noStatsPayload||x.data).filter(x=>x?.key).map(x=>[x.key,x]));
+ // One-time compatibility migration: preserve existing alerts from the former table.
+ const legacy=await pool.query("SELECT to_regclass('public.promax_no_stats_alert_audit') AS name");
+ if(legacy.rows[0]?.name){
+  const old=await pool.query('SELECT data FROM promax_no_stats_alert_audit ORDER BY created_at ASC LIMIT 10000');
+  for(const {data} of old.rows){
+   if(!data?.key||merged.has(data.key))continue;
+   await saveNoStatsAlertRecord(data);
+   merged.set(data.key,data);
+  }
+ }
+ return [...merged.values()];
 }
 async function saveNoStatsAlertRecord(row){
- if(!pool)return;
- await pool.query('INSERT INTO promax_no_stats_alert_audit (key,data) VALUES ($1,$2::jsonb) ON CONFLICT (key) DO UPDATE SET data=EXCLUDED.data',[row.key,JSON.stringify(row)]);
+ if(!row?.key)throw new Error('AI NO-STATS alert key missing');
+ const payload={...row,source:'AI NO-STATS'};
+ const rec={id:noStatsAuditId(row.key),source:'AI_NO_STATS',matchKey:row.key,
+  alertNumber:1,home:row.home,away:row.away,league:row.league,
+  minute:row.minute,homeScore:Number(String(row.score||'').split(/[-–:]/)[0]),
+  awayScore:Number(String(row.score||'').split(/[-–:]/)[1]),
+  telegramMessageId:row.telegramMessageId,createdAt:row.sentAt,
+  noStatsPayload:payload};
+ if(pool){
+  await init();
+  await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[rec.id,JSON.stringify(rec)]);
+ }else{
+  // Same V4 local audit file when PostgreSQL is not configured.
+  const existing=records.findIndex(x=>x.id===rec.id);
+  if(existing>=0)records[existing]=rec;else records.unshift(rec);
+  fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);
+ }
 }
-async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data);}initialized=true;}
+async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data).filter(x=>x.source!=='AI_NO_STATS');}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
 const LIVE_FIELDS=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','Attacks','DangerousAttacks','Corners','Possession','BigChances','ExpectedGoals','ShotsInsideBox','RedCards','YellowCards'];
@@ -93,7 +123,7 @@ function setup(app){const scanObserver=require('./scan_observer');app.get('/live
  res.json(typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]});}
  catch(e){res.status(503).json({ok:false,error:'NO-STATS history unavailable: '+e.message});}
 });
-app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records;const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);const globalSummary=summarize(records);res.json({ok:true,summary:total,globalSummary,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data});}catch(e){res.status(500).json({ok:false,error:e.message});}});
+app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records.filter(r=>r.source!=='AI_NO_STATS');const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);const globalSummary=summarize(records.filter(r=>r.source!=='AI_NO_STATS'));res.json({ok:true,summary:total,globalSummary,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data});}catch(e){res.status(500).json({ok:false,error:e.message});}});
 app.post('/api/audit/delete',requireAuth,async(req,res)=>{try{
  const ids=req.body?.ids;
  if(!Array.isArray(ids)||ids.length<1||ids.length>500||ids.some(x=>typeof x!=='string'||x.length>500))return res.status(400).json({ok:false,error:'Invalid ids (1-500)'});
@@ -343,7 +373,7 @@ async function reconcile(){
   await init();const rapidKey=(process.env.RAPIDAPI_KEY||'').trim();
   if(!rapidKey&&!process.env.APISPORTS_KEY)return;
   const now=Date.now();
-  const pending=[...new Map(records.filter(r=>r.ftHome==null).slice().reverse().map(r=>[r.matchKey,r])).values()]
+  const pending=[...new Map(records.filter(r=>r.source!=='AI_NO_STATS'&&r.ftHome==null).slice().reverse().map(r=>[r.matchKey,r])).values()]
    .filter(r=>now-(lastFTCheck.get(r.matchKey)||0)>=FT_RETRY_MS).slice(0,FT_MAX_PER_CYCLE);
   if(!pending.length)return;
   for(const r of pending)lastFTCheck.set(r.matchKey,now);
@@ -407,5 +437,5 @@ async function flashNoStatsFT(row){
    x=>[x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name],kickoffFT,null);
  return candidate?flashFT(candidate):null;
 }
-async function getSettledTrainingRows(){await init();return records.filter(r=>r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
+async function getSettledTrainingRows(){await init();return records.filter(r=>r.source!=='AI_NO_STATS' && r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
 module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT};
