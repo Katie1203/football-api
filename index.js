@@ -7105,6 +7105,28 @@ async function noStatsHistory(teamId) {
     return null;
   }
 }
+// AI Goal V4: reuse the exact AI NO-STATS Poisson estimator as an additional
+// evidence feature. No Rule/AI Goal percentages are fed into lambda.
+async function v4HistoricalGoalFeature(match, minute) {
+  const candidates=[match,...(match.crossSourceMatches||[])];
+  const api=candidates.find(c=>c.source==='apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
+  if(!api)return null;
+  const [home,away]=await Promise.all([
+    noStatsHistory(api.raw.teams.home.id),noStatsHistory(api.raw.teams.away.id)
+  ]);
+  const baseline=aiNoStats.provisionalProbability(minute,home,away);
+  if(!baseline)return null;
+  // Same historical FT calibration as NO-STATS, when validated.
+  const calibrated=aiNoStatsHistoryTrainer.predict(noStatsHistoryModel,baseline.probability);
+  const lambda=calibrated==null?baseline.expectedRemainingGoals:
+    +(-Math.log(1-calibrated/100)).toFixed(2);
+  return {expectedRemainingGoals:lambda,
+    probabilityAtLeastOne:calibrated??baseline.probability,
+    probabilityAtLeastTwo:+(100*(1-Math.exp(-lambda)*(1+lambda))).toFixed(1),
+    baselineExpectedRemainingGoals:baseline.expectedRemainingGoals,
+    historyHomeSample:home.sample,historyAwaySample:away.sample,
+    calibrated:calibrated!=null,source:'AI_NO_STATS_POISSON_HISTORY'};
+}
 // Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
 const NO_STATS_ALERT_MINUTE_MIN = 65;
 const NO_STATS_ALERT_MINUTE_MAX = 88;
@@ -7564,6 +7586,14 @@ async function analyzeOneMatch(
   const postGoal=postGoalState.get(alertKey);
   const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
   const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
+  // AI Goal V4 Poisson feature is additive evidence only. Never changes the
+  // existing AI Goal probability, Rule, Telegram decision or NO-STATS alerts.
+  try {
+    aiGoal.poissonHistory=await v4HistoricalGoalFeature(match,minute);
+  } catch(e) {
+    aiGoal.poissonHistory=null;
+    console.warn(`[AI GOAL V4 POISSON] ${match.homeName} vs ${match.awayName} | ${e.message}`);
+  }
   // Non-blocking SHADOW: errors cannot change existing alert or Rule calculations.
   try { await observeAiGoalOdds(match,minute,aiGoal?.percent); }
   catch(e) { console.warn(`[AI GOAL ODDS SHADOW] ${e.message}`); }
