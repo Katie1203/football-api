@@ -2951,9 +2951,7 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
     return createEmptyStats();
   }
 
-  if (sourceMatch.source === 'sofascore') {
-    return fetchSofaScoreStats(sourceMatch.id);
-  }
+  if (sourceMatch.source === 'sofascore') return createEmptyStats();
 
   if (sourceMatch.source === 'flashscore') {
     return fetchFlashScoreStats(sourceMatch.id);
@@ -2961,9 +2959,7 @@ async function fetchStatsForSourceMatchUncached(sourceMatch) {
 
   // Live Football hiện không có detail-stat endpoint riêng trong bản này.
   // Vẫn tham gia fallback bằng toàn bộ statistics có sẵn trong raw match.
-  if (sourceMatch.source === 'live-football') {
-    return fetchLiveFootballDetailStats(sourceMatch.id);
-  }
+  if (sourceMatch.source === 'live-football') return createEmptyStats();
 
   if (sourceMatch.source === 'apisports') return fetchApiSportsStats(sourceMatch.id);
 
@@ -3082,8 +3078,7 @@ async function fetchMatchDetailStats(
   // BƯỚC 2: lấy thêm cả chỉ số phụ nếu còn thiếu, không chỉ kiểm tra 5 core.
   // Ưu tiên SofaScore -> FlashScore -> Live Football.
   const sourcePriority = {
-    apisports: 5, sofascore: 4, 'live-football': 3,
-    flashscore: 2
+    apisports: 5, flashscore: 2
   };
 
   const orderedSources = [...sourceMatches].sort(
@@ -6325,30 +6320,6 @@ async function resolveVerifiedGoalHistory(match) {
     const fromLive = extractGoalTimelineV2(candidate.raw, match);
     if (goalHistoryMatches(fromLive, home, away)) return fromLive;
   }
-  const ids = [...new Set(candidates.filter(c => c.source === 'sofascore')
-    .map(c => c.id).filter(Boolean).map(String))];
-  // Other providers may use different IDs. Resolve by team names only when needed.
-  if (!ids.length) {
-    const resolved = await resolveSofaGoalEventIdByName(match);
-    if (resolved) ids.push(String(resolved));
-  }
-  if (ids.length) {
-    // Resolve alternate SofaScore ID if a cross-source ID cannot supply verified incidents.
-    const resolved = await resolveSofaGoalEventIdByName(match);
-    if (resolved && !ids.includes(String(resolved))) ids.push(String(resolved));
-  }
-  for (const id of ids) {
-    try {
-      const timeline = extractGoalTimelineV2(await fetchSofaGoalIncidents(id), match);
-      if (goalHistoryMatches(timeline, home, away)) {
-        console.log(`⚽ [GOAL HISTORY OK] ${match.homeName} vs ${match.awayName} | SofaScore eventId=${id}`);
-        return timeline;
-      }
-      console.warn(`[GOAL HISTORY] Incomplete or mismatched incidents | eventId=${id}`);
-    } catch (err) {
-      console.warn(`[GOAL HISTORY] SofaScore incidents error | eventId=${id} | ${err.response?.status || err.message}`);
-    }
-  }
   const apiIds = [...new Set(candidates.filter(c => c.source === 'apisports').map(c => c.id).filter(Boolean))];
   for (const id of apiIds) {
     try {
@@ -6691,102 +6662,23 @@ async function sendTelegramAlert(
 let independentLiveSourceRegistry = [];
 
 async function fetchAllLiveMatches() {
-
-  const [
-    sofa,
-    flash,
-    football,
-    apisports
-  ] = await Promise.allSettled([
-
-    fetchLiveMatchesFromSofaScore(),
-
-    fetchLiveMatchesFromFlashScore(),
-
-    fetchLiveMatchesFromLiveFootball(),
-    fetchApiSportsLive()
-
+  // API-Sports is the primary LIVE provider; FlashScore is the only fallback.
+  // Do not call SofaScore or LiveFootball (their subscriptions are exhausted).
+  const [apisports, flash] = await Promise.allSettled([
+    fetchApiSportsLive(),
+    fetchLiveMatchesFromFlashScore()
   ]);
-
-
   const all = [];
-  for (const [name, result] of [['SofaScore', sofa], ['FlashScore', flash], ['LiveFootball', football]]) {
-    if (result.status === 'fulfilled') {
-      console.log(`[Source ${name}] LIVE ${Array.isArray(result.value) ? result.value.length : 0} trận`);
-    } else {
-      logSourceError(name, 'LIVE', result.reason);
-    }
-  }
-
-
-  if (
-    sofa.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      sofa.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'sofascore'
-        )
-      );
-    }
-  }
-
-
-  if (
-    flash.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      flash.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'flashscore'
-        )
-      );
-    }
-  }
-
-
-  if (
-    football.status ===
-    'fulfilled'
-  ) {
-
-    for (
-      const raw of
-      football.value
-    ) {
-
-      all.push(
-        formatLiveMatch(
-          raw,
-          'live-football'
-        )
-      );
-    }
-  }
-
-
   if (apisports.status === 'fulfilled') {
     for (const raw of apisports.value) all.push(formatApiSportsMatch(raw));
-  } else logSourceError('API-Football','LIVE',apisports.reason);
-
-
+  } else logSourceError('API-Football', 'LIVE', apisports.reason);
+  if (flash.status === 'fulfilled') {
+    for (const raw of flash.value) all.push(formatLiveMatch(raw, 'flashscore'));
+    console.log(`[Source FlashScore] LIVE ${flash.value.length} trận (fallback)`);
+  } else logSourceError('FlashScore', 'LIVE', flash.reason);
   independentLiveSourceRegistry = all.filter(m => m && m.id != null && m.homeName && m.awayName);
-  if (!all.length) console.warn('[Live Discovery] ALL SOURCES EMPTY | check API subscription, JSON structure, and match time');
-  else console.log(`[Live Discovery] ${all.length} source records before dedup | SofaScore ${sofa.status === 'fulfilled' ? sofa.value.length : 0}`);
+  if (!all.length) console.warn('[Live Discovery] API-Sports and FlashScore empty | check keys and subscriptions');
+  else console.log(`[Live Discovery] ${all.length} source records before dedup | API-Sports ${apisports.status === 'fulfilled' ? apisports.value.length : 0} | FlashScore ${flash.status === 'fulfilled' ? flash.value.length : 0}`);
   return all;
 }
 
@@ -6947,7 +6839,7 @@ function resolverExactSameFixture(a,b) {
   return true;
 }
 function deduplicateMatches(matches) {
-  const SOURCE_PRIORITY = { sofascore: 4, 'live-football': 3, flashscore: 1, apisports: 0 };
+  const SOURCE_PRIORITY = { apisports: 5, flashscore: 2 };
   const groups = [];
   for (const match of matches) {
     if (!match || !match.homeName || !match.awayName) continue;
@@ -7283,14 +7175,33 @@ async function maybeSendNoStatsAlert(record) {
   if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
   noStatsSendingKeys.add(key);
   try {
+    // Goal progression is taken only from verified API-Sports events.
+    // Never fabricate an intermediate score from the current result.
+    let goalProgression = 'Chưa đủ dữ liệu diễn biến tỷ số';
+    try {
+      const eventCandidates = [record.fixtureId].filter(Boolean);
+      for (const fixtureId of eventCandidates) {
+        const events = await fetchApiSportsGoalEvents(fixtureId);
+        const timeline = extractGoalTimelineV2(events, {
+          homeName: record.home, awayName: record.away,
+          homeScore: Number(String(record.score||'').split(/[-–:]/)[0]),
+          awayScore: Number(String(record.score||'').split(/[-–:]/)[1])
+        });
+        const current = String(record.score || '').match(/(\\d+)\\s*[-–:]\\s*(\\d+)/);
+        if (current && goalHistoryMatches(timeline, Number(current[1]), Number(current[2]))) {
+          goalProgression = typeof timeline === 'string' ? timeline : String(timeline);
+          break;
+        }
+      }
+    } catch (e) { console.warn('[NO-STATS GOAL TIMELINE]', e.message); }
     const message = [
-      '🔔 AI NO-STATS | CẢNH BÁO CÒN BÀN',
+      '🔔 KÈO RUNGGG 🔔',
       `🏆 ${record.league || 'Không rõ giải'}`,
-      `⚽ ${record.home} ${record.score} ${record.away}`,
-      `⏱ Phút ${minute}`,
-      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.88)`,
-      `🎯 Xác suất AI NO-STATS: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
-      'Nguồn: AI NO-STATS (độc lập V4)'
+      `⚽ ${record.home} ${record.score} ${record.away} | ⏱ ${minute}′`,
+      `📌 Tỷ số: ${goalProgression}`,
+      `🔥 Bàn kỳ vọng: ${lambda.toFixed(2)}`,
+      `📊 Xác suất còn ≥1 bàn: ${record.probability == null || !Number.isFinite(Number(record.probability)) ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
+      '🎯 DỰ ĐOÁN: CÒN ÍT NHẤT 1 BÀN'
     ].join('\\n');
     const response = await axios.post(
       `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,

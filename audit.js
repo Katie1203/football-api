@@ -335,19 +335,16 @@ async function reconcile(){
   for(const r of pending)lastFTCheck.set(r.matchKey,now);
   const dates=[...new Set(pending.flatMap(dateCandidates))];
   const safeBatch=async (fn)=>Promise.all(dates.map(async d=>{try{return [d,await fn(d)];}catch(e){console.warn('[AUDIT FT] date fallback',d,e.message);return [d,[]];}}));
-  const [lfPairs,apiPairs,flashPairs]=await Promise.all([
-   rapidKey?safeBatch(d=>fetchLiveFootballByDate(d.replace(/-/g,''),rapidKey)):[],
+  const [apiPairs,flashPairs]=await Promise.all([
    process.env.APISPORTS_KEY?safeBatch(fetchApiDate):[],
    rapidKey&&process.env.FLASHSCORE_MATCHES_BY_DATE_URL_TEMPLATE?safeBatch(d=>fetchFlashDate(d,rapidKey)):[]
   ]);
-  const lf=lfPairs.flatMap(x=>x[1]),api=apiPairs.flatMap(x=>x[1]),flash=flashPairs.flatMap(x=>x[1]);
-  console.log(`[FT BATCH] pending=${pending.length} dates=${dates.length} liveFootball=${lf.length} apiSports=${api.length} flashScore=${flash.length} (actual fixtures, not date requests)`);
+  const api=apiPairs.flatMap(x=>x[1]),flash=flashPairs.flatMap(x=>x[1]);
+  console.log(`[FT BATCH] pending=${pending.length} dates=${dates.length} apiSports=${api.length} flashScore=${flash.length} (actual fixtures, not date requests)`);
   for(const r of pending){
    try{
     const ids={...(r.sourceIds||{})};if(r.source&&r.sourceId&&!ids[r.source])ids[r.source]=String(r.sourceId);
     const candidates=[],reasons=[];
-    const lfRow=uniqueFTFixture(lf,r,x=>x.id||x.matchId,x=>[teamNameFT(x.home||x.homeTeam||x.teams?.home),teamNameFT(x.away||x.awayTeam||x.teams?.away)],kickoffFT,ids['live-football']);
-    if(lfRow){const ft=parseLiveFootballDateFT(lfRow);if(ft)candidates.push({...ft,source:'live-football'});else reasons.push('LIVEFOOTBALL_NOT_FINAL');if(!ids['live-football'])ids['live-football']=String(lfRow.id);}else reasons.push('LIVEFOOTBALL_NOT_FOUND');
     const apiRow=uniqueFTFixture(api,r,x=>x.fixture?.id,x=>[x.teams?.home?.name,x.teams?.away?.name],x=>x.fixture?.date,ids.apisports);
     if(apiRow){const ft=apiFT(apiRow);if(ft)candidates.push(ft);else reasons.push('APISPORTS_NOT_FINAL');if(!ids.apisports)ids.apisports=String(apiRow.fixture.id);}else reasons.push('APISPORTS_NOT_FOUND');
     const flashRow=uniqueFTFixture(flash,r,x=>x.match_id||x.id,x=>[x.home_team?.name||x.home?.name,x.away_team?.name||x.away?.name],kickoffFT,ids.flashscore);
@@ -357,20 +354,20 @@ async function reconcile(){
     const lookups=[];
     if(ids.apisports&&process.env.APISPORTS_KEY&&!apiRow)lookups.push(['apisports',()=>fetchApiSportsFT(ids.apisports)]);
     if(ids.flashscore&&rapidKey&&!flashRow)lookups.push(['flashscore',async()=>{const v=await fetchFlashById(ids.flashscore,rapidKey);if(!v.row)reasons.push(v.reason);return flashFT(v.row);}]);
-    if(ids.sofascore&&rapidKey)lookups.push(['sofascore',()=>fetchSofaFT(ids.sofascore,rapidKey)]);
-    if(ids.fotmob&&rapidKey)lookups.push(['fotmob',()=>fetchFotmobFT(ids.fotmob,rapidKey)]);
-    // LiveFootball has no verified direct-ID FT endpoint: use its date lookup.
     const results=await Promise.all(lookups.map(async ([source,fn])=>{try{return {source,ft:await fn()};}catch(e){reasons.push(source+'_LOOKUP_ERROR');return {source,ft:null};}}));
     for(const {source,ft} of results){if(ft)candidates.push({...ft,source});else reasons.push(source.toUpperCase()+'_ID_NOT_CONFIRMED');}
     if(Object.keys(ids).some(k=>String(ids[k])!==String(r.sourceIds?.[k]||''))){for(const rec of records.filter(x=>x.matchKey===r.matchKey))await save({...rec,sourceIds:{...rec.sourceIds,...ids}});}
-    const distinct=new Set(candidates.map(x=>`${x.h}-${x.a}`));
-    if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${candidates.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
-    if(candidates.length){const ft=candidates[0];
+    const primary=candidates.filter(x=>x.source==='apisports');
+    const fallback=candidates.filter(x=>x.source==='flashscore');
+    const selected=primary.length?primary:fallback;
+    const distinct=new Set(selected.map(x=>`${x.h}-${x.a}`));
+    if(distinct.size>1){console.warn(`[AUDIT FT] CONFLICT | ${r.home} vs ${r.away} | ${selected.map(x=>x.source+':'+x.h+'-'+x.a).join(', ')}`);continue;}
+    if(selected.length){const ft=selected[0];
      // A valid FT cannot be below the score already seen when alerting.
      if(ft.h<Number(r.homeScore)||ft.a<Number(r.awayScore)){console.warn(`[AUDIT FT] SCORE_CONFLICT | ${r.home} vs ${r.away} | alert=${r.homeScore}-${r.awayScore} FT=${ft.h}-${ft.a}`);continue;}
      const n=await settleMatch(r.matchKey,ft.h,ft.a);
      console.log(`[AUDIT FT] CONFIRMED | ${r.home} ${ft.h}-${ft.a} ${r.away} | ${ft.source} | updated ${n}`);
-    }else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | candidates=${candidates.length} | scanned=LF:${lf.length},API:${api.length},FLASH:${flash.length} | reason=${reasons.join(',')} | kickoff=${r.kickoffUTC||'UNKNOWN'} | no confirmed FT`);
+    }else console.log(`[AUDIT FT] PENDING | ${r.home} vs ${r.away} | sourceIds=${JSON.stringify(ids)} | candidates=${candidates.length} | scanned=API:${api.length},FLASH:${flash.length} | reason=${reasons.join(',')} | kickoff=${r.kickoffUTC||'UNKNOWN'} | no confirmed FT`);
    }catch(e){console.error(`[AUDIT FT] MATCH_ERROR | ${r.home} vs ${r.away} | ${e.message}`);}
   }
  }catch(e){console.error('[AUDIT FT]',e.stack||e.message);}finally{checking=false;}
