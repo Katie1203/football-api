@@ -19,6 +19,7 @@ try {
 
 // Goal AI V4 is informational; it never changes Rule or Telegram decisions.
 const aiGoalPipeline = require('./v4_ai_goal_pipeline');
+const aiGoalPoissonFusion = require('./ai_goal_poisson_fusion');
 const v4ScenarioAnalysis = require('./v4_scenario_analysis');
 const aiGoalBetDecision = require('./ai_goal_bet_verdict');
 let aiGoalV4;
@@ -7593,6 +7594,25 @@ async function analyzeOneMatch(
   } catch(e) {
     aiGoal.poissonHistory=null;
     console.warn(`[AI GOAL V4 POISSON] ${match.homeName} vs ${match.awayName} | ${e.message}`);
+  }
+  // Combined AI Goal is activated ONLY by a separately trained and chronologically
+  // validated calibration model. Without such evidence the original prediction remains.
+  aiGoal.poissonCombination = aiGoalPoissonFusion.predict({
+    aiGoalPercent: aiGoal.percent,
+    rulePercent: ai.efficiency,
+    poisson: aiGoal.poissonHistory
+  });
+  // Immediate fusion is an additional active prediction, never a Telegram gate.
+  // Retain production AI Goal percent unless a validated model exists.
+  if (aiGoal.poissonCombination.status === 'EXPERIMENTAL_ACTIVE') {
+    aiGoal.poissonFusionPercent = aiGoal.poissonCombination.percent;
+    aiGoal.poissonFusionCalibrated = false;
+  }
+  if (aiGoal.poissonCombination.status === 'VALIDATED') {
+    aiGoal.originalPercent = aiGoal.percent;
+    aiGoal.percent = aiGoal.poissonCombination.percent;
+    aiGoal.source = 'ai-goal-v4-poisson-validated-fusion';
+    aiGoal.calibrated = true;
   }
   // Non-blocking SHADOW: errors cannot change existing alert or Rule calculations.
   try { await observeAiGoalOdds(match,minute,aiGoal?.percent); }
