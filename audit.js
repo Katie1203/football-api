@@ -125,9 +125,65 @@ async function updateLiveScores(matches=[]){
  return updated;
 }
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
-function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
-function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
-function setup(app){const scanObserver=require('./scan_observer');
+// Signed HttpOnly login cookie; retain legacy HTTP Basic authentication for API clients.
+const LOGIN_COOKIE='ttmm_session', LOGIN_TTL=12*60*60*1000;
+const loginAttempts=new Map();
+function loginKey(){return crypto.createHash('sha256').update('ttmm-login-v1:'+process.env.DASHBOARD_PASSWORD).digest();}
+function safeEqual(a,b){const x=Buffer.from(String(a)),y=Buffer.from(String(b));return x.length===y.length&&crypto.timingSafeEqual(x,y);}
+function sessionToken(){const exp=String(Date.now()+LOGIN_TTL),nonce=crypto.randomBytes(16).toString('hex');const payload=exp+'.'+nonce;const sig=crypto.createHmac('sha256',loginKey()).update(payload).digest('hex');return payload+'.'+sig;}
+function validSession(req){
+ const raw=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(LOGIN_COOKIE+'='));
+ if(!raw)return false;
+ const parts=raw.slice(LOGIN_COOKIE.length+1).split('.');
+ if(parts.length!==3||!/^\\d+$/.test(parts[0])||Number(parts[0])<Date.now()||Number(parts[0])>Date.now()+LOGIN_TTL)return false;
+ if(!/^[a-f0-9]{32}$/.test(parts[1])||!/^[a-f0-9]{64}$/.test(parts[2]))return false;
+ return safeEqual(parts[2],crypto.createHmac('sha256',loginKey()).update(parts[0]+'.'+parts[1]).digest('hex'));
+}
+function requireAuth(req,res,next){
+ const pwd=process.env.DASHBOARD_PASSWORD;
+ if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');
+ if(validSession(req))return next();
+ const auth=req.headers.authorization||'';
+ if(auth.startsWith('Basic ')){
+  let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}
+  if(safeEqual(decoded.slice(decoded.indexOf(':')+1),pwd))return next();
+ }
+ return challenge(req,res);
+}
+function challenge(req,res){
+ res.set('Cache-Control','no-store');
+ if(req.method==='GET'&&!req.path.startsWith('/api/'))return res.redirect(302,'/login?next='+encodeURIComponent(req.originalUrl||'/dashboard'));
+ return res.status(401).json({ok:false,error:'Authentication required'});
+}
+function setupLogin(app){
+ app.get('/login',(req,res)=>{
+  res.set('Cache-Control','no-store');
+  if(process.env.DASHBOARD_PASSWORD&&validSession(req))return res.redirect('/dashboard');
+  res.sendFile(path.join(__dirname,'login.html'));
+ });
+ app.post('/api/login',(req,res)=>{
+  res.set('Cache-Control','no-store');
+  if(!process.env.DASHBOARD_PASSWORD)return res.status(503).json({ok:false,error:'Login is not configured'});
+  const origin=req.get('origin');
+  if(origin){try{if(new URL(origin).host!==req.get('host'))return res.status(403).json({ok:false,error:'Invalid origin'});}catch{return res.status(403).json({ok:false,error:'Invalid origin'});}}
+  const ip=req.ip||req.socket.remoteAddress||'unknown',now=Date.now(),entry=loginAttempts.get(ip)||{count:0,until:now+15*60*1000};
+  if(entry.until<now){entry.count=0;entry.until=now+15*60*1000;}
+  if(entry.count>=10)return res.status(429).json({ok:false,error:'Quá nhiều lần thử. Vui lòng thử lại sau.'});
+  const username=typeof req.body?.username==='string'?req.body.username:'';
+  const password=typeof req.body?.password==='string'?req.body.password:'';
+  if(username.length>128||password.length>512||!username.trim()||!safeEqual(password,process.env.DASHBOARD_PASSWORD)){
+   entry.count++;loginAttempts.set(ip,entry);
+   return res.status(401).json({ok:false,error:'Tên đăng nhập hoặc mật khẩu không đúng.'});
+  }
+  loginAttempts.delete(ip);
+  const secure=req.secure||req.get('x-forwarded-proto')==='https';
+  res.cookie(LOGIN_COOKIE,sessionToken(),{httpOnly:true,sameSite:'strict',secure,path:'/',maxAge:LOGIN_TTL});
+  return res.json({ok:true});
+ });
+ app.post('/api/logout',(req,res)=>{res.set('Cache-Control','no-store');res.clearCookie(LOGIN_COOKIE,{path:'/',sameSite:'strict'});res.json({ok:true});});
+}
+
+function setup(app){setupLogin(app);const scanObserver=require('./scan_observer');
  app.get('/api/scan-control',requireAuth,async(req,res)=>{try{await app.locals.scanControl.init();res.set('Cache-Control','no-store');res.json({ok:true,paused:app.locals.scanControl.isPaused()});}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.post('/api/scan-control',requireAuth,async(req,res)=>{try{if(typeof req.body?.paused!=='boolean')return res.status(400).json({ok:false,error:'paused boolean required'});res.set('Cache-Control','no-store');res.json(await app.locals.scanControl.setPaused(req.body.paused));}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.get('/rung-bet',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'rung-bet.html'));});

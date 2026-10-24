@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#07130f"><title>Đăng nhập · THẦN TÀI MAY MẮN</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;min-height:100svh;background:radial-gradient(ellipse 70% 60% at 50% 50%,#10231b 0%,#07140f 55%,#040b09 100%);color:#f5f0e4;display:grid;place-items:center;padding:24px}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.4;background:linear-gradient(155deg,transparent 0 72%,rgba(178,126,37,.07) 74%,transparent 77%),linear-gradient(24deg,transparent 0 80%,rgba(178,126,37,.07) 82%,transparent 84%)}
+.card{position:relative;width:min(100%,440px);padding:38px 35px 32px;background:linear-gradient(155deg,#0d1b15,#07100d);border:1px solid #ad873f;border-radius:17px;box-shadow:0 22px 75px #0008,0 0 28px #bd923019}
+.brand{text-align:center;margin-bottom:32px}.star{font-size:28px;color:#f2c56a;line-height:1;margin-bottom:13px}.brand h1{font-size:clamp(23px,5vw,30px);margin:0;color:#f1c774;letter-spacing:.6px;font-weight:800}.brand p{margin:12px 0 0;font-size:10px;letter-spacing:1.8px;color:#acb5ac;line-height:1.6}
+label{display:block;margin:0 0 8px;font-size:12px;color:#d8c393} .field{position:relative;margin-bottom:20px}.field input{width:100%;height:52px;padding:0 48px 0 16px;background:#07120f;border:1px solid #8e6c32;border-radius:9px;color:#f5efde;font:inherit;font-size:15px;outline:none}.field input:focus{border-color:#f3c76e;box-shadow:0 0 0 3px #f3c76e22}.field input::placeholder{color:#77877e}
+.eye{position:absolute;right:9px;bottom:7px;width:39px;height:39px;background:none;border:0;color:#d9b566;cursor:pointer;font-size:18px}.submit{width:100%;height:53px;border:1px solid #f3cb76;border-radius:10px;background:linear-gradient(105deg,#b77f2f,#f2ca74 48%,#c58d3a);color:#15120a;font-size:15px;font-weight:800;cursor:pointer;transition:filter .15s}.submit:hover{filter:brightness(1.09)}.submit:disabled{opacity:.6;cursor:wait}
+.error{color:#ffb2a5;font-size:13px;min-height:20px;margin:0 0 12px;text-align:center}.note{text-align:center;color:#75877b;font-size:11px;margin-top:20px}
+@media(max-width:480px){.card{padding:30px 22px 25px}.brand{margin-bottom:27px}}
+</style></head><body><main class="card">
+<div class="brand"><div class="star">✦</div><h1>THẦN TÀI MAY MẮN</h1><p>HỆ THỐNG DỰ ĐOÁN BÀN THẮNG BÓNG ĐÁ LIVE</p></div>
+<form id="form" autocomplete="on"><label for="username">Tên đăng nhập</label><div class="field"><input id="username" name="username" autocomplete="username" placeholder="Tên đăng nhập" required maxlength="128"></div>
+<label for="password">Mật khẩu</label><div class="field"><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Mật khẩu" required><button type="button" class="eye" id="eye" aria-label="Hiện mật khẩu">◉</button></div>
+<p class="error" id="error" role="alert"></p><button class="submit" id="submit" type="submit">ĐĂNG NHẬP →</button></form>
+<div class="note">THẦN TÀI MAY MẮN · LIVE MONITOR</div></main>
+<script>
+const form=document.getElementById('form'),pass=document.getElementById('password'),eye=document.getElementById('eye'),error=document.getElementById('error'),submit=document.getElementById('submit');
+eye.addEventListener('click',()=>{pass.type=pass.type==='password'?'text':'password';eye.setAttribute('aria-label',pass.type==='password'?'Hiện mật khẩu':'Ẩn mật khẩu')});
+form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';submit.disabled=true;try{
+const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:document.getElementById('username').value,password:pass.value})});
+const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Đăng nhập không thành công');
+const next=new URLSearchParams(location.search).get('next');location.assign(next&&next.startsWith('/')&&!next.startsWith('//')?next:'/dashboard');
+}catch(e){error.textContent=e.message}finally{submit.disabled=false}});
+</script></body></html>
