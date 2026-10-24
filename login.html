@@ -11,7 +11,40 @@ label{display:block;margin:0 0 8px;font-size:12px;color:#d8c393} .field{position
 .eye{position:absolute;right:9px;bottom:7px;width:39px;height:39px;background:none;border:0;color:#d9b566;cursor:pointer;font-size:18px}.submit{width:100%;height:53px;border:1px solid #f3cb76;border-radius:10px;background:linear-gradient(105deg,#b77f2f,#f2ca74 48%,#c58d3a);color:#15120a;font-size:15px;font-weight:800;cursor:pointer;transition:filter .15s}.submit:hover{filter:brightness(1.09)}.submit:disabled{opacity:.6;cursor:wait}
 .error{color:#ffb2a5;font-size:13px;min-height:20px;margin:0 0 12px;text-align:center}.note{text-align:center;color:#75877b;font-size:11px;margin-top:20px}
 @media(max-width:480px){.card{padding:30px 22px 25px}.brand{margin-bottom:27px}}
-</style></head><body><main class="card">
+</style>
+<style id="tt-unified-gold-form">
+:root{--tt-gold:#f1c76b;--tt-bright:#ffe0a0;--tt-gold-edge:#b88a35;--tt-base:#07110e;--tt-panel:#0a1713;--tt-ink:#f5f0e7;--tt-sub:#b6bdb3}
+body{background-color:var(--tt-base)!important;color:var(--tt-ink)}
+.tt-unified{margin:0!important;padding:0 16px 24px!important;background:radial-gradient(ellipse 100% 35% at 50% 0%,#25200f 0%,#09140f 45%,#050d0b 100%) fixed!important}
+.tt-unified main{margin:18px auto!important}
+.tt-global-header{max-width:1600px;margin:0 auto;min-height:62px;display:flex;align-items:center;gap:12px;padding:8px 16px;background:linear-gradient(115deg,#17180e,#08120f 45%,#211b0d);border:1px solid #d5a646;border-top:0;border-radius:0 0 15px 15px;box-shadow:0 4px 18px #bf8b2728,0 1px 0 #ffe39a50;position:relative;z-index:3}
+.tt-global-brand{font-size:clamp(16px,1.6vw,22px)!important;line-height:1.15;font-weight:900;color:#f8cf79!important;white-space:normal;max-width:255px;min-width:160px;text-decoration:none;letter-spacing:.1px;text-shadow:0 0 10px #c68b3a40}
+.tt-global-links{display:flex;flex:1;align-items:center;gap:3px;flex-wrap:wrap;background:none!important;border:0!important;padding:0!important;margin:0!important}
+.tt-global-links a{font-size:12px!important;white-space:nowrap;color:#e8e6dd!important;text-decoration:none;padding:10px 9px;border:1px solid transparent!important;border-radius:8px}
+.tt-global-links a:hover{border-color:#a98439!important;background:#30250f!important}
+.tt-global-links a.tt-current{color:#1d160a!important;background:linear-gradient(120deg,#edb642,#ffdc80,#c88b23)!important;border:1px solid #e7b74f!important;box-shadow:0 0 13px #d69e3b55;font-weight:800}
+.tt-global-running{font-size:11px;color:#a4dc91;white-space:nowrap}
+.tt-global-refresh{padding:6px 12px!important;font-size:20px!important;color:#ffd77a!important;background:#0a1510!important;border:1px solid #bd913d!important;border-radius:9px!important;cursor:pointer}
+.tt-unified .stat,.tt-unified .panel,.tt-unified .card,.tt-unified .metric{background-color:#0b1814!important;border-color:#a78031!important;box-shadow:inset 0 1px 0 #ffde7712}
+.tt-unified h1,.tt-unified h2,.tt-unified h3{color:#f1d18d}
+.tt-unified button:not(.tt-global-refresh),.tt-unified select,.tt-unified input{border-color:#a78031}
+.tt-unified button.active,.tt-unified button[aria-selected="true"]{background:#efbf58!important;color:#171208!important;border-color:#f4d077!important}
+.tt-unified .muted,.tt-unified .hint,.tt-unified .sub{color:#b5bfb2}
+.tt-unified a{color:#edcb7c}
+.tt-unified .stat strong{color:#f3ce7e}
+.tt-unified table{border-color:#a78031}
+.tt-unified th{background:#18251c;color:#f1d18d}
+.tt-unified .summary-cell.sent{background:#574018!important;border-color:#e5b84e!important}
+.tt-unified .summary-cell.sent strong{color:#ffdc77!important}
+@media(max-width:980px){.tt-global-header{flex-wrap:wrap}.tt-global-brand{flex:1}.tt-global-links{order:3;width:100%;overflow-x:auto;flex-wrap:nowrap}.tt-global-links a{flex-shrink:0}.tt-unified{padding:0 10px 20px!important}}
+@media(max-width:540px){.tt-global-header{padding:10px}.tt-global-brand{font-size:18px!important}.tt-global-links a{font-size:11px!important;padding:9px 8px}}
+</style>
+
+<style id="tt-login-form-consistency">
+body{background:radial-gradient(ellipse 70% 60% at 50% 50%,#142019 0%,#07140f 55%,#040b09 100%)!important}
+.card{border-color:#d5a646!important;box-shadow:0 20px 65px #0009,0 0 22px #c4943025!important}
+</style>
+</head><body><main class="card">
 <div class="brand"><div class="star">✦</div><h1>THẦN TÀI MAY MẮN</h1><p>HỆ THỐNG DỰ ĐOÁN BÀN THẮNG BÓNG ĐÁ LIVE</p></div>
 <form id="form" autocomplete="on"><label for="username">Tên đăng nhập</label><div class="field"><input id="username" name="username" autocomplete="username" placeholder="Tên đăng nhập" required maxlength="128"></div>
 <label for="password">Mật khẩu</label><div class="field"><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Mật khẩu" required><button type="button" class="eye" id="eye" aria-label="Hiện mật khẩu">◉</button></div>
