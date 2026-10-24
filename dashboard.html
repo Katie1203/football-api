@@ -655,7 +655,47 @@ button.active,button[aria-selected="true"],.nav a.active{background-color:#e5b84
 nav a,.nav a{border-color:var(--tt-border)!important}
 .muted,.hint,.note,small{color:var(--tt-muted)}
 </style>
-</head><body><main><div class="promax-topbar">
+<style>
+/* Dashboard visual form approved from reference screenshot, 25 Oct 2026.
+   CSS-only; no DOM, data, JS, API or alert changes. */
+:root{--tt-bg:#080d0d;--tt-surface:#0b1514;--tt-surface2:#101b19;--tt-gold:#f4c85d;--tt-gold-bright:#ffe1a0;--tt-border:#d49d24;--tt-text:#f6f1e8;--tt-muted:#bbc2bc}
+body{background:radial-gradient(ellipse 85% 42% at 100% 10%,rgba(137,89,15,.15),transparent 70%),radial-gradient(ellipse 90% 50% at 0% 70%,rgba(112,79,16,.12),transparent 75%),#070e0d!important;color:#f6f1e8!important;padding:0 16px 22px!important}
+main{max-width:1536px!important}
+.promax-topbar{border:1px solid #c28b1e!important;border-top:0!important;border-radius:0 0 17px 17px!important;background:linear-gradient(95deg,#101713,#0b1111 65%,#19180f)!important;box-shadow:0 0 0 1px #62471650,0 5px 20px #d49b1d32,inset 0 -1px 7px #b8872430!important;padding:8px 17px!important}
+.promax-brand{color:#f8d37b!important;font-size:clamp(18px,2.3vw,29px)!important;font-weight:900!important;text-shadow:0 0 16px #c98b3340!important;white-space:nowrap}
+.promax-nav a,.promax-nav button{color:#f2eee5!important;background:transparent!important;border:1px solid transparent!important;border-radius:8px!important}
+.promax-nav a:hover,.promax-nav button:hover{background:#2b2518!important;color:#f9d37c!important}
+.promax-nav .nav-current{background:linear-gradient(#ffe18d,#e9ac2e)!important;color:#19160d!important;border-color:#e8b43e!important;box-shadow:0 0 13px #e9b53d75!important}
+.promax-running{color:#69e77c!important}
+.promax-refresh{border-color:#e3ac35!important;color:#f4ca67!important;background:#0c1210!important;box-shadow:0 0 10px #e4ac2b24!important}
+.tt-pause{border:1px solid #ba7b2b!important;background:#462021!important;color:#ffe4a4!important}
+#notice,.hint{color:#cbbf9d!important}
+.tabs button{border:1px solid #c29230!important;background:linear-gradient(#131b18,#0b1210)!important;color:#f1eee5!important;box-shadow:0 0 5px #d49d2415!important}
+.tabs button.active,.tabs button[aria-selected="true"],button.active{background:linear-gradient(110deg,#ffe08a,#e8aa25)!important;color:#211a0c!important;border-color:#e9b742!important;box-shadow:0 0 13px #dca32d65!important}
+#audit-list{border:1px solid #b88624!important;background:linear-gradient(140deg,#101512,#0a1110 55%,#17170f)!important;box-shadow:inset 0 1px 0 #d49d2429,0 0 18px #9d731b16!important;border-radius:13px!important}
+#audit-list .audit-tools button{border-color:#b58a34!important;color:#f2dfac!important;background:#111916!important}
+#audit-list .audit-tools button:hover{background:#302818!important}
+#audit-list .audit-scroll .match-card{border:1px solid #d4a128!important;border-radius:13px!important;background:linear-gradient(120deg,#0a1314 0%,#0c1717 60%,#11170f 100%)!important;box-shadow:inset 0 0 16px #e0a63b08,0 0 10px #dca33222!important;color:#f4f1e9!important}
+#audit-list .audit-scroll .match-card:hover{border-color:#f4ca68!important;box-shadow:0 0 16px #e6b84a39!important}
+#audit-list .match-teams .team-home,#audit-list .match-teams .team-away,#audit-list .match-name{color:#f7f7f4!important;font-weight:800!important}
+#audit-list .match-score,#audit-list .match-live-score{color:#ffd778!important}
+#audit-list .match-metrics .match-metric{background:linear-gradient(145deg,#0b1717,#101b18)!important;border:1px solid #645832!important;border-radius:9px!important}
+#audit-list .match-metrics .match-metric strong{color:#44dbb7!important}
+#audit-list .match-metrics .match-metric:nth-child(2) strong{color:#ffd05d!important}
+#audit-list .match-metrics .match-ft-metric strong,#audit-list .match-metrics .match-metric:last-child strong{color:#ffd05d!important}
+#audit-list .match-metrics .match-metric small{color:#c1c8bf!important}
+#audit-list .match-interpretation{background:#142322!important;border:0!important;border-radius:8px!important;color:#e9e9e1!important}
+#audit-list .match-interpretation strong{color:#f4d58a!important}
+#audit-list .match-achieved .scenario-pass{background:#10352c!important;border-color:#4b9777!important;color:#d3f4e1!important}
+#audit-list .match-status-inline .ai-status{box-shadow:0 0 9px #a7721528}
+#audit-list .match-status-inline .signal-strength{background:#155e8d!important;border-color:#42b5e8!important;color:white!important}
+#audit-list .match-status-inline .bigbet-signal{background:#d7800d!important;border-color:#ffb74b!important;color:white!important}
+#audit-list .match-minute{background:#c72046!important;color:white!important}
+#audit-list .match-actions button{background:#0d2540!important;border-color:#2996ed!important;color:#eaf4ff!important}
+#audit-list .match-actions button:last-child{background:#2b153e!important;border-color:#b364e6!important;color:#f8e9ff!important}
+#audit-list .match-bottom{border-top-color:#6a582c!important;color:#e7c991!important}
+@media(max-width:900px){body{padding:0 9px 14px!important}.promax-topbar{padding:9px!important}.promax-brand{font-size:20px!important}}
+</style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
     <a href="#audit-list" class="nav-current">Dashboard</a>
