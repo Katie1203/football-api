@@ -760,6 +760,82 @@ body{background:radial-gradient(ellipse 100% 40% at 50% 0%,#28200f 0%,#08140f 50
 #noStatsAlertRows strong,#noStatsAlertRows b{color:#f2c96e}
 @media(max-width:1100px){#noStatsAlerts .ai-metrics,#noStatsAlerts .stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}#noStatsAlertRows{grid-template-columns:repeat(2,minmax(0,1fr))!important}.promax-brand{min-width:0!important}}
 @media(max-width:650px){#noStatsAlerts{padding:12px!important}#noStatsAlertRows{grid-template-columns:1fr!important}#noStatsAlerts .split{grid-template-columns:1fr!important}#noStatsAlerts .ai-metric,#noStatsAlerts .stat{padding:11px!important;min-height:78px!important}#noStatsAlerts .ai-metric strong,#noStatsAlerts .stat strong{font-size:20px!important}.promax-brand{white-space:normal!important;font-size:18px!important}}
+</style><style id="tt-final-shared-visual">
+/* TTMM design system — colors, typography and controls ONLY. Layout/grid untouched. */
+:root{
+  color-scheme:dark;
+  --tt-bg:#070f0d;--tt-card:#0c1714;--tt-card-2:#111b17;
+  --tt-gold:#f4c968;--tt-gold-light:#ffe0a0;--tt-border:#c39a45;
+  --tt-white:#f7f2e7;--tt-muted:#b9bfb4;
+  --tt-selected:linear-gradient(120deg,#dba438 0%,#ffdb7b 54%,#d5a037 100%);
+}
+body{background-color:var(--tt-bg)!important;color:var(--tt-white)!important;
+  font-family:system-ui,-apple-system,"Segoe UI",Arial,sans-serif!important}
+h1,h2,h3{color:var(--tt-gold-light)!important;letter-spacing:.1px}
+small,.muted,.hint,.sub,.note{color:var(--tt-muted)}
+a{color:var(--tt-gold)!important}
+button,input,select,textarea{font-family:inherit!important}
+button,select,input,textarea{
+  border:1px solid #a9843b!important;border-radius:8px!important;
+  background-color:#111c17;color:var(--tt-white);
+}
+button{cursor:pointer;font-weight:650;transition:background-color .16s,border-color .16s,box-shadow .16s}
+button:hover:not(:disabled){border-color:var(--tt-gold-light)!important;background-color:#342916!important}
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{
+ outline:2px solid var(--tt-gold-light)!important;outline-offset:2px
+}
+button.active,button.selected,button[aria-selected="true"],.tabs button.active,
+#model-menu button.active,#tabs button.active,.tt-global-links a.tt-current{
+ background:var(--tt-selected)!important;color:#1d160a!important;
+ border-color:#ffda76!important;box-shadow:0 0 11px #dba43b3b!important;
+}
+.stat,.panel,.ai-metric,.ai-detail-card,.metric,.match-card,.card,.summary-cell{
+ background-color:var(--tt-card)!important;border-color:var(--tt-border)!important;
+ box-shadow:inset 0 1px 0 #ffe6a00a;
+}
+.stat strong,.stat b,.ai-metric strong,.metric strong{color:var(--tt-gold)!important}
+.stat small,.metric small,.ai-detail-card small{color:var(--tt-muted)!important}
+th{color:var(--tt-gold-light)!important;background-color:#18231b!important}
+td{color:var(--tt-white)}
+tr:hover{background-color:#272416!important}
+.match-card .teams,.match-card .team,.teams,.score{color:var(--tt-white)}
+.match-card .score,.score strong{color:var(--tt-gold-light)}
+/* Preserve meaningful alert and result state colors. */
+.win{color:#7ce3aa!important}.loss,.bad{color:#ff929c!important}
+.pending{color:#ffd37c!important}
+.minute{color:#fff!important}
+.summary-cell.sent{background:#574018!important;border-color:#e5b84e!important}
+.summary-cell.sent small{color:#ffe39a!important}
+.summary-cell.sent strong{color:#ffdc77!important}
+.tt-global-header,.promax-topbar{border-color:#d5a646!important;
+ background:linear-gradient(115deg,#191a11,#08120f 45%,#241c0d)!important;
+ box-shadow:0 3px 16px #d69e3b2b!important}
+.tt-global-brand,.promax-brand{color:#f8cf79!important;font-weight:850!important}
+.tt-global-links a,.promax-nav a{color:#f3eee3!important;font-weight:600!important}
+.tt-global-links a.tt-current,.promax-nav a.nav-current{
+ background:var(--tt-selected)!important;color:#1d160a!important;
+ border-color:#f5ca6a!important;box-shadow:0 0 12px #dfae5050!important}
+.tt-global-refresh,.promax-refresh{color:#ffdc83!important;border-color:#d1a34e!important}
+@media(max-width:650px){button{min-height:36px}h1{line-height:1.25}}
+
+/* Dashboard AI experimental view: match the same colors/fonts/buttons as V4,
+   without changing card count, columns, widths, or markup. */
+#model-menu button{background:#111c17!important;color:#f2e8d0!important;
+ border:1px solid #b99042!important;border-radius:9px!important;font-weight:750!important}
+#model-menu button.active{background:var(--tt-selected)!important;color:#1d160a!important}
+#ai-no-stats-overview,.ai-overview,.ai-summary,.ai-stat,.ai-summary-card{
+ border-color:var(--tt-border)!important;color:var(--tt-white)!important}
+#ai-no-stats-overview h2,#ai-no-stats-overview h3,.ai-overview h2,
+.ai-overview h3{color:var(--tt-gold-light)!important}
+#ai-no-stats-overview button,.ai-overview button{border-color:#b99042!important}
+#ai-no-stats-overview button.active,.ai-overview button.active{
+ background:var(--tt-selected)!important;color:#1d160a!important}
+.ai-match-card,.ai-nostats-card,.ai-alert-card{
+ border-color:var(--tt-border)!important;background-color:var(--tt-card)!important}
+.ai-match-card .metric,.ai-nostats-card .metric,.ai-alert-card .metric{
+ background:#111b17!important;border-color:#866c39!important}
+.ai-match-card .metric strong,.ai-nostats-card .metric strong,.ai-alert-card .metric strong{
+ color:var(--tt-gold-light)!important}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
