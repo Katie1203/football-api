@@ -5,6 +5,7 @@ const audit = require('./audit');
 const aiNoStats = require('./ai_no_stats');
 const aiNoStatsHistoryTrainer = require('./ai_no_stats_history_trainer');
 const scanObserver = require('./scan_observer');
+const scanControl = require('./scan_control');
 const aiGoalOddsShadow = require('./ai_goal_odds_shadow');
 
 // Optional V4 module: preserve V3.5 operation if V4 was not deployed.
@@ -6372,6 +6373,7 @@ async function sendTelegramAlert(
   item,
   alertDecision
 ) {
+  if(scanControl.isPaused())return false;
 
   // Telegram only: never send at 89' or later.
   if (!Number.isFinite(Number(item.minute)) || Number(item.minute) >= 89) {
@@ -6392,6 +6394,9 @@ async function sendTelegramAlert(
   }
 
 
+  // Prevent a second FIRST alert after an AI NO-STATS alert for the same fixture.
+  // Existing V4 BIG BET follow-up remains governed by its original mechanism.
+  if(alertDecision?.reason==='FIRST_ALERT' && noStatsSentKeys.has(noStatsAlertKey({home:item.homeName,away:item.awayName,updatedAt:new Date().toISOString()})))return false;
   // Atomically lock a fixture before the first await. The normal alert key alone
   // is insufficient when two providers resolve the same match under different IDs.
   const fixtureIdentity = {
@@ -7131,7 +7136,7 @@ async function v4HistoricalGoalFeature(match, minute) {
 // Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
 const NO_STATS_ALERT_MINUTE_MIN = 65;
 const NO_STATS_ALERT_MINUTE_MAX = 88;
-const NO_STATS_ALERT_EXPECTED_GOALS = 0.88;
+const NO_STATS_ALERT_EXPECTED_GOALS = 0.90;
 const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
 const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
 const noStatsSendingKeys = new Set();
@@ -7217,6 +7222,7 @@ function noStatsAlertKey(record) {
   return `${day}:${createMatchKey(record.home, record.away)}`;
 }
 async function maybeSendNoStatsAlert(record) {
+  if(scanControl.isPaused())return false;
   // Storage errors must never block a qualifying Telegram alert.
   try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
   const minute = Number(record.minute);
@@ -7227,6 +7233,8 @@ async function maybeSendNoStatsAlert(record) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
   const key = noStatsAlertKey(record);
   if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
+  if ([...alertState.values()].some(x=>Number(x.alertCount)>0&&Date.now()-Number(x.updatedAt||0)<ALERT_STATE_TTL&&
+    resolverTeamScore(x.homeName,record.home)>=.90&&resolverTeamScore(x.awayName,record.away)>=.90))return false;
   noStatsSendingKeys.add(key);
   try {
     const message = [
@@ -7234,9 +7242,10 @@ async function maybeSendNoStatsAlert(record) {
       `🏆 ${record.league || 'Không rõ giải'}`,
       `⚽ ${record.home} ${record.score} ${record.away}`,
       `⏱ Phút ${minute}`,
-      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.88)`,
+      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.90)`,
       `🎯 Xác suất AI NO-STATS: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
-      'Nguồn: AI NO-STATS (độc lập V4)'
+      'Nguồn: AI NO-STATS (độc lập V4)',
+      `⚽ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`
     ].join('\n');
     const response = await axios.post(
       `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
@@ -7245,6 +7254,8 @@ async function maybeSendNoStatsAlert(record) {
     );
     if (!response?.data?.ok) return false;
     noStatsSentKeys.add(key);
+    const observation=noStatsObservations.find(x=>x.fixtureId&&String(x.fixtureId)===String(record.fixtureId)&&x.minute===minute&&x.score===record.score);
+    if(observation){observation.telegramSent=true;persistNoStatsObservations([observation]);}
     writeShadowFile(noStatsAlertStore, [...noStatsSentKeys]);
     if(!noStatsAlertAudit.some(x=>x.key===key)){
       const [h,a]=String(record.score||'').split(/\s*[-–:]\s*/).map(Number);
@@ -7268,7 +7279,61 @@ async function maybeSendNoStatsAlert(record) {
     noStatsSendingKeys.delete(key);
   }
 }
-async function observeNoStats(match, minute) {
+function verifiedHalfTimeGoals(match) {
+  const sources=[match.raw,...(match.crossSourceMatches||[]).map(x=>x.raw)];
+  for(const raw of sources){
+   const ht=raw?.score?.halftime||raw?.scores?.halfTime||raw?.scores?.halftime||null;
+   if(!ht)continue;
+   const h=ht.home??ht.homeScore?.current??ht.homeScore;
+   const a=ht.away??ht.awayScore?.current??ht.awayScore;
+   if(h===null||h===undefined||a===null||a===undefined)continue;
+   if(Number.isInteger(Number(h))&&Number.isInteger(Number(a))&&Number(h)>=0&&Number(a)>=0)
+    return {home:Number(h),away:Number(a),total:Number(h)+Number(a),source:'PROVIDER_VERIFIED'};
+  }
+  return null;
+}
+// Historical research snapshots are not Telegram alerts and never change production V4.
+const noStatsObservationStore=process.env.NO_STATS_OBSERVATION_STORE||'./ai_no_stats_observations.json';
+const noStatsObservations=readShadowFile(noStatsObservationStore).filter(x=>x&&x.key);
+let noStatsObsWriteQueue=Promise.resolve();
+function persistNoStatsObservations(rows=noStatsObservations){
+ writeShadowFile(noStatsObservationStore,noStatsObservations);
+ const snapshot=rows.map(x=>({...x}));
+ noStatsObsWriteQueue=noStatsObsWriteQueue.then(async()=>{
+  for(const row of snapshot)await audit.saveNoStatsObservation(row);
+ }).catch(e=>console.warn('[NO-STATS OBS PERSIST]',e.message));
+ return noStatsObsWriteQueue;
+}
+async function restoreNoStatsObservations(){
+ try{
+  const remote=await audit.loadNoStatsObservations();
+  const merged=new Map([...noStatsObservations,...remote].filter(x=>x?.key).map(x=>[x.key,x]));
+  noStatsObservations.splice(0,noStatsObservations.length,...[...merged.values()].slice(-15000));
+  for(const row of noStatsObservations.filter(x=>!remote.some(r=>r.key===x.key)))await audit.saveNoStatsObservation(row);
+  writeShadowFile(noStatsObservationStore,noStatsObservations);
+  const firstByFixture=new Map();
+  for(const row of [...noStatsObservations].sort((a,b)=>Date.parse(a.observedAt)-Date.parse(b.observedAt))){
+   if(row.fixtureId&&[0,1].includes(row.outcome)&&!firstByFixture.has(String(row.fixtureId)))firstByFixture.set(String(row.fixtureId),row);
+  }
+  const candidate=aiNoStatsHistoryTrainer.train([...firstByFixture.values()].map(r=>({fixtureId:r.fixtureId,observedAt:r.observedAt,probability:r.baselineProbability??r.probability,outcome:r.outcome})));
+  if(candidate.ready)noStatsHistoryModel=candidate;
+ }catch(e){console.warn('[NO-STATS OBS RESTORE]',e.message);}
+}
+restoreNoStatsObservations();
+function recordNoStatsObservation(record){
+ const key=`${record.fixtureId||record.key}:${record.minute}:${record.score}`;
+ if(noStatsObservations.some(x=>x.key===key))return;
+ noStatsObservations.push({key,fixtureId:record.fixtureId||null,home:record.home,away:record.away,league:record.league,
+  minute:record.minute,score:record.score,expectedRemainingGoals:record.expectedRemainingGoals,
+  probability:record.probability,baselineProbability:record.baselineProbability,model:record.probabilityModel,htGoals:record.htGoals,
+  observedAt:record.updatedAt,telegramSent:false,outcome:null});
+ if(noStatsObservations.length>15000)noStatsObservations.splice(0,noStatsObservations.length-15000);
+ persistNoStatsObservations([noStatsObservations[noStatsObservations.length-1]]);
+}
+async function observeNoStats(match, minute, liveStats=null) {
+  const ht=verifiedHalfTimeGoals(match);
+  if(!ht){console.log(`[AI NO-STATS HT] UNVERIFIED ${match.homeName} vs ${match.awayName}`);return;}
+  if(ht.total<1){console.log(`[AI NO-STATS HT] HT_0_0_SKIP ${match.homeName} vs ${match.awayName}`);return;}
   const candidates = [match, ...(match.crossSourceMatches || [])];
   const api = candidates.find(c => c.source === 'apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
   const eventResult = await noStatsEvents(match);
@@ -7301,6 +7366,16 @@ async function observeNoStats(match, minute) {
     record.note='Poisson đã hiệu chuẩn bằng FT; vượt qua kiểm định ngoài mẫu.';
   }
   record.historyLearningStatus=noStatsHistoryModel.reason;
+  record.htGoals=ht.total;record.htScore=`${ht.home}-${ht.away}`;
+  // Only attach goal-by-goal score history when verified against the current home/away score.
+  // The resolver rejects incomplete and reversed source histories.
+  record.goalTimeline=await resolveVerifiedGoalHistory(match);
+  // LIVE stats are evidence for review only until calibrated against independent FT outcomes.
+  // Never add arbitrary points or multiply Poisson lambda by unvalidated stats.
+  if(liveStats){record.liveStatsEvidence={coverage:getCoreStatsCoverage(liveStats),
+   homeShots:liveStats.homeTotalShots??null,awayShots:liveStats.awayTotalShots??null,
+   homeSOT:liveStats.homeShotsOnTarget??null,awaySOT:liveStats.awayShotsOnTarget??null,
+   homeCorners:liveStats.homeCorners??null,awayCorners:liveStats.awayCorners??null};}
   // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
   const resolved=resolveOddsFixture(match);
   record.fixtureId=resolved.fixture?String(resolved.fixture.id):null;
@@ -7317,6 +7392,7 @@ async function observeNoStats(match, minute) {
       persistNoStatsShadow();
     }
   }
+  if(minute>=65&&minute<=88)recordNoStatsObservation(record);
   noStatsRecords.set(record.key, record);
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
@@ -7394,9 +7470,31 @@ async function auditNoStatsFt() {
       }catch(e){console.warn('[NO-STATS ALERT FT]',row.fixtureId,e.message);}
     }
     if(alertChanged)await persistNoStatsAlertAudit();
+    let obsChanged=false;
+    for(const row of noStatsObservations){
+      if(row.outcome!==null||!row.fixtureId)continue;
+      const ft=noStatsSettledByFixture.get(String(row.fixtureId));
+      if(!ft||!ft.ftScore)continue;
+      const final=String(ft.ftScore).match(/^(\d+)-(\d+)$/),at=String(row.score).match(/^(\d+)-(\d+)$/);
+      if(!final||!at)continue;
+      row.outcome=Number(final[1])+Number(final[2])>Number(at[1])+Number(at[2])?1:0;
+      row.ftScore=ft.ftScore;row.evaluation=row.outcome===1?'WIN':'LOSS';row.settledAt=ft.settledAt;obsChanged=true;
+    }
+    if(obsChanged)persistNoStatsObservations(noStatsObservations.filter(x=>x.outcome!==null&&x.settledAt));
+    // Chronological fixture-level calibration: one first valid 65-88 snapshot per match.
+    // A holdout must improve Brier score before any new model is enabled.
+    if(obsChanged){
+      const byFixture=new Map();
+      for(const row of [...noStatsObservations].sort((a,b)=>Date.parse(a.observedAt)-Date.parse(b.observedAt))){
+        if(row.fixtureId&&[0,1].includes(row.outcome)&&!byFixture.has(String(row.fixtureId)))byFixture.set(String(row.fixtureId),row);
+      }
+      const candidates=[...byFixture.values()].map(r=>({fixtureId:r.fixtureId,observedAt:r.observedAt,probability:r.baselineProbability??r.probability,outcome:r.outcome}));
+      const candidateModel=aiNoStatsHistoryTrainer.train(candidates);
+      if(candidateModel.ready)noStatsHistoryModel=candidateModel;
+    }
     if(changed) {
       persistNoStatsShadow();
-      noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
+      if(!noStatsHistoryModel.ready)noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
       for(const record of noStatsRecords.values()) {
         const settled=record.fixtureId && noStatsSettledByFixture.get(String(record.fixtureId));
         if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
@@ -7483,11 +7581,10 @@ async function analyzeOneMatch(
     );
 
 
-  // Independent NO-STATS shadow monitoring, no effect on existing decision path.
-  if (getCoreStatsCoverage(stats) === 0) {
-    try { await observeNoStats(match, minute); }
-    catch (error) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName} | ${error.message}`); }
-  }
+  // Approved issue #9: observe the same AI NO-STATS stream with or without LIVE stats.
+  // No unvalidated stats weighting; existing Rule V4 decision remains unchanged.
+  try { await observeNoStats(match, minute, stats); }
+  catch (error) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName} | ${error.message}`); }
 
   // ======================================================
   // MOMENTUM
@@ -7809,7 +7906,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
   // SEND TELEGRAM
   // ======================================================
 
-  if (alertDecision.send && minute >= MIN_TELEGRAM_MINUTE) {
+  if (alertDecision.send && minute >= MIN_TELEGRAM_MINUTE && !scanControl.isPaused()) {
     // Query detailed incidents only for an eligible alert, avoiding extra API calls on every scan.
     if (!odds.found) console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | ${allOdds?.length || 0} events | ${odds.text || 'NO_LINE'} | no verified Over line`);
     else console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | Over ${odds.point} @ ${odds.price}`);
@@ -7835,6 +7932,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 // ==========================================================
 
 async function scanLiveMatches() {
+  if(scanControl.isPaused()){console.log('[SCAN CONTROL] Paused by operator');return [];} 
 
   if (scanRunning) {
 
@@ -7995,6 +8093,7 @@ async function scanLiveMatches() {
       const match of
       eligibleMatches
     ) {
+      if(scanControl.isPaused()){console.log('[SCAN CONTROL] Paused during cycle');break;}
       if (processedFixtures.some(prev => resolverSameMatch(prev, match) || resolverExactSameFixture(prev, match))) {
         scanDuplicateCount++;
         console.log(`[API DEDUP] SKIP_FIXTURE ${match.homeName} vs ${match.awayName} | ${match.source}:${match.id}`);
@@ -8127,7 +8226,18 @@ app.get('/api/ai-no-stats', (req, res) => {
     .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   res.json({ok:true, mode:'SHADOW_ONLY', calibrated:Boolean(noStatsHistoryModel.ready), historyModel:noStatsHistoryModel, count:records.length, settled:noStatsSamples.filter(x=>x.outcome!==null).length,
     pending:noStatsSamples.filter(x=>x.outcome===null).length,
-    history:noStatsSamples.slice(-200).reverse(), records});
+    history:noStatsSamples.slice(-200).reverse(), records,
+    observationTotal:noStatsObservations.length,
+    observations:noStatsObservations.slice(-Math.min(200,Math.max(1,Number(req.query.limit)||50))).reverse()});
+});
+
+// Issue #1/#2: complete paginated observation history, not just the latest 200 rows.
+app.get('/api/no-stats-observations', (req,res)=>{
+ const page=Math.max(1,Math.floor(Number(req.query.page)||1));
+ const limit=Math.min(100,Math.max(1,Math.floor(Number(req.query.limit)||20)));
+ const all=[...noStatsObservations].reverse();
+ res.set('Cache-Control','no-store');
+ res.json({ok:true,total:all.length,page,limit,records:all.slice((page-1)*limit,page*limit)});
 });
 
 // ==========================================================
@@ -8288,6 +8398,8 @@ app.get(
 // 50. START SERVER
 // ==========================================================
 
+app.locals.scanControl=scanControl;
+scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
 app.locals.noStatsAlertView=noStatsAlertView;
 app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;

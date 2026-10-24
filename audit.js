@@ -55,6 +55,18 @@ async function saveNoStatsAlertRecord(row){
   fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);
  }
 }
+// Approved issue #1/#3: persist every 65-88 NO-STATS observation for FT audit.
+// Use a separate namespaced table; never modify existing alert records.
+async function loadNoStatsObservations(){
+ if(!pool)return [];
+ await pool.query('CREATE TABLE IF NOT EXISTS promax_no_stats_observations (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())');
+ const {rows}=await pool.query('SELECT data FROM promax_no_stats_observations ORDER BY updated_at DESC LIMIT 15000');
+ return rows.map(r=>r.data).filter(r=>r?.key);
+}
+async function saveNoStatsObservation(row){
+ if(!pool||!row?.key)return;
+ await pool.query('INSERT INTO promax_no_stats_observations (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()', [row.key,JSON.stringify(row)]);
+}
 async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data).filter(x=>x.source!=='AI_NO_STATS');}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
@@ -115,12 +127,26 @@ async function updateLiveScores(matches=[]){
 function summarize(rows){const calc=key=>{const decided=rows.filter(r=>['WIN','LOSS'].includes(r[key]));const wins=decided.filter(r=>r[key]==='WIN').length;return {wins,losses:decided.length-wins,pending:rows.filter(r=>r[key]==='PENDING').length,push:rows.filter(r=>r[key]==='PUSH').length,noLine:rows.filter(r=>r[key]==='NO_LINE').length,rate:decided.length?+(wins/decided.length*100).toFixed(1):null};};return {sent:rows.length,settled:rows.filter(r=>r.ftHome!=null).length,goal:calc('goalResult'),over:calc('overResult')};}
 function requireAuth(req,res,next){const pwd=process.env.DASHBOARD_PASSWORD;if(!pwd)return res.status(503).send('Set DASHBOARD_PASSWORD on Render.');const auth=req.headers.authorization||'';if(!auth.startsWith('Basic '))return challenge(res);let decoded='';try{decoded=Buffer.from(auth.slice(6),'base64').toString('utf8');}catch{}const given=decoded.slice(decoded.indexOf(':')+1);const a=Buffer.from(given),b=Buffer.from(pwd);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return challenge(res);next();}
 function challenge(res){res.set('WWW-Authenticate','Basic realm="PROMAX Dashboard"').status(401).send('Authentication required');}
-function setup(app){const scanObserver=require('./scan_observer');app.get('/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'live-monitor.html'));});app.get('/api/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');const view=scanObserver.liveView();
+function setup(app){const scanObserver=require('./scan_observer');
+ app.get('/api/scan-control',requireAuth,async(req,res)=>{try{await app.locals.scanControl.init();res.set('Cache-Control','no-store');res.json({ok:true,paused:app.locals.scanControl.isPaused()});}catch(e){res.status(503).json({ok:false,error:e.message});}});
+ app.post('/api/scan-control',requireAuth,async(req,res)=>{try{if(typeof req.body?.paused!=='boolean')return res.status(400).json({ok:false,error:'paused boolean required'});res.set('Cache-Control','no-store');res.json(await app.locals.scanControl.setPaused(req.body.paused));}catch(e){res.status(503).json({ok:false,error:e.message});}});
+ app.get('/rung-bet',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'rung-bet.html'));});
+ app.get('/api/rung-bet',requireAuth,async(req,res)=>{try{await init();if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();
+  const now=Date.now(),fresh=x=>{const t=Date.parse(x.liveUpdatedAt||x.updatedAt||x.createdAt||x.sentAt||'');return Number.isFinite(t)&&now-t<40*60*1000;};
+  const v4=records.filter(x=>x.source!=='AI_NO_STATS'&&x.ftHome==null&&x.ftAway==null&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.id,source:'V4',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:`${x.liveHomeScore??x.homeScore??'?'}-${x.liveAwayScore??x.awayScore??'?'}`,sentAt:x.createdAt}));
+  const noStats=typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView().records:[];
+  const ns=noStats.filter(x=>x.evaluation==='PENDING_FT'&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.key,source:'AI NO-STATS',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:x.liveScore||x.score,sentAt:x.sentAt}));
+  const unique=new Map();for(const x of [...v4,...ns]){const key=String(x.home||'').toLowerCase()+'|'+String(x.away||'').toLowerCase();const prev=unique.get(key);if(!prev||Number(x.minute)>Number(prev.minute))unique.set(key,x);}
+  res.set('Cache-Control','no-store');res.json({ok:true,records:[...unique.values()]});
+ }catch(e){res.status(503).json({ok:false,error:e.message});}});
+app.get('/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'live-monitor.html'));});app.get('/api/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');const view=scanObserver.liveView();
  const noStats=typeof app.locals.noStatsLiveView==='function'?app.locals.noStatsLiveView():[];
  res.json({...view,noStats});});app.get('/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'scan-history.html'));});app.get('/api/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json(scanObserver.view(req.query));});app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/ai-no-stats',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'ai-no-stats.html'));});app.get('/api/no-stats-alerts',requireAuth,async(req,res)=>{
  res.set('Cache-Control','no-store');
  try{if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();
- res.json(typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]});}
+ const view=typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]};
+ const page=Math.max(1,parseInt(req.query.page,10)||1),limit=Math.min(200,Math.max(1,parseInt(req.query.limit,10)||20));
+ res.json(req.query.page?{...view,total:view.records.length,page,limit,records:view.records.slice((page-1)*limit,page*limit)}:view);}
  catch(e){res.status(503).json({ok:false,error:'NO-STATS history unavailable: '+e.message});}
 });
 app.get('/api/audit',requireAuth,async(req,res)=>{res.set('Cache-Control','no-store');try{await init();let data=records.filter(r=>r.source!=='AI_NO_STATS');const status=req.query.status;if(status==='pending')data=data.filter(r=>r.ftHome==null);if(status==='settled')data=data.filter(r=>r.ftHome!=null);const total=summarize(data);const globalSummary=summarize(records.filter(r=>r.source!=='AI_NO_STATS'));res.json({ok:true,summary:total,globalSummary,byAlert:[1,2].map(n=>({number:n,...summarize(data.filter(r=>r.alertNumber===n))})),records:data});}catch(e){res.status(500).json({ok:false,error:e.message});}});
@@ -438,4 +464,4 @@ async function flashNoStatsFT(row){
  return candidate?flashFT(candidate):null;
 }
 async function getSettledTrainingRows(){await init();return records.filter(r=>r.source!=='AI_NO_STATS' && r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,aiGoalPoissonHistory:r.aiGoalPoissonHistory||null,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT,loadNoStatsObservations,saveNoStatsObservation};
