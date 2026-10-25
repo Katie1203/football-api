@@ -7394,6 +7394,18 @@ async function observeNoStats(match, minute, liveStats=null) {
     }
   }
   if(minute>=65&&minute<=88)recordNoStatsObservation(record);
+  // Reuse the EXISTING odds response; no extra API calls or production score changes.
+  // Match Goals O/U (current goals + 0.5) is the same event as "one more goal".
+  // Never confuse an odds PRICE with the Over goal LINE or market-implied probability.
+  if(odds.payload && record.oddsStatus==='VALID'){
+    const line=(Number(match.homeScore)+Number(match.awayScore)+0.5).toFixed(1);
+    const markets=odds.payload.response?.[0]?.odds||[];
+    const market=markets.find(m=>Number(m.id)===25);
+    const over=market?.values?.find(v=>v.value==='Over'&&String(v.handicap)===line&&v.suspended===false&&Number(v.odd)>1);
+    const under=market?.values?.find(v=>v.value==='Under'&&String(v.handicap)===line&&v.suspended===false&&Number(v.odd)>1);
+    if(over&&under){record.bigggOverOdds=Number(over.odd);record.bigggOverLine=Number(line);
+      record.bigggOddsMarket='Match Goals O/U';record.bigggOddsUpdatedAt=assessment?.oddsUpdate||null;record.bigggOddsValid=true;}
+  }
   // Independent BIGGG evidence collection; does not affect Telegram or Poisson.
   record.bigggExperiment=bigggShadow.observe(record)?.tier||'NGOÀI PHẠM VI THỬ NGHIỆM';
   noStatsRecords.set(record.key, record);
@@ -8214,7 +8226,7 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
     count:aiGoalOddsRecords.size,records:[...aiGoalOddsRecords.values()]});
 });
 
-app.get('/api/biggg-shadow',(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,mode:'SHADOW_ONLY',summary:bigggShadow.summary(),records:bigggShadow.getRecords(req.query.limit)});});
+app.get('/api/biggg-shadow',(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,mode:'SHADOW_ONLY',summary:bigggShadow.summary(),...bigggShadow.getRecords(req.query.limit,req.query.offset,req.query.filter)});});
 
 // Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
 app.get('/api/ai-no-stats', (req, res) => {
