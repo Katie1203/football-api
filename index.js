@@ -7236,6 +7236,8 @@ async function maybeSendNoStatsAlert(record) {
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
       lambda < NO_STATS_ALERT_EXPECTED_GOALS) return false;
+  // Operator-only Telegram gate: original AI NO-STATS probability and lambda remain untouched.
+  if (lambda < 1.5 && !scanControl.isLowLambdaAlertsEnabled()) return false;
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
   const key = noStatsAlertKey(record);
   if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
@@ -7249,6 +7251,7 @@ async function maybeSendNoStatsAlert(record) {
       `⚽️ ${record.home} ${record.score} ${record.away} ⏱️ Phút ${minute}`,
       `⚽️ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
       `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)}`,
+      `💰 ${lambda < 1.5 ? 'BET NHẸ TAY' : 'BET BANH NÓC'}`,
       `🎯 Xác suất AI THỬ NGHIỆM: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`
     ].join('\n');
     const response = await axios.post(
