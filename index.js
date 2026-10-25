@@ -7129,16 +7129,15 @@ async function v4HistoricalGoalFeature(match, minute) {
   ]);
   const baseline=aiNoStats.provisionalProbability(minute,home,away);
   if(!baseline)return null;
-  // Same historical FT calibration as NO-STATS, when validated.
-  const calibrated=aiNoStatsHistoryTrainer.predict(noStatsHistoryModel,baseline.probability);
-  const lambda=calibrated==null?baseline.expectedRemainingGoals:
-    +(-Math.log(1-calibrated/100)).toFixed(2);
+  // Preserve the original, uncalibrated AI NO-STATS Poisson estimate.
+  // FT learning remains observation-only and cannot modify predictions.
+  const lambda=baseline.expectedRemainingGoals;
   return {expectedRemainingGoals:lambda,
-    probabilityAtLeastOne:calibrated??baseline.probability,
+    probabilityAtLeastOne:baseline.probability,
     probabilityAtLeastTwo:+(100*(1-Math.exp(-lambda)*(1+lambda))).toFixed(1),
     baselineExpectedRemainingGoals:baseline.expectedRemainingGoals,
     historyHomeSample:home.sample,historyAwaySample:away.sample,
-    calibrated:calibrated!=null,source:'AI_NO_STATS_POISSON_HISTORY'};
+    calibrated:false,source:'AI_NO_STATS_POISSON_HISTORY'};
 }
 // Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
 const NO_STATS_ALERT_MINUTE_MIN = 65;
@@ -7358,18 +7357,11 @@ async function observeNoStats(match, minute, liveStats=null) {
     record.oddsLive={market:assessment.marketLabel,marketImpliedPercent:assessment.marketImpliedPercent,
       updatedAt:assessment.oddsUpdate,blocked:assessment.blocked};
   }
-  // Calibrate Poisson only when chronological FT holdout beats baseline.
-  // This block does not alter Odds retrieval, quote classification or Telegram.
+  // AI NO-STATS predictions must use exactly the original estimator output.
+  // FT history is retained for offline audit only; never overwrite P or lambda.
   record.baselineProbability=record.probability;
   record.baselineExpectedRemainingGoals=record.expectedRemainingGoals;
-  const learnedProbability=aiNoStatsHistoryTrainer.predict(noStatsHistoryModel,record.baselineProbability);
-  if(learnedProbability!=null){
-    record.probability=learnedProbability;
-    record.expectedRemainingGoals=+(-Math.log(1-learnedProbability/100)).toFixed(2);
-    record.probabilityModel='POISSON_HISTORY_FT_CALIBRATED';
-    record.calibrated=true;
-    record.note='Poisson đã hiệu chuẩn bằng FT; vượt qua kiểm định ngoài mẫu.';
-  }
+  record.calibrated=false;
   record.historyLearningStatus=noStatsHistoryModel.reason;
   record.htGoals=ht.total;record.htScore=`${ht.home}-${ht.away}`;
   // Only attach goal-by-goal score history when verified against the current home/away score.
