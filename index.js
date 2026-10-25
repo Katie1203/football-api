@@ -3,6 +3,7 @@ const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
 const aiNoStats = require('./ai_no_stats');
+const bigggShadow = require('./biggg_shadow');
 const aiNoStatsHistoryTrainer = require('./ai_no_stats_history_trainer');
 const scanObserver = require('./scan_observer');
 const scanControl = require('./scan_control');
@@ -7393,6 +7394,8 @@ async function observeNoStats(match, minute, liveStats=null) {
     }
   }
   if(minute>=65&&minute<=88)recordNoStatsObservation(record);
+  // Independent BIGGG evidence collection; does not affect Telegram or Poisson.
+  record.bigggExperiment=bigggShadow.observe(record)?.tier||'NGOÀI PHẠM VI THỬ NGHIỆM';
   noStatsRecords.set(record.key, record);
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
@@ -7419,6 +7422,7 @@ async function auditNoStatsFt() {
         const f=response?.response?.[0];
         if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        bigggShadow.settle(row.fixtureId,f?.goals?.home!=null&&f?.goals?.away!=null?`${f.goals.home}-${f.goals.away}`:null,status);
         if(['CANC','ABD','PST','SUSP'].includes(status)) {
           row.outcome='VOID';row.evaluation='VOID';row.settledAt=new Date().toISOString();changed=true;continue;
         }
@@ -7475,6 +7479,7 @@ async function auditNoStatsFt() {
       if(row.outcome!==null||!row.fixtureId)continue;
       const ft=noStatsSettledByFixture.get(String(row.fixtureId));
       if(!ft||!ft.ftScore)continue;
+      bigggShadow.settle(row.fixtureId,ft.ftScore,'FT');
       const final=String(ft.ftScore).match(/^(\d+)-(\d+)$/),at=String(row.score).match(/^(\d+)-(\d+)$/);
       if(!final||!at)continue;
       row.outcome=Number(final[1])+Number(final[2])>Number(at[1])+Number(at[2])?1:0;
@@ -8208,6 +8213,8 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
     history:oddsShadowSamples.slice(-200).reverse(),
     count:aiGoalOddsRecords.size,records:[...aiGoalOddsRecords.values()]});
 });
+
+app.get('/api/biggg-shadow',(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,mode:'SHADOW_ONLY',summary:bigggShadow.summary(),records:bigggShadow.getRecords(req.query.limit)});});
 
 // Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
 app.get('/api/ai-no-stats', (req, res) => {
