@@ -40,6 +40,11 @@ axios.interceptors.request.use(config=>{const source=metricSource(axios.getUri(c
 axios.interceptors.response.use(r=>r,e=>{if(e.config?._promaxMetricSource){httpMetrics.failedCalls++;httpMetrics.bySource[e.config._promaxMetricSource].failedCalls++;}return Promise.reject(e);});
 const app = express();
 const PORT = process.env.PORT || 10000;
+// BIGGG TEST page: explicit route, without changing scan/alert behavior.
+app.get(['/biggg-test', '/biggg-test.html'], (req, res) => {
+  res.sendFile(require('path').join(__dirname, 'biggg-test.html'));
+});
+
 app.use(express.json());
 
 // ==========================================================
