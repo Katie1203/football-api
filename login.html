@@ -113,6 +113,13 @@ eye.addEventListener('click',()=>{pass.type=pass.type==='password'?'text':'passw
 form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';submit.disabled=true;try{
 const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:document.getElementById('username').value,password:pass.value})});
 const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Đăng nhập không thành công');
-const next=new URLSearchParams(location.search).get('next');location.assign(next&&next.startsWith('/')&&!next.startsWith('//')?next:'/dashboard');
+// Verify that the browser actually retained the session cookie before navigating.
+const check=await fetch('/api/auth-status',{credentials:'same-origin',cache:'no-store',redirect:'manual'});
+if(!check.ok){
+ throw Error('Mật khẩu được chấp nhận nhưng phiên đăng nhập chưa được lưu. Hãy kiểm tra cookie trên Safari hoặc phiên bản audit.js đã triển khai trên Render. (HTTP '+check.status+')');
+}
+const next=new URLSearchParams(location.search).get('next');
+const target=next&&next.startsWith('/')&&!next.startsWith('//')?next:'/dashboard';
+location.replace(target);
 }catch(e){error.textContent=e.message}finally{submit.disabled=false}});
 </script></body></html>

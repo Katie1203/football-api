@@ -135,7 +135,7 @@ function validSession(req){
  const raw=(req.headers.cookie||'').split(';').map(x=>x.trim()).find(x=>x.startsWith(LOGIN_COOKIE+'='));
  if(!raw)return false;
  const parts=raw.slice(LOGIN_COOKIE.length+1).split('.');
- if(parts.length!==3||!/^\\d+$/.test(parts[0])||Number(parts[0])<Date.now()||Number(parts[0])>Date.now()+LOGIN_TTL)return false;
+ if(parts.length!==3||!/^\d+$/.test(parts[0])||Number(parts[0])<Date.now()||Number(parts[0])>Date.now()+LOGIN_TTL)return false;
  if(!/^[a-f0-9]{32}$/.test(parts[1])||!/^[a-f0-9]{64}$/.test(parts[2]))return false;
  return safeEqual(parts[2],crypto.createHmac('sha256',loginKey()).update(parts[0]+'.'+parts[1]).digest('hex'));
 }
@@ -183,7 +183,7 @@ function setupLogin(app){
  app.post('/api/logout',(req,res)=>{res.set('Cache-Control','no-store');res.clearCookie(LOGIN_COOKIE,{path:'/',sameSite:'strict'});res.json({ok:true});});
 }
 
-function setup(app){setupLogin(app);const scanObserver=require('./scan_observer');
+function setup(app){setupLogin(app);app.get('/api/auth-status',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,authenticated:true});});const scanObserver=require('./scan_observer');
  app.get('/api/scan-control',requireAuth,async(req,res)=>{try{await app.locals.scanControl.init();res.set('Cache-Control','no-store');res.json({ok:true,paused:app.locals.scanControl.isPaused()});}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.post('/api/scan-control',requireAuth,async(req,res)=>{try{if(typeof req.body?.paused!=='boolean')return res.status(400).json({ok:false,error:'paused boolean required'});res.set('Cache-Control','no-store');res.json(await app.locals.scanControl.setPaused(req.body.paused));}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.get('/rung-bet',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'rung-bet.html'));});
