@@ -6549,6 +6549,13 @@ async function sendTelegramAlert(
       qualityAssessment = '🧠 NHẬN ĐỊNH: Chất lượng cơ hội hai đội tương đối cân bằng.';
     }
   }
+  const newV4=item.v4Combined;
+  const v4Summary=newV4?[
+    `🧠 AI VERSION 4.0 MỚI: ${newV4.probability==null?'Chưa có dữ liệu':newV4.probability+'%'} xác suất còn ≥1 bàn`,
+    `📈 Bàn thắng kỳ vọng: λ = ${newV4.expectedRemainingGoals==null?'N/A':Number(newV4.expectedRemainingGoals).toFixed(2)} | Ngưỡng ≥ 0.90`,
+    `📋 HT: ${newV4.htGoals??'Chưa xác minh'} bàn | Nguồn dự đoán: ${newV4.source}`,
+    `🔔 Quyết định: ${alertDecision?.reason||'N/A'}`
+  ]:[];
   const compactStats = [
     (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
       ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
@@ -6561,7 +6568,7 @@ async function sendTelegramAlert(
     v3TelegramDetail(item.ai, st, item.minute),
     `🧠 RULE: ${percentage.toFixed(1)}%`,
     `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
-    `🔔 AI Goal dự đoán còn ≥1 bàn: ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).verdict} | ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).mode} (RUNG yêu cầu Rule V4 >60%)`,
+    ...(alertDecision?.reason==='V4_COMBINED_LAMBDA'?v4Summary:[`🔔 AI Goal dự đoán còn ≥1 bàn: ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).verdict} | ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).mode} (RUNG yêu cầu Rule V4 >60%)`,]),
     ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
     ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
     `📈 RULE: ${percentage.toFixed(1)}% | AI Goal FT: ${prediction.text || 'N/A'} | Còn bàn: ${prediction.expectedExtraGoals ?? 'Chưa xác định'}`
@@ -7238,13 +7245,13 @@ async function maybeSendNoStatsAlert(record) {
   noStatsSendingKeys.add(key);
   try {
     const message = [
-      '🔔 AI NO-STATS | CẢNH BÁO CÒN BÀN',
+      '🔔 AI THỬ NGHIỆM | CẢNH BÁO CÒN BÀN',
       `🏆 ${record.league || 'Không rõ giải'}`,
       `⚽ ${record.home} ${record.score} ${record.away}`,
       `⏱ Phút ${minute}`,
       `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.90)`,
-      `🎯 Xác suất AI NO-STATS: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
-      'Nguồn: AI NO-STATS (độc lập V4)',
+      `🎯 Xác suất AI THỬ NGHIỆM: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
+      'Nguồn: AI THỬ NGHIỆM (độc lập V4)',
       `⚽ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`
     ].join('\n');
     const response = await axios.post(
@@ -7399,7 +7406,7 @@ async function observeNoStats(match, minute, liveStats=null) {
   updateNoStatsAlertLiveScore(record);
   // Bounded memory; no writes to Audit and no Telegram alerts.
   if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
-  console.log(`[AI NO-STATS] ${record.home} vs ${record.away} | ${record.evidence} | events=${record.eventsAvailable} | shadow only`);
+  console.log(`[AI THU NGHIEM] ${record.home} vs ${record.away} | ${minute}' | HT=${record.htGoals} | lambda=${record.expectedRemainingGoals??'N/A'} | P>=1=${record.probability??'N/A'}% | LIVE=${record.liveStatsEvidence?.coverage??'N/A'} | telegram=${noStatsSentKeys.has(noStatsAlertKey(record))?'SENT':'NOT_SENT'} | evidence=${record.evidence}`);
 }
 
 // FT reconciliation for independent NO-STATS shadow predictions.
@@ -7805,19 +7812,42 @@ function predictFinalScoreFromAiGoal(homeScore, awayScore, aiGoal, stats) {
   const nextGoalDecision = aiGoalBetDecision.decide(aiGoal,ai.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
   console.log(`[AI GOAL NEXT-GOAL] ${match.homeName} vs ${match.awayName} | ${minute}' | ${nextGoalDecision.verdict} | AI Goal=${nextGoalDecision.probability ?? 'N/A'}% | Rule=${nextGoalDecision.rule ?? 'N/A'}% | mode=${nextGoalDecision.mode} | reason=${nextGoalDecision.reason}`);
 
-  // Telegram RUNG requires Rule V4 >60% AND AI Goal >65%.
-  // Preserve the existing Rule, BIG BET and POST GOAL calculations.
-  if (alertDecision.send) {
-    const aiGoalPercent = aiGoal?.percent == null ? NaN : Number(aiGoal.percent);
-    if (!nextGoalDecision.eligible) {
-      alertDecision.send = false;
-      alertDecision.bigBet = false;
-      alertDecision.reason = Number.isFinite(aiGoalPercent)
-        ? `AI_GOAL_BELOW_${MIN_SEND_PERCENTAGE}`
-        : 'AI_GOAL_PROBABILITY_UNAVAILABLE';
-      console.log(`[AI GOAL GATE] ${match.homeName} vs ${match.awayName} | Rule=${ai.efficiency}% | AI Goal=${Number.isFinite(aiGoalPercent) ? aiGoalPercent+'%' : 'N/A'} | BLOCK TELEGRAM`);
-    }
+  // V4 NEW: first-alert gate is verified HT >= 1, minute 65–88,
+  // and combined expected remaining goals >= 0.90.
+  // Activate available fusion immediately, including EXPERIMENTAL_ACTIVE;
+  // calibration is a reporting attribute, not an activation gate.
+  const verifiedHTV4=verifiedHalfTimeGoals(match);
+  const historyLambda=Number(aiGoal.poissonHistory?.expectedRemainingGoals);
+  const historyAvailable=aiGoal.poissonHistory && Number.isFinite(historyLambda) && historyLambda>=0;
+  const fusion=aiGoal.poissonCombination;
+  const fusedPercent=Number(fusion?.percent);
+  const fusionActive=(fusion?.status==='VALIDATED'||fusion?.status==='EXPERIMENTAL_ACTIVE') &&
+    Number.isFinite(fusedPercent) && fusedPercent>0 && fusedPercent<100;
+  const fusionValidated=fusionActive && fusion.status==='VALIDATED';
+  const v4Lambda=fusionActive ? -Math.log1p(-fusedPercent/100) : (historyAvailable?historyLambda:null);
+  const v4Probability=v4Lambda==null?null:+(100*(1-Math.exp(-v4Lambda))).toFixed(1);
+  const v4Combined={expectedRemainingGoals:v4Lambda==null?null:+v4Lambda.toFixed(3),
+    probability:v4Probability,htGoals:verifiedHTV4?.total??null,
+    liveStatsCoverage:getCoreStatsCoverage(stats),
+    source:fusionActive?(fusionValidated?'VALIDATED_LIVE_HISTORY_FUSION':'ACTIVE_UNCALIBRATED_LIVE_HISTORY_FUSION'):historyAvailable?'HISTORY_POISSON_BASELINE':'UNAVAILABLE',
+    liveFusionValidated:fusionValidated,
+    eligible:minute>=65&&minute<=88&&verifiedHTV4?.total>=1&&v4Lambda!=null&&v4Lambda>=0.90};
+  const firstAlert=!alertState.has(alertKey);
+  if(firstAlert){
+    alertDecision.send=v4Combined.eligible;
+    alertDecision.bigBet=false;
+    alertDecision.reason=v4Combined.eligible?'V4_COMBINED_LAMBDA':
+      minute<65?'BEFORE_65':!verifiedHTV4?'HT_UNVERIFIED':verifiedHTV4.total<1?'HT_NO_GOAL':
+      v4Lambda==null?'LAMBDA_UNAVAILABLE':`LAMBDA_BELOW_0.90_${v4Lambda.toFixed(2)}`;
   }
+  // Preserve the original AI Goal gate for existing follow-up/BIG BET alerts.
+  if(!firstAlert && alertDecision.send && !nextGoalDecision.eligible){
+    alertDecision.send=false;
+    alertDecision.bigBet=false;
+    alertDecision.reason='AI_GOAL_FOLLOWUP_GATE';
+  }
+  // Follow-up/BIG BET is deliberately unchanged. New-goal events do not trigger a special rescan.
+  console.log(`[V4 NEW] ${match.homeName} vs ${match.awayName} | ${minute}' | HT=${verifiedHTV4?.total??'UNVERIFIED'} | lambda=${v4Lambda==null?'N/A':v4Lambda.toFixed(3)} | P>=1=${v4Probability??'N/A'}% | liveCoverage=${JSON.stringify(v4Combined.liveStatsCoverage)} | fusion=${v4Combined.source} | first=${firstAlert} | decision=${alertDecision.reason}`);
 
   const compactGoalTimeline =
     extractGoalTimeline(
@@ -7890,6 +7920,7 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
 
     ai,
     aiGoal,
+    v4Combined,
     scenarioAnalysis,
     trainingWindows: {five:windows.five,ten:windows.ten},
 

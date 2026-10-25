@@ -31,6 +31,7 @@ function recordScan({totalLive,uniqueLive,eligible,results,candidates=[]}){
   const minute=numeric(r?.minute??m.minute??m.raw?.fixture?.status?.elapsed);
   return {key,fixtureId:String(m.sourceIds?.apisports||(m.source==='apisports'?m.id:'')||''),league:m.league||'',home:m.homeName||'',away:m.awayName||'',minute,
    scoreH:numeric(r?.homeScore??m.homeScore),scoreA:numeric(r?.awayScore??m.awayScore),rule:numeric(r?.ai?.efficiency),goal:numeric(r?.aiGoal?.percent),
+   v4NewLambda:numeric(r?.v4Combined?.expectedRemainingGoals),v4NewProbability:numeric(r?.v4Combined?.probability),v4NewEligible:r?.v4Combined?.eligible===true,v4NewSource:r?.v4Combined?.source||null,
    v4PoissonLambda:numeric(r?.aiGoal?.poissonHistory?.expectedRemainingGoals),v4PoissonProbability:numeric(r?.aiGoal?.poissonHistory?.probabilityAtLeastOne),v4PoissonTwoGoals:numeric(r?.aiGoal?.poissonHistory?.probabilityAtLeastTwo),v4PoissonFusionStatus:r?.aiGoal?.poissonCombination?.status||'NOT_ANALYZED',v4PoissonFusionPercent:numeric(r?.aiGoal?.poissonCombination?.percent),
    inWindow:true,analyzed:!!r,reason:r?'ANALYZED':'WAITING_ANALYSIS',at:now};
  }).filter(x=>x.home&&x.away&&x.minute!==null&&x.minute>=46&&x.minute<=88);
