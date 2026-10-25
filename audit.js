@@ -183,15 +183,15 @@ function setupLogin(app){
  app.post('/api/logout',(req,res)=>{res.set('Cache-Control','no-store');res.clearCookie(LOGIN_COOKIE,{path:'/',sameSite:'strict'});res.json({ok:true});});
 }
 
-function setup(app){setupLogin(app);app.get('/api/auth-status',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,authenticated:true});});const scanObserver=require('./scan_observer');
+function setup(app){setupLogin(app);const scanObserver=require('./scan_observer');
  app.get('/api/scan-control',requireAuth,async(req,res)=>{try{await app.locals.scanControl.init();res.set('Cache-Control','no-store');res.json({ok:true,paused:app.locals.scanControl.isPaused()});}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.post('/api/scan-control',requireAuth,async(req,res)=>{try{if(typeof req.body?.paused!=='boolean')return res.status(400).json({ok:false,error:'paused boolean required'});res.set('Cache-Control','no-store');res.json(await app.locals.scanControl.setPaused(req.body.paused));}catch(e){res.status(503).json({ok:false,error:e.message});}});
  app.get('/rung-bet',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'rung-bet.html'));});
  app.get('/api/rung-bet',requireAuth,async(req,res)=>{try{await init();if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();
   const now=Date.now(),fresh=x=>{const t=Date.parse(x.liveUpdatedAt||x.updatedAt||x.createdAt||x.sentAt||'');return Number.isFinite(t)&&now-t<40*60*1000;};
-  const v4=records.filter(x=>x.source!=='AI_NO_STATS'&&x.ftHome==null&&x.ftAway==null&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.id,source:'V4',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:`${x.liveHomeScore??x.homeScore??'?'}-${x.liveAwayScore??x.awayScore??'?'}`,sentAt:x.createdAt}));
+  const v4=records.filter(x=>x.source!=='AI_NO_STATS'&&x.ftHome==null&&x.ftAway==null&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.id,source:'V4',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:`${x.liveHomeScore??x.homeScore??'?'}-${x.liveAwayScore??x.awayScore??'?'}`,sentAt:x.createdAt,scoreAtAlert:`${x.homeScore??'?'}-${x.awayScore??'?'}`}));
   const noStats=typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView().records:[];
-  const ns=noStats.filter(x=>x.evaluation==='PENDING_FT'&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.key,source:'AI NO-STATS',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:x.liveScore||x.score,sentAt:x.sentAt}));
+  const ns=noStats.filter(x=>x.evaluation==='PENDING_FT'&&fresh(x)&&Number(x.liveMinute||x.minute)<=90).map(x=>({key:x.key,source:'AI NO-STATS',league:x.league,home:x.home,away:x.away,minute:x.liveMinute??x.minute,score:x.liveScore||x.score,scoreAtAlert:x.score,sentAt:x.sentAt}));
   const unique=new Map();for(const x of [...v4,...ns]){const key=String(x.home||'').toLowerCase()+'|'+String(x.away||'').toLowerCase();const prev=unique.get(key);if(!prev||Number(x.minute)>Number(prev.minute))unique.set(key,x);}
   res.set('Cache-Control','no-store');res.json({ok:true,records:[...unique.values()]});
  }catch(e){res.status(503).json({ok:false,error:e.message});}});

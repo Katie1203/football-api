@@ -7245,14 +7245,12 @@ async function maybeSendNoStatsAlert(record) {
   noStatsSendingKeys.add(key);
   try {
     const message = [
-      '🔔 AI THỬ NGHIỆM | CẢNH BÁO CÒN BÀN',
+      '💰 THẦN TÀI ĐẾN 🧧🧧🧧',
       `🏆 ${record.league || 'Không rõ giải'}`,
-      `⚽ ${record.home} ${record.score} ${record.away}`,
-      `⏱ Phút ${minute}`,
-      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)} (ngưỡng ≥ 0.90)`,
-      `🎯 Xác suất AI THỬ NGHIỆM: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`,
-      'Nguồn: AI THỬ NGHIỆM (độc lập V4)',
-      `⚽ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`
+      `⚽️ ${record.home} ${record.score} ${record.away} ⏱️ Phút ${minute}`,
+      `⚽️ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
+      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)}`,
+      `🎯 Xác suất AI THỬ NGHIỆM: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`
     ].join('\n');
     const response = await axios.post(
       `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
@@ -7812,42 +7810,22 @@ function predictFinalScoreFromAiGoal(homeScore, awayScore, aiGoal, stats) {
   const nextGoalDecision = aiGoalBetDecision.decide(aiGoal,ai.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
   console.log(`[AI GOAL NEXT-GOAL] ${match.homeName} vs ${match.awayName} | ${minute}' | ${nextGoalDecision.verdict} | AI Goal=${nextGoalDecision.probability ?? 'N/A'}% | Rule=${nextGoalDecision.rule ?? 'N/A'}% | mode=${nextGoalDecision.mode} | reason=${nextGoalDecision.reason}`);
 
-  // V4 NEW: first-alert gate is verified HT >= 1, minute 65–88,
-  // and combined expected remaining goals >= 0.90.
-  // Activate available fusion immediately, including EXPERIMENTAL_ACTIVE;
-  // calibration is a reporting attribute, not an activation gate.
-  const verifiedHTV4=verifiedHalfTimeGoals(match);
-  const historyLambda=Number(aiGoal.poissonHistory?.expectedRemainingGoals);
-  const historyAvailable=aiGoal.poissonHistory && Number.isFinite(historyLambda) && historyLambda>=0;
-  const fusion=aiGoal.poissonCombination;
-  const fusedPercent=Number(fusion?.percent);
-  const fusionActive=(fusion?.status==='VALIDATED'||fusion?.status==='EXPERIMENTAL_ACTIVE') &&
-    Number.isFinite(fusedPercent) && fusedPercent>0 && fusedPercent<100;
-  const fusionValidated=fusionActive && fusion.status==='VALIDATED';
-  const v4Lambda=fusionActive ? -Math.log1p(-fusedPercent/100) : (historyAvailable?historyLambda:null);
-  const v4Probability=v4Lambda==null?null:+(100*(1-Math.exp(-v4Lambda))).toFixed(1);
-  const v4Combined={expectedRemainingGoals:v4Lambda==null?null:+v4Lambda.toFixed(3),
-    probability:v4Probability,htGoals:verifiedHTV4?.total??null,
-    liveStatsCoverage:getCoreStatsCoverage(stats),
-    source:fusionActive?(fusionValidated?'VALIDATED_LIVE_HISTORY_FUSION':'ACTIVE_UNCALIBRATED_LIVE_HISTORY_FUSION'):historyAvailable?'HISTORY_POISSON_BASELINE':'UNAVAILABLE',
-    liveFusionValidated:fusionValidated,
-    eligible:minute>=65&&minute<=88&&verifiedHTV4?.total>=1&&v4Lambda!=null&&v4Lambda>=0.90};
-  const firstAlert=!alertState.has(alertKey);
-  if(firstAlert){
-    alertDecision.send=v4Combined.eligible;
-    alertDecision.bigBet=false;
-    alertDecision.reason=v4Combined.eligible?'V4_COMBINED_LAMBDA':
-      minute<65?'BEFORE_65':!verifiedHTV4?'HT_UNVERIFIED':verifiedHTV4.total<1?'HT_NO_GOAL':
-      v4Lambda==null?'LAMBDA_UNAVAILABLE':`LAMBDA_BELOW_0.90_${v4Lambda.toFixed(2)}`;
-  }
-  // Preserve the original AI Goal gate for existing follow-up/BIG BET alerts.
-  if(!firstAlert && alertDecision.send && !nextGoalDecision.eligible){
-    alertDecision.send=false;
-    alertDecision.bigBet=false;
-    alertDecision.reason='AI_GOAL_FOLLOWUP_GATE';
-  }
-  // Follow-up/BIG BET is deliberately unchanged. New-goal events do not trigger a special rescan.
-  console.log(`[V4 NEW] ${match.homeName} vs ${match.awayName} | ${minute}' | HT=${verifiedHTV4?.total??'UNVERIFIED'} | lambda=${v4Lambda==null?'N/A':v4Lambda.toFixed(3)} | P>=1=${v4Probability??'N/A'}% | liveCoverage=${JSON.stringify(v4Combined.liveStatsCoverage)} | fusion=${v4Combined.source} | first=${firstAlert} | decision=${alertDecision.reason}`);
+  // UNIFIED AI: reuse the already evaluated AI THỬ NGHIỆM record without
+  // changing its estimator, probability, lambda, or Telegram threshold.
+  const unifiedRecord=[...noStatsRecords.values()].find(r=>
+    r.source===match.source && String(r.sourceId)===String(match.id) && Number(r.minute)===Number(minute));
+  const unifiedLambda=unifiedRecord?.expectedRemainingGoals ?? null;
+  const unifiedProbability=unifiedRecord?.probability ?? null;
+  const v4Combined={expectedRemainingGoals:unifiedLambda,probability:unifiedProbability,
+    htGoals:unifiedRecord?.htGoals??null,source:'AI_THU_NGHIEM_DUY_NHAT',
+    eligible:unifiedRecord!=null&&minute>=NO_STATS_ALERT_MINUTE_MIN&&minute<=NO_STATS_ALERT_MINUTE_MAX&&
+      Number(unifiedLambda)>=NO_STATS_ALERT_EXPECTED_GOALS};
+  // The independent AI THỬ NGHIỆM sender above is now the only Telegram sender.
+  // Old Rule/AI Goal signals are retained as historical data only, never send.
+  alertDecision.send=false;
+  alertDecision.bigBet=false;
+  alertDecision.reason=unifiedRecord?'UNIFIED_AI_THU_NGHIEM':'AI_THU_NGHIEM_NO_DATA';
+  console.log(`[AI THU NGHIEM UNIFIED] ${match.homeName} vs ${match.awayName} | ${minute}' | lambda=${unifiedLambda??'N/A'} | P>=1=${unifiedProbability??'N/A'}% | sent=${unifiedRecord?noStatsSentKeys.has(noStatsAlertKey(unifiedRecord)):false}`);
 
   const compactGoalTimeline =
     extractGoalTimeline(
@@ -7937,22 +7915,8 @@ function calculateRuleConfidence(stats, match, minute, momentum, rule) {
   // SEND TELEGRAM
   // ======================================================
 
-  if (alertDecision.send && minute >= MIN_TELEGRAM_MINUTE && !scanControl.isPaused()) {
-    // Query detailed incidents only for an eligible alert, avoiding extra API calls on every scan.
-    if (!odds.found) console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | ${allOdds?.length || 0} events | ${odds.text || 'NO_LINE'} | no verified Over line`);
-    else console.log(`[ODDS MATCH] ${match.homeName} vs ${match.awayName} | Over ${odds.point} @ ${odds.price}`);
-    result.goalTimeline = await resolveVerifiedGoalHistory(match);
-
-    const sent = await sendTelegramAlert(
-      result,
-      alertDecision
-    );
-    result.telegramSent = Boolean(sent);
-    if (!sent) console.error(`[Telegram NOT SENT] ${match.homeName} vs ${match.awayName} | Rule ${ai.efficiency}%`);
-  } else if (alertDecision.send) {
-    console.log(`[Telegram BLOCK] BEFORE_65 | ${match.homeName} vs ${match.awayName}`);
-  }
-
+  // Telegram delivery is handled solely by maybeSendNoStatsAlert().
+  result.telegramSent=Boolean(unifiedRecord && noStatsSentKeys.has(noStatsAlertKey(unifiedRecord)));
 
   return result;
 }

@@ -22,6 +22,29 @@ button{background-color:#1c211b;color:var(--tt-gold-bright)}
 button.active,button[aria-selected="true"],.nav a.active{background-color:#e5b84e!important;color:#16150f!important;border-color:#e5b84e!important}
 nav a,.nav a{border-color:var(--tt-border)!important}
 .muted,.hint,.note,small{color:var(--tt-muted)}
+
+
+/* Unified neutral slate palette – 2026-10-25, presentation only */
+:root{--ttm-bg:#172634;--ttm-panel:#203545;--ttm-tile:#2a4050;--ttm-border:#667989;--ttm-text:#f5f7f9;--ttm-gold:#e8c66b}
+body.tt-unified{background:#172634!important;color:#f5f7f9!important}
+.tt-global-header{background:#1c3040!important;border-color:#71818b!important;color:#f5f7f9!important}
+.tt-global-links a,.tt-global-running,.tt-global-refresh{color:#f5f7f9!important}
+.tt-global-brand{color:#f1d17a!important}
+main,.panel,.match-card,.card,.stat,.summary-cell,.ai-metric,.ai-detail-card,.match-metric,.metric,.audit-scroll,.ai-overview{color:#f5f7f9}
+.panel,.match-card,.card,.stat,.summary-cell,.ai-metric,.ai-detail-card{background:#203545!important;border-color:#75828a!important;box-shadow:none!important}
+.match-metric,.metric,.ai-metric,.summary-cell:not(.sent){background:#2a4050!important;border-color:#819098!important}
+.match-metric small,.metric small,.match-metric strong,.metric strong,.stat small,.hint,.muted,.sub,.match-head,.match-bottom,.league,.note{color:#f5f7f9!important}
+.match-metric strong,.metric strong{font-weight:800!important;font-size:clamp(15px,1.3vw,21px)!important}
+.match-card .teams,.match-card .team,.teams,.score,.match-card .score{color:#fff!important}
+button,.tabs button,.audit-tools button{border-color:#9c956e!important}
+button.active,button[aria-current="page"],.tabs button.active{background:#e8c66b!important;color:#172634!important}
+.pill.win,.match-result.win,.match-result.WIN{background:#176c45!important;color:#fff!important}
+.pill.loss,.match-result.loss,.match-result.LOSS{background:#a9343c!important;color:#fff!important}
+.pill.pending,.match-result.pending{background:#56616c!important;color:#fff!important}
+.ai-bet,.bet-indicator{background:#85474e!important;color:#fff!important}
+.tt-global-clock{font-size:12px;color:#fff;white-space:nowrap;padding:6px 10px;border:1px solid #657887;border-radius:7px;background:#2a4050;font-variant-numeric:tabular-nums}
+@media(max-width:700px){.tt-global-clock{font-size:11px;padding:4px 6px}}
+
 </style>
 <style id="tt-unified-gold-form">
 :root{--tt-gold:#f1c76b;--tt-bright:#ffe0a0;--tt-gold-edge:#b88a35;--tt-base:#07110e;--tt-panel:#0a1713;--tt-ink:#f5f0e7;--tt-sub:#b6bdb3}
@@ -129,7 +152,7 @@ body,.tt-unified{color:var(--tt-ui-text)!important;background:#07130f!important}
 .tt-ui-disclosure .match-interpretation,.tt-ui-disclosure .match-scenarios{margin-top:8px}
 button,select{box-shadow:none!important}button:focus-visible,summary:focus-visible{outline:2px solid #e5c16a;outline-offset:2px}
 
-</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats" class="tt-current">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="sub">THẦN TÀI MAY MẮN · AI NO-STATS</div><h1>AI THỬ NGHIỆM · Theo dõi độc lập</h1><div class="hint">Giao diện thẻ trận giống V4 / AI Goal · Sự kiện LIVE, lịch sử đội bóng, Odds LIVE (khi được backend cung cấp) · Cảnh báo Telegram khi phút 65–88 và bàn kỳ vọng ≥ 0.90</div></div><div class="toolbar"><a href="/dashboard">← Dashboard V4 / AI Goal</a><button onclick="load()">↻ Làm mới</button></div></header><section class="stats"><div class="stat"><small>Trận theo dõi</small><strong id="total">—</strong></div><div class="stat"><small>Có ước lượng</small><strong id="estimated">—</strong></div><div class="stat"><small>Thiếu dữ liệu</small><strong id="missing">—</strong></div><div class="stat"><small>Trạng thái</small><strong style="font-size:17px">SHADOW</strong></div></section><section class="panel"><div class="toolbar"><h3 style="margin:3px 0">Danh sách trận đấu</h3><span class="hint" id="status">Đang tải...</span></div><div id="cards" class="matches"></div></section><section class="panel" style="margin-top:12px"><div class="toolbar"><h3 style="margin:3px 0">Lịch sử Audit FT · AI NO-STATS</h3><span class="hint" id="auditCounts">Đang tải...</span></div><div id="auditHistory" class="matches"></div><div class="toolbar" style="margin-top:10px"><button id="prevHistory" onclick="historyPage=Math.max(1,historyPage-1);fetchHistoryPage()">‹ Trước</button><span id="historyPageInfo" class="hint"></span><button id="nextHistory" onclick="historyPage++;fetchHistoryPage()">Tiếp ›</button></div></section><section class="panel" style="margin-top:12px"><h3>Hiệu quả AI NO-STATS · Lịch sử FT</h3><div id="ftLearning" class="hint">Đang tải dữ liệu học...</div></section><p class="note">Poisson chỉ được hiệu chuẩn khi mô hình học từ FT vượt qua kiểm định; trước đó giữ nguyên xác suất gốc. Giao diện chỉ hiển thị Odds khi API trả về dữ liệu được liên kết đúng trận; không tự tính hoặc gán xác suất Odds nếu backend chưa cung cấp. Audit FT được đối chiếu theo Fixture ID API-Sports và lưu trên ổ đĩa đã cấu hình; dữ liệu cũ trước bản cập nhật không thể tự khôi phục nếu chưa lưu mẫu.</p></main><script>
+</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats" class="tt-current">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="sub">THẦN TÀI MAY MẮN · AI NO-STATS</div><h1>AI THỬ NGHIỆM · Tất cả trận được quét</h1><div class="hint">Dùng chung lượt quét và kết quả AI THỬ NGHIỆM với Theo dõi LIVE · Bao gồm trận chưa đủ dữ liệu</div></div><div class="toolbar"><a href="/dashboard">← Dashboard</a><button onclick="load()">↻ Làm mới</button></div></header><section class="stats"><div class="stat"><small>Trận theo dõi</small><strong id="total">—</strong></div><div class="stat"><small>Có ước lượng</small><strong id="estimated">—</strong></div><div class="stat"><small>Thiếu dữ liệu</small><strong id="missing">—</strong></div><div class="stat"><small>Trạng thái</small><strong style="font-size:17px">ĐỒNG BỘ</strong></div></section><section class="panel"><div class="toolbar"><h3 style="margin:3px 0">Danh sách trận đấu</h3><span class="hint" id="status">Đang tải...</span></div><div id="cards" class="matches"></div></section><section class="panel" style="margin-top:12px"><div class="toolbar"><h3 style="margin:3px 0">Lịch sử Audit FT · AI THỬ NGHIỆM</h3><span class="hint" id="auditCounts">Đang tải...</span></div><div id="auditHistory" class="matches"></div><div class="toolbar" style="margin-top:10px"><button id="prevHistory" onclick="historyPage=Math.max(1,historyPage-1);fetchHistoryPage()">‹ Trước</button><span id="historyPageInfo" class="hint"></span><button id="nextHistory" onclick="historyPage++;fetchHistoryPage()">Tiếp ›</button></div></section><section class="panel" style="margin-top:12px"><h3>Hiệu quả AI THỬ NGHIỆM · Lịch sử FT</h3><div id="ftLearning" class="hint">Đang tải dữ liệu học...</div></section><p class="note">Poisson chỉ được hiệu chuẩn khi mô hình học từ FT vượt qua kiểm định; trước đó giữ nguyên xác suất gốc. Giao diện chỉ hiển thị Odds khi API trả về dữ liệu được liên kết đúng trận; không tự tính hoặc gán xác suất Odds nếu backend chưa cung cấp. Audit FT được đối chiếu theo Fixture ID API-Sports và lưu trên ổ đĩa đã cấu hình; dữ liệu cũ trước bản cập nhật không thể tự khôi phục nếu chưa lưu mẫu.</p></main><script>
 let historyPage=1,allHistory=[];
 let historyTotal=0;
 async function fetchHistoryPage(){
@@ -149,34 +172,45 @@ function renderHistoryPage(){
 const el=id=>document.getElementById(id);const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const pct=x=>x==null?'Chưa đủ dữ liệu':Number(x).toFixed(1)+'%';
 function oddsText(x){const o=x.oddsLive||x.liveOdds||x.odds||null;if(!o||typeof o!=='object'||Array.isArray(o))return 'Trạng thái: '+esc(x.oddsStatus||'NO_ODDS')+(x.oddsFixtureId?' · Fixture '+esc(x.oddsFixtureId):'');if(o.suspended===true||o.blocked===true)return 'Kèo tạm khóa / suspended';const market=o.market||o.marketName||o.betName||'Kèo LIVE';const line=o.line??o.handicap??o.total;const over=o.over??o.overPrice,under=o.under??o.underPrice;return esc(market)+(line==null?'':' · Mốc '+esc(line))+(over==null?'':' · Over '+esc(over))+(under==null?'':' · Under '+esc(under))+(o.marketImpliedPercent==null?'':' · Xác suất thị trường '+esc(o.marketImpliedPercent)+'% (tham khảo)')+(o.updatedAt?' · Cập nhật '+esc(o.updatedAt):'');}
 function renderAudit(x){return `<article class="match-card"><div class="match-head"><b>${esc(x.home)} ${esc(x.score)} ${esc(x.away)}</b><span class="pill ${String(x.evaluation).toUpperCase()==='WIN'?'win':String(x.evaluation).toUpperCase()==='LOSS'?'loss':'pending'}">${esc(x.evaluation)}</span></div><div class="match-bottom"><span>Phút ${esc(x.minute)} · Xác suất ${pct(x.probability)} · Fixture ${esc(x.fixtureId)}</span><span>FT: ${esc(x.ftScore||'Chưa kết thúc')} · ${esc(x.observedAt)}</span></div></article>`;}
-function render(x){const recent=x.recent10||{},h=x.homeHistory,a=x.awayHistory;return `<article class="match-card"><div class="match-head"><span class="hint">${esc(x.league||'—')} · ${esc(x.fixtureId||x.id||'')}</span><span><span class="pill minute">${esc(x.minute)}′</span> <span class="pill">AI THỬ NGHIỆM</span></span></div><div class="match-main"><div class="teams"><span class="team home">${esc(x.home)}</span><span class="score">${esc(x.score)}</span><span class="team away">${esc(x.away)}</span></div><div class="metric"><small>AI THỬ NGHIỆM · Còn ≥1 bàn</small><strong>${pct(x.probability)}</strong></div><div class="metric"><small>Bàn kỳ vọng còn lại</small><strong>${x.expectedRemainingGoals==null?'—':esc(x.expectedRemainingGoals)}</strong></div><div class="metric"><small>AI Goal + Odds (SHADOW)</small><strong>${x.aiOddsProbability==null?'—':pct(x.aiOddsProbability)}</strong></div><div class="metric"><small>Audit FT</small><strong class="small">${esc(x.telegramEvaluation||x.evaluation||'PENDING_FT')}</strong>${x.telegramFtScore?'<small>FT '+esc(x.telegramFtScore)+'</small>':''}</div></div><div class="match-bottom"><span><b>AI THỬ NGHIỆM</b> · ${esc(x.probabilityModel||'Chưa có mô hình')}</span><span class="${x.alertSent?'bet-indicator':''}">${x.alertSent?'BET · ĐÃ GỬI TELEGRAM':'Chưa gửi Telegram'}</span></div><details><summary>▸ Chi tiết AI · Diễn giải, lịch sử, Odds LIVE</summary><div class="interpretation"><b>Diễn giải:</b> 10 phút gần nhất: Bàn ${esc(recent.goal??0)} · Thẻ đỏ ${esc(recent.red_card??0)} · VAR ${esc(recent.var??0)} · Penalty ${esc(recent.penalty??0)}.<div><b>Lịch sử:</b> Chủ ${h?esc(h.scoredPerMatch)+' bàn/trận ('+esc(h.sample)+' trận)':'thiếu'} · Khách ${a?esc(a.scoredPerMatch)+' bàn/trận ('+esc(a.sample)+' trận)':'thiếu'}.</div><div><b>Odds LIVE:</b> <span class="warning">${oddsText(x)}</span></div><div><b>Nhận định:</b> ${esc(x.note||'Chưa có diễn giải bổ sung')}.</div></div></details><details><summary>Chi tiết dữ liệu trận đấu</summary><div class="content"><b>Nguồn sự kiện:</b> ${esc(x.eventSource||'Chưa có')}<br><b>Bằng chứng:</b> ${esc(x.evidence||'Chưa có')}<br><b>Trạng thái:</b> ${esc(x.evaluation||'PENDING_FT')}<br><b>Mô hình:</b> ${esc(x.probabilityModel||'Chưa có')}</div></details></article>`}
-async function load(){try{const r=await fetch('/api/ai-no-stats',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json(),rows=d.records||[];const visibleRows=rows.filter(x=>x.probability!=null&&Number.isFinite(Number(x.probability))&&x.expectedRemainingGoals!=null&&Number.isFinite(Number(x.expectedRemainingGoals)));
- // Display the existing AI Goal + Odds shadow result only; do not infer it from market odds.
- // Match by fixture ID when identical, or by a unique exact team pair. Unmatched/uncalibrated = —.
- let oddsShadowRows=[];
- try {const or=await fetch('/api/ai-goal-odds-shadow',{cache:'no-store'});
-  if(or.ok){const od=await or.json();oddsShadowRows=Array.isArray(od.records)?od.records:[];}
- } catch(e) {console.warn('AI Goal + Odds shadow unavailable:',e.message);}
- const pairKey=x=>String(x.home||'').trim().toLocaleLowerCase()+'|'+String(x.away||'').trim().toLocaleLowerCase();
- const byOddsFixture=new Map(),byOddsPair=new Map();
- for(const o of oddsShadowRows){
-  if(o.fixtureId!=null){const id=String(o.fixtureId);if(!byOddsFixture.has(id))byOddsFixture.set(id,[]);byOddsFixture.get(id).push(o);}
-  const k=pairKey(o);if(!byOddsPair.has(k))byOddsPair.set(k,[]);byOddsPair.get(k).push(o);
- }
- for(const x of rows){
-  const matches=(x.fixtureId!=null&&byOddsFixture.get(String(x.fixtureId)))||byOddsPair.get(pairKey(x))||[];
-  const o=matches.length===1?matches[0]:null;
-  const p=o?.probability;
-  x.aiOddsProbability=p!=null&&Number.isFinite(Number(p))?Number(p):null;
- }
- const ar=await fetch('/api/no-stats-alerts',{cache:'no-store'});
- const ad=ar.ok?await ar.json():{records:[],summary:{}};
- const byFixture=new Map((ad.records||[]).filter(x=>x.fixtureId).map(x=>[String(x.fixtureId),x]));
- const byName=new Map((ad.records||[]).map(x=>[String(x.home)+'|'+String(x.away),x]));
- for(const x of rows){const a=(x.fixtureId&&byFixture.get(String(x.fixtureId)))||byName.get(String(x.home)+'|'+String(x.away));
-  if(a){x.alertSent=true;x.telegramEvaluation=a.evaluation;x.telegramFtScore=a.ftScore;}}
-el('total').textContent=rows.length;el('estimated').textContent=visibleRows.length;el('missing').textContent=rows.length-visibleRows.length;el('status').textContent='Làm mới mỗi 60 giây · Hiển thị '+visibleRows.length+'/'+rows.length+' trận đủ dữ liệu';el('cards').innerHTML=visibleRows.map(render).join('')||'<div class="empty">Chưa có trận AI NO-STATS đủ dữ liệu. Trận sẽ tự hiển thị khi có xác suất và bàn kỳ vọng hợp lệ.</div>';
-const hist=d.history||[];const settled=hist.filter(x=>x.outcome===0||x.outcome===1),valid=settled.filter(x=>x.probability!=null&&Number.isFinite(Number(x.probability)));const wins=settled.filter(x=>x.outcome===1).length;const brier=valid.length?(valid.reduce((sum,x)=>sum+(Number(x.probability)/100-x.outcome)**2,0)/valid.length).toFixed(4):'—';el('ftLearning').textContent='FT: '+settled.length+' · WIN: '+wins+' · LOSS: '+(settled.length-wins)+' · Brier: '+brier+' ('+valid.length+' mẫu xác suất) · Poisson FT: '+(d.historyModel?.ready?'Đã qua kiểm định':'Giữ nguyên bản gốc')+' · Mẫu học: '+(d.historyModel?.count??0)+'/100';el('auditCounts').textContent='Mẫu theo dõi FT: đã chốt '+(d.settled??0)+' · Đang chờ '+(d.pending??0)+' | Telegram: '+(ad.summary?.wins??0)+' WIN / '+(ad.summary?.losses??0)+' LOSS · '+(ad.summary?.pending??0)+' PENDING';
-await fetchHistoryPage();}catch(e){el('status').textContent='Lỗi: '+e.message;}}
-load();setInterval(load,60000);
-</script></body></html>
+function render(x){const recent=x.recent10||{},h=x.homeHistory,a=x.awayHistory;return `<article class="match-card"><div class="match-head"><span class="hint">${esc(x.league||'—')} · ${esc(x.fixtureId||x.id||'')}</span><span><span class="pill minute">${esc(x.minute)}′</span> <span class="pill">AI THỬ NGHIỆM</span></span></div><div class="match-main"><div class="teams"><span class="team home">${esc(x.home)}</span><span class="score">${esc(x.score)}</span><span class="team away">${esc(x.away)}</span></div><div class="metric"><small>AI THỬ NGHIỆM · Còn ≥1 bàn</small><strong>${pct(x.probability)}</strong></div><div class="metric"><small>Bàn kỳ vọng còn lại</small><strong>${x.expectedRemainingGoals==null?'—':esc(x.expectedRemainingGoals)}</strong></div><div class="metric"><small>Trạng thái dữ liệu</small><strong>${x.probability==null?'Chưa đủ dữ liệu':'Đã phân tích'}</strong></div><div class="metric"><small>Audit FT</small><strong class="small">${esc(x.telegramEvaluation||x.evaluation||'PENDING_FT')}</strong>${x.telegramFtScore?'<small>FT '+esc(x.telegramFtScore)+'</small>':''}</div></div><div class="match-bottom"><span><b>AI THỬ NGHIỆM</b> · ${esc(x.probabilityModel||'Chưa có mô hình')}</span><span class="${x.alertSent?'bet-indicator':''}">${x.alertSent?'BET · ĐÃ GỬI TELEGRAM':'Chưa gửi Telegram'}</span></div><details><summary>▸ Chi tiết AI · Diễn giải, lịch sử, Odds LIVE</summary><div class="interpretation"><b>Diễn giải:</b> 10 phút gần nhất: Bàn ${esc(recent.goal??0)} · Thẻ đỏ ${esc(recent.red_card??0)} · VAR ${esc(recent.var??0)} · Penalty ${esc(recent.penalty??0)}.<div><b>Lịch sử:</b> Chủ ${h?esc(h.scoredPerMatch)+' bàn/trận ('+esc(h.sample)+' trận)':'thiếu'} · Khách ${a?esc(a.scoredPerMatch)+' bàn/trận ('+esc(a.sample)+' trận)':'thiếu'}.</div><div><b>Odds LIVE:</b> <span class="warning">${oddsText(x)}</span></div><div><b>Nhận định:</b> ${esc(x.note||'Chưa có diễn giải bổ sung')}.</div></div></details><details><summary>Chi tiết dữ liệu trận đấu</summary><div class="content"><b>Nguồn sự kiện:</b> ${esc(x.eventSource||'Chưa có')}<br><b>Bằng chứng:</b> ${esc(x.evidence||'Chưa có')}<br><b>Trạng thái:</b> ${esc(x.evaluation||'PENDING_FT')}<br><b>Mô hình:</b> ${esc(x.probabilityModel||'Chưa có')}</div></details></article>`}
+async function load(){try{
+ const [lr,ar,hr]=await Promise.all([fetch('/api/live-monitor',{cache:'no-store'}),fetch('/api/no-stats-alerts',{cache:'no-store'}),fetch('/api/ai-no-stats',{cache:'no-store'})]);
+ if(!lr.ok)throw Error('LIVE HTTP '+lr.status);
+ const live=await lr.json(),ad=ar.ok?await ar.json():{records:[],summary:{}},d=hr.ok?await hr.json():{};
+ const rows=Array.isArray(live.rows)?live.rows:[];
+ const predictions=Array.isArray(live.noStats)?live.noStats:[];
+ const norm=v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'');
+ const key=(h,a)=>norm(h)+'|'+norm(a);
+ const byId=new Map(predictions.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
+ const byPair=new Map(predictions.map(x=>[key(x.home,x.away),x]));
+ const seen=new Set();
+ const combined=rows.map(x=>{
+   const named=byPair.get(key(x.home,x.away));
+   const n=(x.fixtureId!=null&&byId.get(String(x.fixtureId)))||((x.fixtureId==null||named?.fixtureId==null)?named:null);
+   if(n)seen.add(n);
+   return {...x,...(n||{}),home:x.home,away:x.away,league:x.league||n?.league,minute:x.minute??n?.minute,
+     score:(x.scoreH!=null&&x.scoreA!=null)?x.scoreH+'-'+x.scoreA:(n?.score??'—'),
+     probability:n?.probability??x.noStatsProbability??null,
+     expectedRemainingGoals:n?.expectedRemainingGoals??x.expectedRemainingGoals??null,
+     alertSent:n?.alertSent??x.noStatsAlertSent??false};
+ });
+ for(const n of predictions){if(!seen.has(n))combined.push({...n,score:n.score??'—'});}
+ const alerts=Array.isArray(ad.records)?ad.records:[];
+ const alertIds=new Map(alerts.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
+ const alertNames=new Map(alerts.map(x=>[key(x.home,x.away),x]));
+ for(const x of combined){const a=(x.fixtureId!=null&&alertIds.get(String(x.fixtureId)))||alertNames.get(key(x.home,x.away));if(a){x.alertSent=true;x.telegramEvaluation=a.evaluation;x.telegramFtScore=a.ftScore;}}
+ const estimated=combined.filter(x=>x.probability!=null&&Number.isFinite(Number(x.probability)));
+ el('total').textContent=combined.length;
+ el('estimated').textContent=estimated.length;
+ el('missing').textContent=combined.length-estimated.length;
+ el('status').textContent='Dùng chung dữ liệu Theo dõi LIVE · '+combined.length+' trận quét · '+estimated.length+' có kết quả · Cập nhật 15 giây';
+ el('cards').innerHTML=combined.map(render).join('')||'<div class="empty">Chưa có trận nào trong lượt quét gần nhất.</div>';
+ const hist=d.history||[];const settled=hist.filter(x=>x.outcome===0||x.outcome===1),valid=settled.filter(x=>x.probability!=null&&Number.isFinite(Number(x.probability)));
+ const wins=settled.filter(x=>x.outcome===1).length;
+ const brier=valid.length?(valid.reduce((sum,x)=>sum+(Number(x.probability)/100-x.outcome)**2,0)/valid.length).toFixed(4):'—';
+ el('ftLearning').textContent='FT: '+settled.length+' · WIN: '+wins+' · LOSS: '+(settled.length-wins)+' · Brier: '+brier+' ('+valid.length+' mẫu)';
+ el('auditCounts').textContent='Mẫu FT: đã chốt '+(d.settled??0)+' · Chờ '+(d.pending??0)+' | Telegram: '+(ad.summary?.wins??0)+' WIN / '+(ad.summary?.losses??0)+' LOSS';
+ await fetchHistoryPage();
+ }catch(e){el('status').textContent='Lỗi: '+e.message;}}
+load();setInterval(load,15000);
+</script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>
