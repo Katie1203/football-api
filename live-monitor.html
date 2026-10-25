@@ -155,6 +155,23 @@ body,.tt-unified{color:var(--tt-ui-text)!important;background:#07130f!important}
 .tt-ui-disclosure .match-interpretation,.tt-ui-disclosure .match-scenarios{margin-top:8px}
 button,select{box-shadow:none!important}button:focus-visible,summary:focus-visible{outline:2px solid #e5c16a;outline-offset:2px}
 
+</style><style id="neutral-gold-unified">
+/* 2026-10-25: Neutral mid-dark theme, preserve original gold borders and UI structure. */
+:root{color-scheme:dark!important;--neutral-bg:#19252b;--neutral-panel:#26353d;--neutral-card:#2c3c44;--neutral-field:#32434b;--neutral-white:#f4f6f7;--neutral-muted:#d2d9dc}
+html,body{background:#19252b!important;color:var(--neutral-white)!important}
+main{color:var(--neutral-white)}
+.panel,.stat,.card,.match-card,.match,.ai-metric,.metric,.audit-scroll,.tablewrap{background:#26353d!important;background-image:none!important;color:var(--neutral-white)!important}
+nav,header:not(.match-head),.nav{background-color:#233139!important;background-image:none!important}
+input,select,textarea,button:not(.active):not([disabled]),.toolbar input{background-color:#32434b;color:#f4f6f7}
+table{background-color:#26353d!important;color:#f4f6f7!important}
+tbody tr:nth-child(even){background-color:#2c3b43!important}
+tbody tr:nth-child(odd){background-color:#26353d!important}
+.muted,.hint,.sub,small:not(.badge),.league,.meta{color:#d2d9dc}
+/* Status colours and golden active controls/borders remain defined by the original styles. */
+
+#noStatsAlerts,#noStatsAlerts .ai-metric,#noStatsAlerts .stat,#noStatsAlerts .split>.panel,#noStatsAlertRows>*,#v4AlertsPanel,#audit-list{background:#26353d!important;background-image:none!important;box-shadow:none!important}
+#noStatsAlerts .ai-metric small,#noStatsAlerts .stat small,#noStatsAlerts .hint{color:#d2d9dc!important}
+#noStatsAlertRows .match-card,#noStatsAlertRows article{background:#2c3c44!important;background-image:none!important}
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI THỬ NGHIỆM duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI THỬ NGHIỆM; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang kiểm tra dữ liệu mỗi 15 giây.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
