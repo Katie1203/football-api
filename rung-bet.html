@@ -107,6 +107,35 @@ tr:hover{background-color:#272416!important}
  border-color:#f5ca6a!important;box-shadow:0 0 12px #dfae5050!important}
 .tt-global-refresh,.promax-refresh{color:#ffdc83!important;border-color:#d1a34e!important}
 @media(max-width:650px){button{min-height:36px}h1{line-height:1.25}}
+</style><style id="tt-minimal-scan-rung-20261025">
+/* Presentation-only overrides. No changes to layout, DOM, handlers or data. */
+:root{--ttm-bg:#080f0e;--ttm-panel:#121b19;--ttm-gold:#d5b56d;--ttm-edge:#846e43;--ttm-text:#f6f6f3;--ttm-muted:#c1c7c1}
+body.tt-unified{background:var(--ttm-bg)!important;color:var(--ttm-text)!important;font-family:system-ui,-apple-system,'Segoe UI',sans-serif!important}
+.tt-global-header{background:#111916!important;border-color:var(--ttm-edge)!important;box-shadow:none!important}
+.tt-global-brand{color:var(--ttm-gold)!important;text-shadow:none!important}
+.tt-global-links a{color:var(--ttm-text)!important;background:transparent!important;box-shadow:none!important}
+.tt-global-links a.tt-current{background:#383324!important;color:#f6deb0!important;border-color:var(--ttm-gold)!important;box-shadow:none!important}
+.tt-global-refresh{background:#18211e!important;color:var(--ttm-text)!important;box-shadow:none!important}
+h1,h2,h3{color:var(--ttm-gold)!important;text-shadow:none!important}
+.muted,.sub,small,.hint,.note{color:var(--ttm-muted)!important}
+.stat,.panel,.card,.summary-cell,.match-card{background:var(--ttm-panel)!important;border:1px solid var(--ttm-edge)!important;box-shadow:none!important}
+.stat b,.stat strong,.summary-cell strong,.summary-cell b{color:var(--ttm-gold)!important;text-shadow:none!important}
+button,input,select{background:#17201d!important;color:var(--ttm-text)!important;border-color:#776846!important;box-shadow:none!important}
+button.active,button[aria-selected="true"]{background:#51462d!important;color:#fff4d9!important;border-color:var(--ttm-gold)!important;box-shadow:none!important}
+button:hover:not(:disabled){background:#29332e!important}
+nav a{color:var(--ttm-text)}
+.card .teams,.card .top,.card .bottom,.card .league{color:var(--ttm-text)}
+.score{color:var(--ttm-text)!important;text-shadow:none!important}
+.minute{background:#5b3034!important;color:#ffe7e9!important}
+.bottom span{background:#222d28!important;color:var(--ttm-text)!important}
+.bottom .rung{background:#5b3034!important;color:#ffe7e9!important;animation:none!important}
+th{background:#1b2420!important;color:var(--ttm-gold)!important}
+td{color:var(--ttm-text)!important}
+.good{color:#79c995!important}.bad{color:#e98686!important}.low{color:var(--ttm-muted)!important}
+</style><style id="tt-rung-summary-emphasis">
+/* Only the SENT summary tile is highlighted; remaining tiles neutral. */
+.summary-cell.sent,.tt-unified .summary-cell.sent{background:#393121!important;border-color:#b69a59!important}
+.summary-cell:not(.sent){background:#121b19!important;border-color:#6d6654!important}
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet" class="tt-current">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><h1>Trận đã gửi cảnh báo · Đang LIVE</h1><p class="sub">Chỉ hiển thị trận đã gửi Telegram và chưa xác nhận FT. Tự cập nhật mỗi 20 giây.</p><div class="summary-strip" aria-label="Thống kê cảnh báo LIVE"><div class="summary-cell sent"><small>♧ ĐÃ GỬI CẢNH BÁO</small><strong id="sentCount">—</strong></div><div class="summary-cell"><small>TRẬN ĐANG LIVE</small><strong id="liveCount">—</strong></div><div class="summary-cell"><small>CẬP NHẬT</small><strong id="updateTime">—</strong></div></div><div id="status">Đang tải…</div><div id="grid" class="grid"></div></main><script>
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));async function load(){try{const r=await fetch('/api/rung-bet',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();const matches=Array.isArray(d.records)?d.records:[];document.getElementById('sentCount').textContent=matches.length;document.getElementById('liveCount').textContent=matches.length;document.getElementById('updateTime').textContent=new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});document.getElementById('status').textContent='Đang theo dõi '+matches.length+' trận · '+new Date().toLocaleTimeString('vi-VN');document.getElementById('grid').innerHTML=matches.map(x=>`<article class="card"><div class="top"><span class="league">${esc(x.league)}</span><span class="minute">${esc(x.minute)}′</span></div><div class="teams">${esc(x.home)}<div class="score">${esc(x.score)}</div>${esc(x.away)}</div><div class="bottom"><span>CÒN BÀN THẮNG</span><span class="rung">RUNG BET</span></div></article>`).join('')||'<div class="empty">Hiện chưa có trận đã gửi cảnh báo đang LIVE.</div>';}catch(e){document.getElementById('status').textContent='Không tải được dữ liệu: '+e.message;}}load();setInterval(load,20000);
 </script></body></html>

@@ -110,6 +110,28 @@ tr:hover{background-color:#272416!important}
  border-color:#f5ca6a!important;box-shadow:0 0 12px #dfae5050!important}
 .tt-global-refresh,.promax-refresh{color:#ffdc83!important;border-color:#d1a34e!important}
 @media(max-width:650px){button{min-height:36px}h1{line-height:1.25}}
+
+
+/* TTMM restrained gold UI: presentation only, no changes to data or predictions */
+:root{--tt-ui-bg:#07130f;--tt-ui-card:#101c1a;--tt-ui-metric:#202c2d;--tt-ui-gold:#ae914d;--tt-ui-text:#f4f5f2}
+body,.tt-unified{color:var(--tt-ui-text)!important;background:#07130f!important}
+.match-card,.card,.panel{background:#0c1916!important;border-color:#8f793f!important;box-shadow:none!important}
+.match-card:hover{box-shadow:none!important;border-color:#c1a65e!important}
+.match-name,.match-league,.match-date,.match-live-score,.match-bottom,.match-interpretation,.match-scenarios,.match-scenarios-title,.hint,.muted,.team,.teams,.metric small,.match-metric small{color:#f0f1ed!important}
+.match-metric,.metric,#noStatsAlertRows .match-metric{background:#23302e!important;border:1px solid #8d845e!important;border-radius:8px!important;box-shadow:none!important}
+.match-metric strong,.metric strong,#noStatsAlertRows .match-metric strong{color:#f7e0a2!important;font-weight:800!important}
+.match-result.win,.match-result.win strong,.match-ft-metric .win,.pill.win,.win{color:#a9f0c0!important;background:#123e2b!important}
+.match-result.loss,.match-ft-metric .loss,.pill.loss,.loss{color:#ffaaaa!important;background:#572325!important}
+.match-result.pending,.pill.pending,.pending{color:#d8dcd8!important;background:#303737!important}
+.ai-status.ai-bet,.bet-indicator{background:#6b3535!important;color:#ffe3e0!important;border:1px solid #b77878!important}
+.ai-status.ai-no-bet,.ai-status.ai-na{background:#303737!important;color:#f1f1ed!important}
+.match-ft-metric strong.win,.match-ft-metric strong.loss,.match-ft-metric strong.pending{display:inline-block;padding:4px 8px;border-radius:5px}
+.match-card details>summary,.tt-ui-disclosure>summary{color:#f4f5f2!important;cursor:pointer;font-weight:700;list-style:none;padding:7px 9px;border:1px solid #8f793f;border-radius:7px;background:#182522}
+.match-card details>summary::-webkit-details-marker,.tt-ui-disclosure>summary::-webkit-details-marker{display:none}
+.tt-ui-disclosure{margin-top:8px}.tt-ui-disclosure>summary:before{content:'▸ ';color:#d9b965}.tt-ui-disclosure[open]>summary:before{content:'▾ '}
+.tt-ui-disclosure .match-interpretation,.tt-ui-disclosure .match-scenarios{margin-top:8px}
+button,select{box-shadow:none!important}button:focus-visible,summary:focus-visible{outline:2px solid #e5c16a;outline-offset:2px}
+
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT ĐỘC LẬP</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi cơ chế V4 mới và AI THỬ NGHIỆM; xác suất và λ lấy từ kết quả phân tích thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Hai AI được theo dõi độc lập, không phân nhóm theo ngưỡng 65%. Bộ lọc “Không đạt điều kiện” hiển thị trận chưa có kết quả từ cả hai AI; không coi dữ liệu thiếu là kết luận thuật toán thất bại. Trang kiểm tra dữ liệu mỗi 15 giây.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));

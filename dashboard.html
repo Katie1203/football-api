@@ -455,7 +455,7 @@ button{background-color:#1c211b;color:var(--tt-gold-bright)}
 button.active,button[aria-selected="true"],.nav a.active{background-color:#e5b84e!important;color:#16150f!important;border-color:#e5b84e!important}
 nav a,.nav a{border-color:var(--tt-border)!important}
 .muted,.hint,.note,small{color:var(--tt-muted)}
-</style>
+#noStatsAlertRows .match-metric{background:#23302e!important;border-color:#a18b54!important}#noStatsAlertRows .match-metric strong{color:#f7e0a2!important}#noStatsAlertRows .match-ft-metric strong.win{color:#a9f0c0!important;background:#123e2b!important}#noStatsAlertRows .match-ft-metric strong.loss{color:#ffaaaa!important;background:#572325!important}#noStatsAlertRows .match-ft-metric strong.pending{color:#d8dcd8!important;background:#303737!important}</style>
 <style>
 /* AI detail panel opens inside the selected match card */
 .match-card>.ai-overview.ai-focused{
@@ -836,7 +836,64 @@ tr:hover{background-color:#272416!important}
  background:#111b17!important;border-color:#866c39!important}
 .ai-match-card .metric strong,.ai-nostats-card .metric strong,.ai-alert-card .metric strong{
  color:var(--tt-gold-light)!important}
-</style></head><body><main><div class="promax-topbar">
+</style>
+<style id="tt-ai-card-parity-v4">
+/* Visual parity with V4 audit cards. AI experimental stays three columns. */
+#noStatsAlerts{background:linear-gradient(140deg,#101512,#0a1110 55%,#17170f)!important;border:1px solid #b88624!important;padding:12px!important}
+#noStatsAlerts .ai-toolbar h3{font-size:17px!important;line-height:1.3!important}
+#noStatsAlerts .ai-metrics,#noStatsAlerts .stats{gap:8px!important;margin:8px 0!important}
+#noStatsAlerts .ai-metric,#noStatsAlerts .stat{padding:10px!important;min-height:65px!important;border-radius:9px!important}
+#noStatsAlerts .ai-metric strong,#noStatsAlerts .stat strong{font-size:20px!important;margin-top:3px!important}
+#noStatsAlerts .ai-metric small,#noStatsAlerts .stat small{font-size:11px!important}
+#noStatsAlerts .split{gap:8px!important;margin:8px 0!important}
+#noStatsAlerts .split>.panel{padding:10px 12px!important}
+#noStatsAlerts .split h3{font-size:13px!important;margin-bottom:5px!important}
+#noStatsAlertRows{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:8px!important}
+#noStatsAlertRows>.match-card{padding:10px!important;border:1px solid #d5a646!important;background:linear-gradient(155deg,#0b1714,#09120f)!important;border-radius:10px!important;box-shadow:0 0 14px #d59c3020,inset 0 1px 0 #f8d67d15!important;color:#f4f1e9!important}
+#noStatsAlertRows>.match-card:hover{border-color:#f4ca68!important;box-shadow:0 0 16px #e6b84a39!important}
+#noStatsAlertRows .match-head-left{display:flex!important;align-items:center!important;gap:5px!important;flex-wrap:wrap!important;font-size:10px!important}
+#noStatsAlertRows .match-league{font-size:10px!important;color:#f0d58e!important}
+#noStatsAlertRows .match-minute{font-size:10px!important;padding:3px 6px!important;background:#c72046!important;color:white!important}
+#noStatsAlertRows .match-teams{display:flex!important;justify-content:center!important;gap:5px!important;align-items:center!important;flex-wrap:wrap!important;margin:7px 0!important}
+#noStatsAlertRows .match-name{font-size:12px!important;line-height:1.25!important;color:#f7f7f4!important;font-weight:800!important}
+#noStatsAlertRows .match-score{font-size:18px!important;color:#ffd778!important;font-weight:800!important}
+#noStatsAlertRows .match-status-inline{display:flex!important;align-items:center!important;gap:5px!important;flex-wrap:wrap!important}
+#noStatsAlertRows .ai-status,#noStatsAlertRows .pill{font-size:10px!important;padding:3px 6px!important;border-radius:5px!important}
+#noStatsAlertRows .match-metrics{display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:5px!important;margin:9px 0!important}
+#noStatsAlertRows .match-metric{min-width:0!important;background:linear-gradient(145deg,#0b1717,#101b18)!important;border:1px solid #645832!important;border-radius:7px!important;padding:7px!important}
+#noStatsAlertRows .match-metric small{font-size:10px!important;color:#c1c8bf!important;line-height:1.25!important}
+#noStatsAlertRows .match-metric strong{font-size:15px!important;color:#44dbb7!important;line-height:1.3!important}
+#noStatsAlertRows .match-metric:nth-child(2) strong{color:#ffd05d!important}
+#noStatsAlertRows .match-ft-metric strong{color:#ffd05d!important}
+#noStatsAlertRows .match-live-score{font-size:10px!important;color:#e7c991!important;line-height:1.4!important}
+#noStatsAlertRows .hint{font-size:10px!important}
+#nsFilters button[aria-pressed="true"],#nsPagination button[aria-current="page"]{background:linear-gradient(110deg,#ffe08a,#e8aa25)!important;color:#211a0c!important;border-color:#e9b742!important}
+@media(max-width:1100px){#noStatsAlertRows{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:650px){#noStatsAlertRows{grid-template-columns:1fr!important}#noStatsAlertRows .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+
+
+/* TTMM restrained gold UI: presentation only, no changes to data or predictions */
+:root{--tt-ui-bg:#07130f;--tt-ui-card:#101c1a;--tt-ui-metric:#202c2d;--tt-ui-gold:#ae914d;--tt-ui-text:#f4f5f2}
+body,.tt-unified{color:var(--tt-ui-text)!important;background:#07130f!important}
+.match-card,.card,.panel{background:#0c1916!important;border-color:#8f793f!important;box-shadow:none!important}
+.match-card:hover{box-shadow:none!important;border-color:#c1a65e!important}
+.match-name,.match-league,.match-date,.match-live-score,.match-bottom,.match-interpretation,.match-scenarios,.match-scenarios-title,.hint,.muted,.team,.teams,.metric small,.match-metric small{color:#f0f1ed!important}
+.match-metric,.metric,#noStatsAlertRows .match-metric{background:#23302e!important;border:1px solid #8d845e!important;border-radius:8px!important;box-shadow:none!important}
+.match-metric strong,.metric strong,#noStatsAlertRows .match-metric strong{color:#f7e0a2!important;font-weight:800!important}
+.match-result.win,.match-result.win strong,.match-ft-metric .win,.pill.win,.win{color:#a9f0c0!important;background:#123e2b!important}
+.match-result.loss,.match-ft-metric .loss,.pill.loss,.loss{color:#ffaaaa!important;background:#572325!important}
+.match-result.pending,.pill.pending,.pending{color:#d8dcd8!important;background:#303737!important}
+.ai-status.ai-bet,.bet-indicator{background:#6b3535!important;color:#ffe3e0!important;border:1px solid #b77878!important}
+.ai-status.ai-no-bet,.ai-status.ai-na{background:#303737!important;color:#f1f1ed!important}
+.match-ft-metric strong.win,.match-ft-metric strong.loss,.match-ft-metric strong.pending{display:inline-block;padding:4px 8px;border-radius:5px}
+.match-card details>summary,.tt-ui-disclosure>summary{color:#f4f5f2!important;cursor:pointer;font-weight:700;list-style:none;padding:7px 9px;border:1px solid #8f793f;border-radius:7px;background:#182522}
+.match-card details>summary::-webkit-details-marker,.tt-ui-disclosure>summary::-webkit-details-marker{display:none}
+.tt-ui-disclosure{margin-top:8px}.tt-ui-disclosure>summary:before{content:'▸ ';color:#d9b965}.tt-ui-disclosure[open]>summary:before{content:'▾ '}
+.tt-ui-disclosure .match-interpretation,.tt-ui-disclosure .match-scenarios{margin-top:8px}
+button,select{box-shadow:none!important}button:focus-visible,summary:focus-visible{outline:2px solid #e5c16a;outline-offset:2px}
+
+</style>
+</head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
     <a href="#audit-list" class="nav-current">Dashboard</a>
@@ -910,11 +967,11 @@ async function load(){try{const r=await fetch('/api/audit?status='+filter+'&v=L1
  '<div class="match-head-left"><input type="checkbox" data-id="'+esc(x.id)+'" '+(selected.has(x.id)?'checked':'')+' onchange="toggleId(this)" aria-label="Chọn bản ghi"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-date">'+esc(new Date(x.createdAt).toLocaleString('vi-VN'))+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
  '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.ftHome!=null?x.ftHome:x.liveHomeScore!=null?x.liveHomeScore:x.homeScore)+' – '+esc(x.ftAway!=null?x.ftAway:x.liveAwayScore!=null?x.liveAwayScore:x.awayScore)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
  '<div class="match-live-score">Cảnh báo: <b>'+esc(x.homeScore)+'–'+esc(x.awayScore)+'</b> · '+(x.ftHome!=null&&x.ftAway!=null?'FT: <b>'+esc(x.ftHome)+'–'+esc(x.ftAway)+'</b>':x.liveHomeScore!=null&&x.liveAwayScore!=null?'LIVE: <b>'+esc(x.liveHomeScore)+'–'+esc(x.liveAwayScore)+'</b> · '+' ':'LIVE: Chờ cập nhật')+'</div>'+
- '<div class="match-status-inline"><span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span> '+signalStrengthCell(x)+bigBetSignalCell(x)+'</div>'+
- '<div class="match-scenarios"><div class="match-scenarios-title">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div></div></div>'+
+ '<div class="match-status-inline"><span class="ai-status ai-bet">BET</span> <span class="ai-status '+(!valid?'ai-na':bet?'ai-bet':'ai-no-bet')+'">'+verdict+'</span> '+signalStrengthCell(x)+bigBetSignalCell(x)+'</div>'+
+ '</div>'+
  '<div class="match-right"><div class="match-metrics"><div class="match-metric"><small>AI Goal</small><strong>'+scoreCell(x.aiGoalProbability)+'</strong></div><div class="match-metric"><small>AI Goal + Odds (SHADOW)</small><strong>'+(oddsMatchFor(x)?.probability==null?'—':scoreCell(oddsMatchFor(x).probability))+'</strong></div><div class="match-metric"><small>Rule V4</small><strong>'+scoreCell(x.rule)+'</strong></div><div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+esc(result)+'</strong><div class="match-ft-score">FT: <b>'+(x.ftHome==null||x.ftAway==null?'Đang chờ':esc(x.ftHome)+' – '+esc(x.ftAway))+'</b></div></div></div>'+
  '<div class="match-actions"><button type="button" class="match-btn-stats" data-stats-index="'+idx+'">▥ Chi tiết thống kê</button><button type="button" class="ai-detail-button match-btn-ai" data-ai-index="'+idx+'">✧ Chi tiết AI</button></div></div>'+
- '<div class="match-interpretation"><b>Diễn giải:</b> '+esc(signalExplanation(x))+' · Rule V4 '+scoreCell(x.rule)+' · AI Goal '+scoreCell(x.aiGoalProbability)+(x.aiGoalPoissonHistory?.expectedRemainingGoals!=null?' · Bàn kỳ vọng λ '+esc(x.aiGoalPoissonHistory.expectedRemainingGoals)+' · Poisson ≥1 bàn '+scoreCell(x.aiGoalPoissonHistory.probabilityAtLeastOne):' · Poisson: thiếu lịch sử')+' · '+esc(verdict)+'. '+(x.aiGoalCalibrated===true?'Trạng thái hiệu chuẩn theo Audit.':'Chưa xác nhận mô hình hiệu chuẩn; không suy diễn độ chính xác thực tế.')+oddsInline(x)+'</div>'+
+ '<details class="tt-ui-disclosure"><summary>Nhóm điều kiện &amp; diễn giải</summary><div class="match-scenarios"><div class="match-scenarios-title">Nhóm điều kiện đạt (V4)</div><div class="match-achieved">'+groupHtml+'</div></div><div class="match-interpretation"><b>Diễn giải:</b> '+esc(signalExplanation(x))+' · Rule V4 '+scoreCell(x.rule)+' · AI Goal '+scoreCell(x.aiGoalProbability)+(x.aiGoalPoissonHistory?.expectedRemainingGoals!=null?' · Bàn kỳ vọng λ '+esc(x.aiGoalPoissonHistory.expectedRemainingGoals)+' · Poisson ≥1 bàn '+scoreCell(x.aiGoalPoissonHistory.probabilityAtLeastOne):' · Poisson: thiếu lịch sử')+' · '+esc(verdict)+'. '+(x.aiGoalCalibrated===true?'Trạng thái hiệu chuẩn theo Audit.':'Chưa xác nhận mô hình hiệu chuẩn; không suy diễn độ chính xác thực tế.')+oddsInline(x)+'</div></details>'+
  '<div class="match-bottom"><span class="muted">Telegram: '+esc(x.alertType||'ALERT')+' #'+esc(x.alertNumber??'—')+' · Audit</span></div>'+
  '<details class="match-stats-details" data-stats-detail="'+idx+'"><summary hidden>Thống kê</summary><div class="match-stats-content">'+detail+'</div></details>'+
  '</article></td></tr>';
@@ -1021,12 +1078,12 @@ function nsRenderHistory(){
    return '<article class="match-card" style="padding:12px">'+
     '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(latest)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
-    '<div class="match-status-inline"><span class="ai-status ai-bet">AI THỬ NGHIỆM · TELEGRAM</span> '+pill(status)+'</div>'+
+    '<div class="match-status-inline"><span class="ai-status ai-bet">BET · AI THỬ NGHIỆM</span> '+pill(status)+'</div>'+
     '<div class="match-metrics" style="margin:10px 0">'+
      '<div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+pct+'</strong></div>'+
      ''+
      '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+
-     '<div class="match-metric match-ft-metric"><small>Kết quả</small><strong style="color:'+resultColor+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
+     '<div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
