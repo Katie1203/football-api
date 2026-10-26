@@ -67,6 +67,20 @@ async function saveNoStatsObservation(row){
  if(!pool||!row?.key)return;
  await pool.query('INSERT INTO promax_no_stats_observations (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()', [row.key,JSON.stringify(row)]);
 }
+// Isolated persistence for the two research/history pages. Uses the existing Dashboard PostgreSQL pool.
+const shadowTables=new Set(['promax_scan_history_state','promax_biggg_shadow_state']);
+async function loadShadowState(table){
+ if(!shadowTables.has(table))throw Error('Invalid shadow table');
+ if(!pool)throw Error('DATABASE_URL required for durable shadow history');
+ await pool.query(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, data JSONB NOT NULL, updated_at TIMESTAMPTZ DEFAULT NOW())`);
+ const result=await pool.query(`SELECT data FROM ${table} WHERE id='main'`);
+ return result.rows[0]?.data||null;
+}
+async function saveShadowState(table,data){
+ if(!shadowTables.has(table))throw Error('Invalid shadow table');
+ if(!pool)throw Error('DATABASE_URL required for durable shadow history');
+ await pool.query(`INSERT INTO ${table}(id,data) VALUES('main',$1::jsonb) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()`,[JSON.stringify(data)]);
+}
 async function init(){if(initialized)return; if(pool){await pool.query('CREATE TABLE IF NOT EXISTS promax_alert_audit (id TEXT PRIMARY KEY, data JSONB NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW())');const {rows}=await pool.query('SELECT data FROM promax_alert_audit ORDER BY created_at DESC LIMIT 10000');records=rows.map(x=>x.data).filter(x=>x.source!=='AI_NO_STATS');}initialized=true;}
 async function save(r){await init();const idx=records.findIndex(x=>x.id===r.id);if(idx>=0)records[idx]=r;else records.unshift(r);if(pool){await pool.query('INSERT INTO promax_alert_audit (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data',[r.id,JSON.stringify(r)]);}else{fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);}}
 // Optional LIVE analytics. Keep null distinct from a confirmed zero.
@@ -522,4 +536,4 @@ async function flashNoStatsFT(row){
  return candidate?flashFT(candidate):null;
 }
 async function getSettledTrainingRows(){await init();return records.filter(r=>r.source!=='AI_NO_STATS' && r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,aiGoalPoissonHistory:r.aiGoalPoissonHistory||null,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT,loadNoStatsObservations,saveNoStatsObservation};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT,loadNoStatsObservations,saveNoStatsObservation,loadShadowState,saveShadowState};

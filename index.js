@@ -85,12 +85,13 @@ async function apiSportsGet(path, params) {
   return data;
 }
 async function fetchApiSportsLive() {
-  if (!APISPORTS_KEY) return [];
+  if (!APISPORTS_KEY) { console.error('[Source API-Football] APISPORTS_KEY missing'); return []; }
   try {
     const data = await apiSportsGet('/fixtures', {live:'all'});
     const rows = Array.isArray(data?.response) ? data.response : [];
-    console.log(`[Source API-Football] LIVE ${rows.length} trận`);
-    return rows.filter(x => x?.fixture?.id && x?.teams?.home?.name && x?.teams?.away?.name);
+    const valid=rows.filter(x => x?.fixture?.id && x?.teams?.home?.name && x?.teams?.away?.name);
+    console.log(`[Source API-Football] LIVE ${rows.length} trận | results=${data?.results??'N/A'} | valid=${valid.length} | errors=${JSON.stringify(data?.errors||{})}`);
+    return valid;
   } catch(e) { logSourceError('API-Football','LIVE',e); return []; }
 }
 function formatApiSportsMatch(raw) {
@@ -7491,16 +7492,57 @@ async function auditNoStatsFt() {
       }catch(e){console.warn('[NO-STATS ALERT FT]',row.fixtureId,e.message);}
     }
     if(alertChanged)await persistNoStatsAlertAudit();
+    // Reconcile observation fixtures independently of the legacy noStatsSamples queue.
+    // This covers restored PostgreSQL observations that have no local sample after deploy.
     let obsChanged=false;
+    const pendingObs=new Map();
     for(const row of noStatsObservations){
-      if(row.outcome!==null||!row.fixtureId)continue;
-      const ft=noStatsSettledByFixture.get(String(row.fixtureId));
-      if(!ft||!ft.ftScore)continue;
-      bigggShadow.settle(row.fixtureId,ft.ftScore,'FT');
-      const final=String(ft.ftScore).match(/^(\d+)-(\d+)$/),at=String(row.score).match(/^(\d+)-(\d+)$/);
-      if(!final||!at)continue;
-      row.outcome=Number(final[1])+Number(final[2])>Number(at[1])+Number(at[2])?1:0;
-      row.ftScore=ft.ftScore;row.evaluation=row.outcome===1?'WIN':'LOSS';row.settledAt=ft.settledAt;obsChanged=true;
+      if(row.outcome!==null||!row.fixtureId||Date.now()-Date.parse(row.observedAt)<20*60000)continue;
+      const id=String(row.fixtureId);
+      if(!pendingObs.has(id))pendingObs.set(id,row);
+    }
+    for(const [id,representative] of [...pendingObs].slice(0,12)){
+      try{
+        let finalScore=null,status='';
+        const response=await apiSportsGet('/fixtures',{id});
+        const f=response?.response?.[0];
+        if(String(f?.fixture?.id)===id){
+          status=String(f?.fixture?.status?.short||'').toUpperCase();
+          if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
+            finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
+        }
+        if(!finalScore && !['CANC','ABD','PST','SUSP'].includes(status)){
+          finalScore=await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt});
+          if(finalScore)status='FT';
+        }
+        if(!finalScore&&!['CANC','ABD','PST','SUSP'].includes(status))continue;
+        if(finalScore && (!Number.isInteger(finalScore.h)||!Number.isInteger(finalScore.a)||finalScore.h<0||finalScore.a<0))continue;
+        const score=finalScore?`${finalScore.h}-${finalScore.a}`:null;
+        bigggShadow.settle(id,score,status);
+        for(const row of noStatsObservations){
+          if(String(row.fixtureId)!==id||row.outcome!==null)continue;
+          if(!finalScore){row.outcome='VOID';row.evaluation='VOID';}
+          else{
+            const at=String(row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+            if(!at||finalScore.h+finalScore.a<Number(at[1])+Number(at[2]))continue;
+            row.outcome=finalScore.h+finalScore.a>Number(at[1])+Number(at[2])?1:0;
+            row.evaluation=row.outcome?'WIN':'LOSS';row.ftScore=score;
+          }
+          row.settledAt=new Date().toISOString();obsChanged=true;
+        }
+      }catch(e){console.warn('[NO-STATS OBS FT]',id,e.message);}
+    }
+    // BIGGG has its own pending queue, including legacy 60–64 minute records.
+    for(const row of bigggShadow.pendingFixtures(12)){
+      if(pendingObs.has(String(row.fixtureId)))continue;
+      try{
+        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const f=response?.response?.[0];
+        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
+        const status=String(f?.fixture?.status?.short||'').toUpperCase();
+        const score=f?.goals?.home!=null&&f?.goals?.away!=null?`${f.goals.home}-${f.goals.away}`:null;
+        bigggShadow.settle(row.fixtureId,score,status);
+      }catch(e){console.warn('[BIGGG FT]',row.fixtureId,e.message);}
     }
     if(obsChanged)persistNoStatsObservations(noStatsObservations.filter(x=>x.outcome!==null&&x.settledAt));
     // Chronological fixture-level calibration: one first valid 65-88 snapshot per match.
@@ -7956,6 +7998,7 @@ async function scanLiveMatches() {
   }
 
 
+  try { await Promise.all([scanObserver.init(),bigggShadow.init()]); } catch(e) { console.error('[SHADOW STORAGE INIT] history persistence unavailable; LIVE scan continues:',e.message); }
   scanRunning = true;
   const scanHttpStart = {networkCalls:httpMetrics.networkCalls, cacheHits:httpMetrics.cacheHits, fallbackCalls:httpMetrics.fallbackCalls, failedCalls:httpMetrics.failedCalls};
 
@@ -8414,6 +8457,7 @@ app.get(
 
 app.locals.scanControl=scanControl;
 scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
+Promise.all([scanObserver.init(),bigggShadow.init()]).catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
 app.locals.noStatsAlertView=noStatsAlertView;
 app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;

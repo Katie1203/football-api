@@ -5,7 +5,32 @@ const STORE=process.env.PROMAX_SCAN_HISTORY_STORE||path.join(__dirname,'scan_his
 const MAX=Number(process.env.PROMAX_SCAN_HISTORY_LIMIT)||20000;
 let rows=[],last={at:null,totalLive:0,uniqueLive:0,eligible:0,analyzed:0,failed:0},liveNow=[];
 try{const v=JSON.parse(fs.readFileSync(STORE,'utf8'));rows=Array.isArray(v.rows)?v.rows:[];last=v.last||last;}catch{}
-function persist(){try{fs.mkdirSync(path.dirname(STORE),{recursive:true});fs.writeFileSync(STORE+'.tmp',JSON.stringify({rows,last}));fs.renameSync(STORE+'.tmp',STORE);}catch(e){console.warn('[SCAN OBSERVER] save:',e.message);}}
+let dbReady=false, dbInitPromise=null, dbWriteQueue=Promise.resolve();
+async function init(){
+ if(dbReady)return;
+ if(dbInitPromise)return dbInitPromise;
+ dbInitPromise=(async()=>{
+  const audit=require('./audit');
+  const remote=await audit.loadShadowState('promax_scan_history_state');
+  if(remote){
+   const local=new Map(rows.filter(x=>x?.key).map(x=>[x.key,x]));
+   for(const row of (remote.rows||[]))if(row?.key)local.set(row.key,row);
+   rows=[...local.values()].slice(-MAX);
+   if(remote.last)last=remote.last;
+  }
+  dbReady=true;
+  if(!remote)await audit.saveShadowState('promax_scan_history_state',{rows,last});
+  else if(rows.length>(remote.rows||[]).length)queueDatabaseWrite();
+ })().catch(e=>{dbInitPromise=null;throw e;});
+ return dbInitPromise;
+}
+function queueDatabaseWrite(){
+ if(!dbReady)return;
+ const snapshot={rows:rows.map(x=>({...x})),last:{...last}};
+ dbWriteQueue=dbWriteQueue.then(()=>require('./audit').saveShadowState('promax_scan_history_state',snapshot))
+  .catch(e=>console.error('[promax_scan_history_state PERSIST]',e.message));
+}
+function persist(){try{fs.mkdirSync(path.dirname(STORE),{recursive:true});fs.writeFileSync(STORE+'.tmp',JSON.stringify({rows,last}));fs.renameSync(STORE+'.tmp',STORE);}catch(e){console.warn('[SCAN OBSERVER] save:',e.message);} queueDatabaseWrite();}
 function numeric(v){if(v===null||v===undefined||v==='')return null;const n=Number(v);return Number.isFinite(n)?n:null;}
 function fixtureKey(m){const api=m.sourceIds?.apisports||(m.source==='apisports'?m.id:null);if(api)return 'api:'+api;return [m.league,m.homeName,m.awayName,m.kickoff||''].map(x=>String(x||'').toLowerCase().trim()).join('|');}
 // Normalize existing stores written by earlier versions: keep the earliest snapshot,
@@ -106,4 +131,4 @@ async function reconcile(apiGet){if(reconciling)return;reconciling=true;try{
  }
  if(changed)persist();
  }finally{reconciling=false;}}
-module.exports={recordScan,view,reconcile,trainingSummary,liveView,attachNoStats};
+module.exports={init,recordScan,view,reconcile,trainingSummary,liveView,attachNoStats};
