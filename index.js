@@ -7150,6 +7150,11 @@ async function v4HistoricalGoalFeature(match, minute) {
 const NO_STATS_ALERT_MINUTE_MIN = 65;
 const NO_STATS_ALERT_MINUTE_MAX = 88;
 const NO_STATS_ALERT_EXPECTED_GOALS = 0.90;
+// AI NO-STATS EARLY GOAL (separate from BIGGG shadow test).
+const EARLY_GOAL_BASE_MIN = 60;
+const EARLY_GOAL_BASE_MAX = 64;
+const EARLY_GOAL_GOAL_MAX = 70;
+
 const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
 const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
 const noStatsSendingKeys = new Set();
@@ -7234,17 +7239,44 @@ function noStatsAlertKey(record) {
   const day = String(record.updatedAt || '').slice(0, 10);
   return `${day}:${createMatchKey(record.home, record.away)}`;
 }
+function earlyGoalCandidate(record) {
+  const minute=Number(record.minute);
+  if(!Number.isFinite(minute)||minute<65||minute>EARLY_GOAL_GOAL_MAX||!record.fixtureId)return null;
+  const goalsNow=String(record.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+  if(!goalsNow)return null;
+  const totalNow=Number(goalsNow[1])+Number(goalsNow[2]);
+  const baselines=noStatsObservations.filter(x=>String(x.fixtureId||'')===String(record.fixtureId)&&
+    Number(x.minute)>=EARLY_GOAL_BASE_MIN&&Number(x.minute)<=EARLY_GOAL_BASE_MAX&&
+    Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS&&x.observedAt);
+  for(const baseline of baselines.sort((a,b)=>Number(b.minute)-Number(a.minute))){
+    const old=String(baseline.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
+    if(!old||totalNow<=Number(old[1])+Number(old[2]))continue;
+    // Goal time must be verified from source events, not guessed from score alone.
+    const goals=(record.earlyGoalEvents||[]).filter(e=>e.kind==='goal'&&
+      Number(e.minute)>Number(baseline.minute)&&Number(e.minute)<=EARLY_GOAL_GOAL_MAX&&
+      Number(e.minute)<=minute);
+    if(!goals.length)continue;
+    const goalMinute=Math.max(...goals.map(e=>Number(e.minute)));
+    // Only the confirmed new goal is required; Odds are optional display-only data.
+    return {baselineMinute:Number(baseline.minute),baselineLambda:Number(baseline.expectedRemainingGoals),
+      baselineScore:baseline.score,goalMinute,
+      overOdds:record.bigggOddsValid===true&&Number.isFinite(Number(record.bigggOverOdds))?Number(record.bigggOverOdds):null,
+      overLine:record.bigggOddsValid===true?record.bigggOverLine:null};
+  }
+  return null;
+}
 async function maybeSendNoStatsAlert(record) {
   if(scanControl.isPaused())return false;
   // Storage errors must never block a qualifying Telegram alert.
   try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
+  const earlyGoal=Number.isFinite(lambda)&&lambda<NO_STATS_ALERT_EXPECTED_GOALS?earlyGoalCandidate(record):null;
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
-      lambda < NO_STATS_ALERT_EXPECTED_GOALS) return false;
+      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
   // Operator-only Telegram gate: original AI NO-STATS probability and lambda remain untouched.
-  if (lambda < 1.5 && !scanControl.isLowLambdaAlertsEnabled()) return false;
+  if (!earlyGoal && lambda < 1.5 && !scanControl.isLowLambdaAlertsEnabled()) return false;
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
   const key = noStatsAlertKey(record);
   if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
@@ -7253,13 +7285,12 @@ async function maybeSendNoStatsAlert(record) {
   noStatsSendingKeys.add(key);
   try {
     const message = [
-      '💰 THẦN TÀI ĐẾN 🧧🧧🧧',
+      `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${earlyGoal ? 'BIGGGG BET' : (lambda < 1.5 ? 'BET NHẸ TAY' : 'BET BANH NÓC')}`,
       `🏆 ${record.league || 'Không rõ giải'}`,
       `⚽️ ${record.home} ${record.score} ${record.away} ⏱️ Phút ${minute}`,
       `⚽️ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
       `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)}`,
-      `💰 ${lambda < 1.5 ? 'BET NHẸ TAY' : 'BET BANH NÓC'}`,
-      `🎯 Xác suất AI THỬ NGHIỆM: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`
+      `🎯 Xác suất: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`
     ].join('\n');
     const response = await axios.post(
       `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
@@ -7275,12 +7306,13 @@ async function maybeSendNoStatsAlert(record) {
       const [h,a]=String(record.score||'').split(/\s*[-–:]\s*/).map(Number);
       noStatsAlertAudit.push({key,source:'AI NO-STATS',fixtureId:record.fixtureId||null,
         league:record.league,home:record.home,away:record.away,minute,
+        alertType:earlyGoal?'BIGGG BET':'AI NO-STATS',earlyGoal:earlyGoal||null,
         score:record.score,observedGoals:Number.isFinite(h)&&Number.isFinite(a)?h+a:null,
         expectedRemainingGoals:lambda,probability:record.probability,
         sentAt:new Date().toISOString(),evaluation:'PENDING_FT',ftScore:null,
         liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT',
         alertNumber:1,telegramMessageId:response.data.result?.message_id||null,
-        overLine:record.oddsLive?.found===true&&Number.isFinite(Number(record.oddsLive?.line))?Number(record.oddsLive.line):null,
+        overLine:earlyGoal?earlyGoal.overLine:(record.oddsLive?.found===true&&Number.isFinite(Number(record.oddsLive?.line))?Number(record.oddsLive.line):null),
         overResult:'NO_LINE'});
       await persistNoStatsAlertAudit();
     }
@@ -7356,7 +7388,9 @@ async function observeNoStats(match, minute, liveStats=null) {
   const awayHistory = await noStatsHistory(awayId);
   const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
     eventSource: eventResult.source, homeHistory, awayHistory});
-  // Odds are display-only for NO-STATS in this narrowly scoped resolver fix.
+  // Early Goal uses verified goal events; ordinary AI NO-STATS never uses these to change lambda.
+  record.earlyGoalEvents=eventResult.events;
+  // Odds are display-only for the original NO-STATS alert; required only for EARLY GOAL.
   const odds=await getOddsForMatch(match);
   const totalGoals=Number(match.homeScore)+Number(match.awayScore);
   const assessment=odds.payload && Number.isFinite(totalGoals)
@@ -7399,7 +7433,8 @@ async function observeNoStats(match, minute, liveStats=null) {
       persistNoStatsShadow();
     }
   }
-  if(minute>=65&&minute<=88)recordNoStatsObservation(record);
+  if((minute>=65&&minute<=88)||(minute>=EARLY_GOAL_BASE_MIN&&minute<=EARLY_GOAL_BASE_MAX&&
+      Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS))recordNoStatsObservation(record);
   // Reuse the EXISTING odds response; no extra API calls or production score changes.
   // Match Goals O/U (current goals + 0.5) is the same event as "one more goal".
   // Never confuse an odds PRICE with the Over goal LINE or market-implied probability.
