@@ -18,7 +18,8 @@ th{background:#12241c;color:#f3d58e;position:sticky;top:0;z-index:2}
 </style></head><body><main><header><div class="brand">✦ THẦN TÀI MAY MẮN</div><nav class="nav"><a href="/">Dashboard</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/biggg-test.html" aria-current="page">ĐỐI CHIẾU AI</a><a href="/scan-history">Lịch sử quét</a></nav></header><section class="panel" id="bigggComparison" style="margin-top:12px;border-color:#b99752">
 <h3 style="color:#e9c777">ĐỐI CHIẾU AI · BIGGG RULE TEST</h3>
 <p class="hint">Chạy độc lập, không gửi Telegram. BIGGG thử nghiệm: quét 46–88, chốt một tín hiệu tại lần quét đầu từ phút 65. Odds Over >1.50 kết hợp λ ≥0.90, xác suất ≥65% và SOT LIVE để phân cấp; chưa hiệu chuẩn, không gửi Telegram.</p>
-<div class="stats" style="display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))"><div class="stat"><small>Mẫu quan sát</small><strong id="bigggTotal">—</strong></div><div class="stat"><small>WIN</small><strong id="bigggWins">—</strong></div><div class="stat"><small>LOSS</small><strong id="bigggLosses">—</strong></div><div class="stat"><small>WIN rate FT</small><strong id="bigggRate">—</strong></div></div>
+<div class="stats" style="display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))"><div class="stat"><small>TỔNG TRẬN ĐANG LIVE</small><strong id="bigggLiveTotal">—</strong></div><div class="stat"><small>LIVE 46–88</small><strong id="bigggLiveEligible">—</strong></div><div class="stat"><small>ĐÃ PHÂN TÍCH</small><strong id="bigggTotal">—</strong></div><div class="stat"><small>WIN</small><strong id="bigggWins">—</strong></div><div class="stat"><small>LOSS</small><strong id="bigggLosses">—</strong></div><div class="stat"><small>WIN rate FT</small><strong id="bigggRate">—</strong></div></div>
+<div id="bigggTierTabs" class="audit-tools" role="tablist" aria-label="Nhóm tín hiệu BIGGG" style="display:flex;flex-wrap:wrap;gap:8px;margin:14px 0"><button type="button" data-tier="all" class="selected" aria-selected="true">TẤT CẢ</button><button type="button" data-tier="RUNG">RUNG</button><button type="button" data-tier="BIGGG BET">BIGGG BET</button><button type="button" data-tier="BIGGGGG BET">BIGGGGG BET</button><button type="button" data-tier="KHÔNG ĐẠT">KHÔNG ĐẠT ĐIỀU KIỆN</button></div>
 <div class="audit-tools" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px">
 <button type="button" onclick="bigggLoad()">↻ Làm mới đối chiếu</button>
 <label for="bigggFilter">Trạng thái</label><select id="bigggFilter" onchange="bigggPage=1;bigggLoad()"><option value="all">Tất cả</option><option value="pending">Chờ FT</option><option value="settled">Đã chốt</option><option value="WIN">WIN</option><option value="LOSS">LOSS</option><option value="KHÔNG ĐẠT">KHÔNG ĐẠT</option><option value="RUNG">RUNG</option><option value="BIGGG BET">BIGGG BET</option><option value="BIGGGGG BET">BIGGGGG BET</option><option value="THIẾU DỮ LIỆU">THIẾU DỮ LIỆU</option><option value="CHỜ KIỂM ĐỊNH">CHỜ KIỂM ĐỊNH</option></select>
@@ -29,10 +30,16 @@ th{background:#12241c;color:#f3d58e;position:sticky;top:0;z-index:2}
 <div id="bigggPagination" class="audit-tools" style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px" aria-label="Phân trang lịch sử BIGGG"></div>
 <p class="hint">Lịch sử sắp xếp mới nhất trước; WIN chỉ tính bàn xuất hiện sau thời điểm ghi nhận. Thiếu Odds không được coi là KHÔNG ĐẠT.</p></section><script>function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}</script><script>
 let bigggPage=1;
+let bigggTier='all';
+document.querySelectorAll('#bigggTierTabs [data-tier]').forEach(btn=>btn.addEventListener('click',()=>{
+ bigggTier=btn.dataset.tier;bigggPage=1;
+ document.querySelectorAll('#bigggTierTabs [data-tier]').forEach(b=>{const active=b===btn;b.classList.toggle('selected',active);b.setAttribute('aria-selected',String(active));});
+ bigggLoad();
+}));
 async function bigggLoad(){
  const status=document.getElementById('bigggStatus');
  const size=Number(document.getElementById('bigggPageSize').value)||20;
- const filter=document.getElementById('bigggFilter').value;
+ const filter=bigggTier!=='all'?bigggTier:document.getElementById('bigggFilter').value;
  const offset=(bigggPage-1)*size;
  try{
   const q=new URLSearchParams({limit:String(size),offset:String(offset),filter});
@@ -40,6 +47,13 @@ async function bigggLoad(){
   if(!r.ok)throw Error('HTTP '+r.status);
   const d=await r.json(),s=d.summary||{};
   for(const [id,value] of [['bigggTotal',s.total],['bigggWins',s.wins],['bigggLosses',s.losses],['bigggRate',s.winRate==null?'—':s.winRate+'%']])document.getElementById(id).textContent=value??'—';
+  // Reuse the same most recent discovery counters as the LIVE scan history page.
+  try {const liveResponse=await fetch('/api/scan-history?limit=1',{cache:'no-store'});
+   if(liveResponse.ok){const liveData=await liveResponse.json();if(liveData.ok){
+    document.getElementById('bigggLiveTotal').textContent=liveData.last?.totalLive??'—';
+    document.getElementById('bigggLiveEligible').textContent=liveData.last?.eligible??'—';
+   }}
+  } catch(_) { /* Leave unavailable counters as dashes; never invent zeros. */ }
   const total=Number(d.filteredTotal)||0,pages=Math.max(1,Math.ceil(total/size));
   if(bigggPage>pages){bigggPage=pages;return bigggLoad();}
   status.textContent='Đang chờ FT: '+(s.pending||0)+' · Hiển thị '+total+' bản ghi · Chưa hiệu chuẩn cấp BIGGG';

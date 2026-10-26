@@ -108,11 +108,11 @@ function view({page=1,limit=60,group='',status='',q=''}={}){
  if(group==='goal_lte65')filtered=filtered.filter(x=>x.goalGroup==='LTE65');
  if(group==='no_stats_ge088')filtered=filtered.filter(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals>=0.88);
  if(group==='no_stats_lt088')filtered=filtered.filter(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals<0.88);
- if(group==='not_qualified')filtered=filtered.filter(x=>x.rule===null||x.goal===null||x.rule<=65||x.goal<=65);
+ if(group==='not_qualified')filtered=filtered.filter(x=>x.noStatsExpectedGoals===null||x.noStatsExpectedGoals===undefined||x.noStatsExpectedGoals<0.88);
  if(status)filtered=filtered.filter(x=>x.outcome===status);
  if(q)filtered=filtered.filter(x=>[x.home,x.away,x.league].join(' ').toLowerCase().includes(String(q).toLowerCase()));
  const recent=rows.filter(x=>x.lastAt===last.at),count=(fn)=>recent.filter(fn).length;
- return {ok:true,last,training:trainingSummary(),summary:{scannedTotal:rows.length,uniqueFixtures:new Set(rows.map(x=>x.key)).size,liveTracked:recent.length,ruleGT65:count(x=>x.ruleGroup==='GT65'),ruleLTE65:count(x=>x.ruleGroup==='LTE65'),goalGT65:count(x=>x.goalGroup==='GT65'),goalLTE65:count(x=>x.goalGroup==='LTE65'),noStatsAvailable:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined),noStatsQualified:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals>=0.88),noData:count(x=>x.reason==='NO_ANALYSIS'||x.rule===null||x.goal===null),settled:rows.filter(x=>x.outcome!=='PENDING_FT').length},total:filtered.length,page,limit,rows:filtered.slice().reverse().slice((page-1)*limit,page*limit)};
+ return {ok:true,last,training:trainingSummary(),summary:{scannedTotal:rows.length,uniqueFixtures:new Set(rows.map(x=>x.key)).size,liveTracked:recent.length,ruleGT65:count(x=>x.ruleGroup==='GT65'),ruleLTE65:count(x=>x.ruleGroup==='LTE65'),goalGT65:count(x=>x.goalGroup==='GT65'),goalLTE65:count(x=>x.goalGroup==='LTE65'),noStatsAvailable:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined),noStatsQualified:count(x=>x.noStatsExpectedGoals!==null&&x.noStatsExpectedGoals!==undefined&&x.noStatsExpectedGoals>=0.88),noData:count(x=>x.noStatsExpectedGoals===null||x.noStatsExpectedGoals===undefined),settled:rows.filter(x=>x.outcome!=='PENDING_FT').length},total:filtered.length,page,limit,rows:filtered.slice().reverse().slice((page-1)*limit,page*limit)};
 }
 let reconciling=false;
 async function reconcile(apiGet){if(reconciling)return;reconciling=true;try{
