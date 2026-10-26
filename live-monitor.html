@@ -194,7 +194,7 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  rows=rows.map(x=>{const nameCandidate=byName.get(key(x.home,x.away));const n=(x.fixtureId&&byId.get(String(x.fixtureId)))||((!x.fixtureId||!nameCandidate?.fixtureId)?nameCandidate:null);if(n){seen.add(n);return {...x,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent};}return x;});
  for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,analyzed:false,inWindow:true,at:n.at});}
  const s=d.summary||{};
- const stats=[['LIVE hiệp 2 (46–88′)',s.total??rows.length],['Đã phân tích',rows.filter(hasExperimental).length],['AI THỬ NGHIỆM',rows.filter(hasExperimental).length]];
+ const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (46–88′)',s.total??rows.length],['Đã phân tích',rows.filter(hasExperimental).length],['AI THỬ NGHIỆM',rows.filter(hasExperimental).length]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
  $('time').textContent='Vòng quét: '+(d.last?.at?new Date(d.last.at).toLocaleString('vi-VN'):'Chưa có dữ liệu');draw();
  }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message;}}
