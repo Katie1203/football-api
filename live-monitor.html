@@ -176,23 +176,59 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let rows=[],group='all';
-const tabs=[['all','Tất cả'],['experimental','Đã phân tích'],['none','Chưa có kết quả']];
+const tabs=[['all','Tất cả'],['experimental','Đã phân tích'],['none','Chưa có kết quả'],['big','BIG BET'],['rung','RUNG'],['odds','KHÔNG ĐẠT ODD']];
 const hasNumber=x=>x!==null&&x!==undefined&&x!==''&&Number.isFinite(Number(x));
 const hasExperimental=x=>hasNumber(x.noStatsProbability);
 function bucket(x){return hasExperimental(x)?'experimental':'none';}
-function matchesGroup(x,id){return id==='all'||(id==='experimental'&&hasExperimental(x))||(id==='none'&&!hasExperimental(x));}
+function matchesGroup(x,id){
+ if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
+ if(id==='rung')return /RUNG/i.test(String(x.sentAlertLabel||''));
+ if(id==='odds')return x.oddsWaiting===true;
+ return id==='all'||(id==='experimental'&&hasExperimental(x))||(id==='none'&&!hasExperimental(x));
+}
 function pct(x){return hasNumber(x)?Number(x).toFixed(1)+'%':'Chưa có kết quả';}
 function lambdaText(x){return hasNumber(x)?'λ = '+Number(x).toFixed(2):'Chưa có dữ liệu';}
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div><div class="line"><span class="pill">'+(x.noStatsAlertSent?'BET · Đã gửi Telegram':'Đang theo dõi')+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div><div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.oddsWaiting?'KHÔNG ĐẠT ODD':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi')))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div>'+(x.oddsWaiting?'<div class="line"><span>Over LIVE</span><span class="value">'+esc(x.overOdds??'Chưa có kèo')+'</span></div><div class="line"><span>Trạng thái Odds</span><span>'+esc(x.oddsStatus||'Đang chờ')+'</span></div>':'')+'</article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
 async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows:[];const noStats=Array.isArray(d.noStats)?d.noStats:[];
+ // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
+ // Do not infer BIG BET/RUNG from lambda or from a changing live score.
+ const [alertResponse,waitingResponse]=await Promise.allSettled([
+  fetch('/api/no-stats-alerts',{cache:'no-store'}),
+  fetch('/api/no-stats-odds-waiting',{cache:'no-store'})
+ ]);
+ async function recordsFrom(result){
+  if(result.status!=='fulfilled'||!result.value.ok)return [];
+  try{const json=await result.value.json();return Array.isArray(json.records)?json.records:[];}catch(_){return [];}
+ }
+ const sentAlerts=await recordsFrom(alertResponse),oddsWaiting=await recordsFrom(waitingResponse);
+
  const key=(h,a)=>[h,a].map(v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')).join('|');
  const byId=new Map(noStats.filter(x=>x.fixtureId).map(x=>[String(x.fixtureId),x]));const byName=new Map(noStats.map(x=>[key(x.home,x.away),x]));const seen=new Set();
  rows=rows.map(x=>{const nameCandidate=byName.get(key(x.home,x.away));const n=(x.fixtureId&&byId.get(String(x.fixtureId)))||((!x.fixtureId||!nameCandidate?.fixtureId)?nameCandidate:null);if(n){seen.add(n);return {...x,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent};}return x;});
  for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,analyzed:false,inWindow:true,at:n.at});}
+ // Match by provider fixture ID when possible; fall back to normalized team names.
+ const sentById=new Map(sentAlerts.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
+ const sentByName=new Map(sentAlerts.map(x=>[key(x.home,x.away),x]));
+ const waitingById=new Map(oddsWaiting.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
+ const waitingByName=new Map(oddsWaiting.map(x=>[key(x.home,x.away),x]));
+ rows=rows.map(x=>{
+  const sent=(x.fixtureId!=null?sentById.get(String(x.fixtureId)):null)||sentByName.get(key(x.home,x.away));
+  const wait=(x.fixtureId!=null?waitingById.get(String(x.fixtureId)):null)||waitingByName.get(key(x.home,x.away));
+  return {...x,sentAlertLabel:sent?String(sent.alertLabel||sent.signalLabel||sent.alertType||''):'',
+   oddsWaiting:!!wait,overOdds:wait?.overOdds??null,oddsStatus:wait?.oddsStatus??null};
+ });
+ // Odds-waiting fixtures may not appear in the regular LIVE snapshot yet.
+ for(const w of oddsWaiting){
+  if(rows.some(x=>(x.fixtureId!=null&&w.fixtureId!=null&&String(x.fixtureId)===String(w.fixtureId))||key(x.home,x.away)===key(w.home,w.away)))continue;
+  rows.push({fixtureId:w.fixtureId,home:w.home,away:w.away,league:w.league,minute:w.minute,
+   scoreH:null,scoreA:null,noStatsProbability:w.probability,expectedRemainingGoals:w.expectedRemainingGoals,
+   oddsWaiting:true,overOdds:w.overOdds??null,oddsStatus:w.oddsStatus||'UNAVAILABLE',at:w.updatedAt});
+ }
+
  const s=d.summary||{};
  const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (46–88′)',s.total??rows.length],['Đã phân tích',rows.filter(hasExperimental).length],['AI THỬ NGHIỆM',rows.filter(hasExperimental).length]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');

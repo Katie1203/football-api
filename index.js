@@ -5895,6 +5895,7 @@ const oddsAttemptAt = new Map();
 const oddsRequestTimes = [];
 const oddsPending = new Map();
 const oddsQueued = new Map();
+const oddsQueueWaiters = new Map(); // resolve when the prioritized API call completes
 let oddsWorkerActive = false;
 let oddsBackoffUntil = 0;
 // Resolve only an API-Sports-native fixture ID. Never reuse another provider's ID.
@@ -5926,15 +5927,15 @@ function planOddsScan(matches) {
   console.log(`[ODDS QUEUE] fixtures=${matches.length} queued=${oddsQueued.size} quota=${ODDS_REQUESTS_PER_MINUTE}/min`);
   pumpOddsQueue();
 }
-function enqueueOdds(id,priority=false) {
+function enqueueOdds(id,priority=false,forceFresh=false) {
   const now=Date.now(),cached=aiGoalOddsCache.get(id);
-  if(cached && now-cached.at<ODDS_CACHE_MS)return;
+  if(!forceFresh && cached && now-cached.at<ODDS_CACHE_MS)return;
   if(oddsPending.has(id))return;
   const last=oddsAttemptAt.get(id)||0;
   if(now-last<ODDS_RETRY_MS)return;
   const existing=oddsQueued.get(id);
-  if(existing) {if(priority)existing.priority=true;return;}
-  oddsQueued.set(id,{priority,queuedAt:now});
+  if(existing) {if(priority)existing.priority=true;if(forceFresh)existing.forceFresh=true;return;}
+  oddsQueued.set(id,{priority,forceFresh,queuedAt:now});
 }
 function pumpOddsQueue() {
   if(oddsWorkerActive || !APISPORTS_KEY)return;
@@ -5952,7 +5953,12 @@ function pumpOddsQueue() {
         const entry=[...oddsQueued.entries()].sort((a,b)=>Number(b[1].priority)-Number(a[1].priority)||a[1].queuedAt-b[1].queuedAt)[0];
         if(!entry)break;
         const [id]=entry;oddsQueued.delete(id);
-        if(aiGoalOddsCache.has(id)&&Date.now()-aiGoalOddsCache.get(id).at<ODDS_CACHE_MS)continue;
+        if(!entry[1].forceFresh && aiGoalOddsCache.has(id)&&Date.now()-aiGoalOddsCache.get(id).at<ODDS_CACHE_MS){
+          const cached=aiGoalOddsCache.get(id);
+          const waiters=oddsQueueWaiters.get(id)||[];oddsQueueWaiters.delete(id);
+          for(const resolve of waiters)resolve({status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload});
+          continue;
+        }
         oddsRequestTimes.push(Date.now());oddsAttemptAt.set(id,Date.now());
         const pending=(async()=>{
           try {
@@ -5966,23 +5972,45 @@ function pumpOddsQueue() {
           }
         })();
         oddsPending.set(id,pending);
-        try {await pending;} finally {oddsPending.delete(id);}
+        try {
+          const result=await pending;
+          const waiters=oddsQueueWaiters.get(id)||[];oddsQueueWaiters.delete(id);
+          for(const resolve of waiters)resolve(result);
+        } finally {oddsPending.delete(id);}
       }
     } finally {oddsWorkerActive=false;}
   })().catch(e=>console.warn('[ODDS QUEUE WORKER]',e.message));
 }
-async function getOddsForMatch(match) {
+async function getOddsForMatch(match, {priorityFresh=false}={}) {
   if(!APISPORTS_KEY)return {status:'NO_API_KEY',fixtureId:null,payload:null};
   const resolved=resolveOddsFixture(match);
   if(!resolved.fixture)return {status:resolved.status,fixtureId:null,payload:null};
   const id=String(resolved.fixture.id),now=Date.now();
   const cached=aiGoalOddsCache.get(id);
-  if(cached && now-cached.at<ODDS_CACHE_MS)return {status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload};
-  // Include newly qualifying fixtures in the queue immediately, even between scans.
-  enqueueOdds(id,oddsHighPriority(match));
-  pumpOddsQueue();
+  // Priority matches need a fresh quote every 30-second AI cycle; never pass
+  // a 120-second cached price to the Telegram gate as a fresh quote.
+  if(!priorityFresh && cached && now-cached.at<ODDS_CACHE_MS)
+    return {status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload};
   if(oddsPending.has(id))return oddsPending.get(id);
-  return {status:'WAITING_ODDS_QUEUE',fixtureId:id,payload:null};
+  enqueueOdds(id,priorityFresh || oddsHighPriority(match),priorityFresh);
+  pumpOddsQueue();
+  if(priorityFresh && !oddsQueued.has(id) && !oddsPending.has(id))
+    return {status:'WAITING_ODDS_QUEUE',fixtureId:id,payload:null};
+  if(!priorityFresh)return {status:'WAITING_ODDS_QUEUE',fixtureId:id,payload:null};
+  // If quota/backoff prevents fetching in this tick, do not reuse stale Odds.
+  // Keep the fixture queued for the next tick without blocking the AI loop.
+  let waiter;
+  const waitForResult=new Promise(resolve=>{
+    waiter=resolve;
+    const list=oddsQueueWaiters.get(id)||[];list.push(resolve);oddsQueueWaiters.set(id,list);
+  });
+  let timeoutId;
+  const timeout=new Promise(resolve=>{timeoutId=setTimeout(()=>resolve({status:'WAITING_ODDS_QUEUE',fixtureId:id,payload:null}),20000);});
+  const result=await Promise.race([waitForResult,timeout]);
+  clearTimeout(timeoutId);
+  const remaining=(oddsQueueWaiters.get(id)||[]).filter(resolve=>resolve!==waiter);
+  if(remaining.length)oddsQueueWaiters.set(id,remaining);else oddsQueueWaiters.delete(id);
+  return result;
 }
 function classifyOdds(assessment,payload) {
   if(!Array.isArray(payload?.response)||!payload.response.length) return 'NO_ODDS';
@@ -6393,8 +6421,13 @@ async function observeNoStats(match, minute, liveStats=null) {
     eventSource: eventResult.source, homeHistory, awayHistory});
   // Early Goal uses verified goal events; ordinary AI NO-STATS never uses these to change lambda.
   record.earlyGoalEvents=eventResult.events;
-  // Odds are display-only for the original NO-STATS alert; required only for EARLY GOAL.
-  const odds=await getOddsForMatch(match);
+  // Sync LIVE Odds with each 30-second AI refresh for qualifying fixtures
+  // from minute 65. All other fixtures keep their original Odds cache policy.
+  const priorityOdds=Number(minute)>=65 && Number(minute)<=88 &&
+    (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS ||
+     noStatsPriorityMatches.has(noStatsPriorityKey(match))) &&
+    !noStatsSentKeys.has(noStatsAlertKey(record));
+  const odds=await getOddsForMatch(match,{priorityFresh:priorityOdds});
   const totalGoals=Number(match.homeScore)+Number(match.awayScore);
   const assessment=odds.payload && Number.isFinite(totalGoals)
     ? aiGoalOddsShadow.evaluate(odds.payload,totalGoals,null):null;
@@ -6454,7 +6487,7 @@ async function observeNoStats(match, minute, liveStats=null) {
   trackNoStatsPriority(match, record);
   if(Number(record.minute)>=65 && (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS || noStatsPriorityMatches.has(noStatsPriorityKey(match)))) {
     const oddsFixture=resolveOddsFixture(match).fixture;
-    if(oddsFixture){enqueueOdds(String(oddsFixture.id),true);pumpOddsQueue();}
+    if(oddsFixture && !priorityOdds){enqueueOdds(String(oddsFixture.id),true);pumpOddsQueue();}
   }
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
