@@ -995,6 +995,10 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 #noStatsAlertRows .match-card,#noStatsAlertRows article{background:#2c3c44!important;background-image:none!important}
 
 
+</style><style id="tt-telegram-signal-pulse">
+@keyframes ttSignalPulse{0%,100%{opacity:1;filter:brightness(1)}50%{opacity:.64;filter:brightness(1.45)}}
+.tt-alert-pulse{animation:ttSignalPulse 1.25s ease-in-out infinite!important;font-weight:800!important}
+@media(prefers-reduced-motion:reduce){.tt-alert-pulse{animation:none!important}}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1031,7 +1035,7 @@ function nsRenderHistory(){
    return '<article class="match-card" style="padding:12px">'+
     '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(latest)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
-    '<div class="match-status-inline"><span class="ai-status ai-bet">'+(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')+'</span> '+pill(status)+'</div>'+
+    '<div class="match-status-inline"><span class="ai-status ai-bet tt-alert-pulse">'+esc(x.alertLabel||(x.earlyGoal||x.alertType==='BIGGG BET'?'BIGGG BET':(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')))+'</span> '+pill(status)+'</div>'+
     '<div class="match-metrics" style="margin:10px 0">'+
      '<div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+pct+'</strong></div>'+
      ''+

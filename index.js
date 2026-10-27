@@ -6041,6 +6041,47 @@ const NO_STATS_ALERT_EXPECTED_GOALS = 0.90;
 const EARLY_GOAL_BASE_MIN = 60;
 const EARLY_GOAL_BASE_MAX = 64;
 const EARLY_GOAL_GOAL_MAX = 70;
+// Priority observation only: activate once after minute 60 when lambda > 0.90.
+// Never reset on a subsequent lambda decrease; expiry is 88' or FT.
+const NO_STATS_PRIORITY_INTERVAL_MS = 30 * 1000;
+const noStatsPriorityMatches = new Map();
+let noStatsPriorityRunning = false;
+function noStatsPriorityKey(match) {
+  return `${match.source}:${match.id}`;
+}
+function trackNoStatsPriority(match, record) {
+  const minute=Number(record.minute), lambda=Number(record.expectedRemainingGoals);
+  if (!Number.isFinite(minute) || minute < 60 || minute > 88) return;
+  const key=noStatsPriorityKey(match);
+  if (noStatsPriorityMatches.has(key)) {
+    noStatsPriorityMatches.get(key).match=match;
+  } else {
+    // Restore a previously recorded qualifying signal after a server restart,
+    // even if the current lambda has fallen below 0.90.
+    const prior=noStatsObservations.find(x=>Number(x.minute)>=60 && Number(x.minute)<65 &&
+      Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS &&
+      ((record.fixtureId && String(x.fixtureId||'')===String(record.fixtureId)) ||
+       (!record.fixtureId && x.key && x.key.startsWith(`${record.key}:`))));
+    if (!prior && !(Number.isFinite(lambda) && lambda > NO_STATS_ALERT_EXPECTED_GOALS)) return;
+    noStatsPriorityMatches.set(key, {match, activatedAt:prior?.observedAt||new Date().toISOString(),
+      baselineMinute:prior?.minute??minute, baselineLambda:prior?.expectedRemainingGoals??lambda,
+      baselineScore:prior?.score??record.score});
+    console.log(`[AI PRIORITY 30S] ACTIVATE ${record.home} vs ${record.away} | ${minute}' | baseline=${prior?.expectedRemainingGoals??lambda}`);
+  }
+}
+// Historical pre-goal signal is used for eligibility only, never as the current AI estimate.
+function noStatsUnscoredBaseline(record) {
+  const minute=Number(record.minute);
+  if (!Number.isFinite(minute) || minute<65 || minute>88) return null;
+  const candidates=noStatsObservations.filter(x=>
+    ((record.fixtureId && String(x.fixtureId||'')===String(record.fixtureId)) ||
+     (!record.fixtureId && x.key && x.key.startsWith(`${record.key}:`))) &&
+    Number(x.minute)>=60 && Number(x.minute)<65 &&
+    Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS &&
+    String(x.score)===String(record.score));
+  return candidates.sort((a,b)=>Number(a.minute)-Number(b.minute))[0]||null;
+}
+
 
 const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
 const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
@@ -6161,9 +6202,10 @@ async function maybeSendNoStatsAlert(record) {
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
   const earlyGoal=earlyGoalCandidate(record); // Independent of post-goal lambda.
+  const savedUnscoredSignal = !earlyGoal ? noStatsUnscoredBaseline(record) : null;
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
-      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
+      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal && !savedUnscoredSignal)) return false;
   // Odds gate affects SENDING only. Each scan still records fresh AI evidence,
   // including scores/goals while odds are below threshold; never reuse a stale
   // pre-goal probability as the current probability after a goal.
@@ -6212,7 +6254,7 @@ async function maybeSendNoStatsAlert(record) {
       const [h,a]=String(record.score||'').split(/\s*[-–:]\s*/).map(Number);
       noStatsAlertAudit.push({key,source:'AI NO-STATS',fixtureId:record.fixtureId||null,
         league:record.league,home:record.home,away:record.away,minute,
-        alertType:earlyGoal?'BIGGG BET':'AI NO-STATS',earlyGoal:earlyGoal||null,
+        alertType:earlyGoal?'BIGGG BET':'AI NO-STATS',alertLabel:earlyGoal?'BIGGG BET':(lambda<1.5?'BET NHẸ TAY':'BET BANH NÓC'),earlyGoal:earlyGoal||null,
         score:record.score,observedGoals:Number.isFinite(h)&&Number.isFinite(a)?h+a:null,
         expectedRemainingGoals:lambda,probability:record.probability,
         sentAt:new Date().toISOString(),evaluation:'PENDING_FT',ftScore:null,
@@ -6354,6 +6396,7 @@ async function observeNoStats(match, minute, liveStats=null) {
       record.bigggOddsMarket='Match Goals O/U';record.bigggOddsUpdatedAt=assessment?.oddsUpdate||null;record.bigggOddsValid=true;}
   }
   noStatsRecords.set(record.key, record);
+  trackNoStatsPriority(match, record);
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
   updateNoStatsAlertLiveScore(record);
@@ -6510,6 +6553,60 @@ async function analyzeOneMatch(match, allOdds) {
   const telegramSent=Boolean(record&&noStatsSentKeys.has(noStatsAlertKey(record)));
   console.log(`[AI THU NGHIEM] ${match.homeName} vs ${match.awayName} | ${minute}' | lambda=${record?.expectedRemainingGoals??'N/A'} | P>=1=${record?.probability??'N/A'}% | telegram=${telegramSent?'SENT':'NOT_SENT'}`);
   return {...match,minute,stats,telegramSent,aiNoStats:record?{lambda:record.expectedRemainingGoals,probability:record.probability}:null};
+}
+
+// Priority refresh does not change the ordinary 5-minute discovery schedule.
+// Query a single API-Sports fixture when possible, otherwise refresh FlashScore's
+// existing LIVE list once for all FlashScore priority matches in this tick.
+async function scanNoStatsPriority() {
+  if (scanControl.isPaused() || scanRunning || noStatsPriorityRunning || !noStatsPriorityMatches.size) return;
+  noStatsPriorityRunning=true;
+  try {
+    let flashMatches=null;
+    for (const [key, state] of [...noStatsPriorityMatches]) {
+      if (scanControl.isPaused() || scanRunning) break;
+      const original=state.match;
+      try {
+        let fresh=null;
+        const apiCandidate=[original,...(original.crossSourceMatches||[])].find(m=>m.source==='apisports');
+        if (apiCandidate && APISPORTS_KEY) {
+          const response=await apiSportsGet('/fixtures',{id:apiCandidate.id});
+          const raw=response?.response?.[0];
+          if (raw?.fixture?.id) fresh=formatApiSportsMatch(raw);
+        }
+        if (!fresh && original.source==='flashscore') {
+          if (!flashMatches) flashMatches=(await fetchLiveMatchesFromFlashScore()).map(x=>formatLiveMatch(x,'flashscore'));
+          fresh=flashMatches.find(m=>String(m.id)===String(original.id));
+        }
+        if (!fresh) {
+          console.warn(`[AI PRIORITY 30S] STALE LIVE ${original.homeName} vs ${original.awayName} | no fresh verified fixture`);
+          continue; // Do not pretend old minute/score is fresh.
+        }
+        const freshMinute=calculateExactMinute(fresh.raw);
+        if (freshMinute===999 || (Number.isFinite(Number(freshMinute)) && Number(freshMinute)>88)) {
+          noStatsPriorityMatches.delete(key);
+          console.log(`[AI PRIORITY 30S] STOP ${original.homeName} vs ${original.awayName} | FT/after 88`);
+          continue;
+        }
+        if (freshMinute==='HT' || !Number.isFinite(Number(freshMinute)) || Number(freshMinute)<60) continue;
+        const oldMinute=Number(original.minute??calculateExactMinute(original.raw));
+        const oldGoals=Number(original.homeScore)+Number(original.awayScore);
+        const newGoals=Number(fresh.homeScore)+Number(fresh.awayScore);
+        if ((Number.isFinite(oldMinute) && Number(freshMinute)<oldMinute) ||
+            (Number.isFinite(oldGoals) && Number.isFinite(newGoals) && newGoals<oldGoals)) {
+          console.warn(`[AI PRIORITY 30S] STALE PROVIDER ${fresh.homeName} vs ${fresh.awayName}`);
+          continue;
+        }
+        // Keep cross-source identity for verified HT, events and FT resolution.
+        fresh.crossSourceMatches=[original,...(original.crossSourceMatches||[])].filter(m=>
+          !(m.source===fresh.source && String(m.id)===String(fresh.id)));
+        state.match=fresh;
+        noStatsScanBudget={events:0,history:0};
+        await analyzeOneMatch(fresh, []);
+        console.log(`[AI PRIORITY 30S] REFRESH ${fresh.homeName} ${fresh.homeScore}-${fresh.awayScore} ${fresh.awayName} | ${freshMinute}'`);
+      } catch(e) {console.warn(`[AI PRIORITY 30S] ${original.homeName} vs ${original.awayName}: ${e.message}`);}
+    }
+  } finally {noStatsPriorityRunning=false;}
 }
 
 // ==========================================================
@@ -7002,6 +7099,9 @@ app.listen(
 
 
    // Sau đó 5 phút / lần
+setInterval(()=>scanNoStatsPriority().catch(e=>console.warn('[AI PRIORITY 30S]',e.message)),
+  NO_STATS_PRIORITY_INTERVAL_MS);
+
 setInterval(
   () => {
     scanLiveMatches()
