@@ -68,7 +68,7 @@ async function saveNoStatsObservation(row){
  await pool.query('INSERT INTO promax_no_stats_observations (id,data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data,updated_at=NOW()', [row.key,JSON.stringify(row)]);
 }
 // Isolated persistence for the two research/history pages. Uses the existing Dashboard PostgreSQL pool.
-const shadowTables=new Set(['promax_scan_history_state','promax_biggg_shadow_state']);
+const shadowTables=new Set(['promax_scan_history_state']);
 async function loadShadowState(table){
  if(!shadowTables.has(table))throw Error('Invalid shadow table');
  if(!pool)throw Error('DATABASE_URL required for durable shadow history');
@@ -194,6 +194,8 @@ function setupLogin(app){
   res.cookie(LOGIN_COOKIE,sessionToken(),{httpOnly:true,sameSite:'strict',secure,path:'/',maxAge:LOGIN_TTL});
   return res.json({ok:true});
  });
+ // Verify the newly issued cookie using the same validator as protected pages.
+ app.get('/api/login/session',(req,res)=>{res.set('Cache-Control','no-store');return res.status(validSession(req)?200:401).json({ok:validSession(req)});});
  app.post('/api/logout',(req,res)=>{res.set('Cache-Control','no-store');res.clearCookie(LOGIN_COOKIE,{path:'/',sameSite:'strict'});res.json({ok:true});});
 }
 

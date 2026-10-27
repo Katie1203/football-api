@@ -3,35 +3,10 @@ const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
 const aiNoStats = require('./ai_no_stats');
-const bigggShadow = require('./biggg_shadow');
 const aiNoStatsHistoryTrainer = require('./ai_no_stats_history_trainer');
 const scanObserver = require('./scan_observer');
 const scanControl = require('./scan_control');
 const aiGoalOddsShadow = require('./ai_goal_odds_shadow');
-
-// Optional V4 module: preserve V3.5 operation if V4 was not deployed.
-let ruleV4;
-try {
-  ruleV4 = require('./rule_v4_probability');
-} catch (error) {
-  if (error.code !== 'MODULE_NOT_FOUND' || !String(error.message).includes("'./rule_v4_probability'")) throw error;
-  console.warn('[RULE V4] rule_v4_probability.js missing; using existing Rule V3.5 fallback. Deploy the module next to index.js to enable V4.');
-  ruleV4 = { predict: () => null };
-}
-
-// Goal AI V4 is informational; it never changes Rule or Telegram decisions.
-const aiGoalPipeline = require('./v4_ai_goal_pipeline');
-const aiGoalPoissonFusion = require('./ai_goal_poisson_fusion');
-const v4ScenarioAnalysis = require('./v4_scenario_analysis');
-const aiGoalBetDecision = require('./ai_goal_bet_verdict');
-let aiGoalV4;
-try {
-  aiGoalV4 = require('./ai_goal_v4');
-} catch (error) {
-  if (error.code !== 'MODULE_NOT_FOUND' || !String(error.message).includes("'./ai_goal_v4'")) throw error;
-  console.warn('[AI GOAL V4] ai_goal_v4.js missing; using legacy AI Goal fallback.');
-  aiGoalV4 = { predict: () => null };
-}
 
 // Count actual outgoing HTTP calls (not merely detail resolver attempts).
 const httpMetrics={networkCalls:0,cacheHits:0,fallbackCalls:0,failedCalls:0,bySource:{}};
@@ -40,10 +15,6 @@ axios.interceptors.request.use(config=>{const source=metricSource(axios.getUri(c
 axios.interceptors.response.use(r=>r,e=>{if(e.config?._promaxMetricSource){httpMetrics.failedCalls++;httpMetrics.bySource[e.config._promaxMetricSource].failedCalls++;}return Promise.reject(e);});
 const app = express();
 const PORT = process.env.PORT || 10000;
-// BIGGG TEST page: explicit route, without changing scan/alert behavior.
-app.get(['/biggg-test', '/biggg-test.html'], (req, res) => {
-  res.sendFile(require('path').join(__dirname, 'biggg-test.html'));
-});
 
 app.use(express.json());
 
@@ -156,7 +127,6 @@ async function fetchApiSportsStats(id) {
 
 // >= 58% gửi Telegram
 const MIN_SEND_PERCENTAGE = 65.0;
-const MIN_RUNG_RULE_V4_PERCENTAGE = 60.0; // Strictly greater than 60 for Telegram RUNG
 
 // >= 75% BIG BET
 const BIG_BET_PERCENTAGE = 75.0;
@@ -227,34 +197,6 @@ function pressureDelta(a,b,field) {
   if (!keys.every(k=>providersA[k] && providersB[k] && providersA[k]===providersB[k])) return null;
   const diffs=keys.map(k=>Number(b[k])-Number(a[k]));
   return diffs.every(x=>Number.isFinite(x)&&x>=0)?diffs[0]+diffs[1]:null;
-}
-function getPressureWindow(key,stats,minute,homeScore,awayScore) {
-  const now={...makeMatchSnapshot(stats,minute,homeScore,awayScore),
-    time:Date.now(),_fieldSources:{...(stats?._fieldSources||stats?.fieldSources||{})}};
-  const history=pressureHistory.get(key)||[];
-  const last=history[history.length-1];
-  // A backwards clock indicates a new timeline. Provider changes do not.
-  if(last && minute<last.minute-2) history.length=0;
-  const validCount=x=>['TotalShots','ShotsOnTarget','Corners','BigChances'].reduce((n,f)=>n+(['home','away'].every(side=>x._present?.[side+f]===true)?1:0),0);
-  if (!history.length || minute>history[history.length-1].minute) {
-    if(validCount(now)>=2)history.push(now);
-  } else if(minute===history[history.length-1].minute && validCount(now)>validCount(history[history.length-1])) {
-    history[history.length-1]=now;
-  }
-  while(history.length>PRESSURE_HISTORY_MAX)history.shift();
-  pressureHistory.set(key,history);
-  const window=(size)=>{
-    // Nearest valid baseline at least 'size' minutes old; avoid very old stale windows.
-    const older=[...history].reverse().find(x=>x.minute<=minute-size && minute-x.minute<=size+5);
-    if(!older)return {available:false,reason:'NEED_HISTORY'};
-    const fields=['TotalShots','ShotsOnTarget','Corners','BigChances'];
-    const delta=Object.fromEntries(fields.map(f=>[f,pressureDelta(older,now,f)]));
-    const count=Object.values(delta).filter(v=>v!==null).length;
-    // Must have either shot volume or on-target attempts, not just corners/chances.
-    const usable=count>=2 && (delta.TotalShots!==null || delta.ShotsOnTarget!==null);
-    return {available:usable,reason:usable?'OK':'MISSING_OR_CHANGED_SOURCE',minutes:minute-older.minute,delta,count};
-  };
-  return {five:window(5),ten:window(10),current:now,history};
 }
 function pressureEvidence(window) {
   if(!window?.available)return false;
@@ -3689,440 +3631,6 @@ function createSnapshot(stats, minute) {
 
 
 // ==========================================================
-// CALCULATE MOMENTUM
-// ==========================================================
-
-function calculateMomentum(
-  matchId,
-  stats,
-  minute
-) {
-
-  const current =
-    createSnapshot(
-      stats,
-      minute
-    );
-
-
-  const previous =
-    snapshotState.get(
-      matchId
-    );
-
-
-  // Keep the last valid snapshot if a provider returns partial/reset counters.
-  const momentumKeys = ['Attacks','DangerousAttacks','ShotsOnTarget','Corners'];
-  const currentValid = momentumKeys.every(f => ['home','away'].every(side => current._present?.[side+f]));
-  const previousValid = !previous || momentumKeys.every(f => ['home','away'].every(side => previous._present?.[side+f]));
-  const monotonic = !previous || momentumKeys.every(f => ['home','away'].every(side =>
-    Number(current[side+f]) >= Number(previous[side+f])));
-  if (currentValid && (!previous || (previousValid && monotonic && minute > previous.minute))) {
-    snapshotState.set(matchId,{...current,updatedAt:Date.now()});
-  }
-  if (!currentValid || !previousValid || !monotonic) {
-    return {available:false,minuteGap:0,score:50,text:'Momentum thiếu dữ liệu hợp lệ',
-      totalAttack:0,totalDangerous:0,totalSOT:0,totalBlocked:0,totalCorners:0};
-  }
-
-
-  // Chưa có snapshot trước
-  if (!previous) {
-
-    return {
-      available: false,
-
-      minuteGap: 0,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
-      score: 50,
-
-      text:
-        '⏳ Đang thu thập Momentum'
-    };
-  }
-
-
-  const minuteGap =
-    minute -
-    safeNumber(
-      previous.minute
-    );
-
-
-  // Snapshot lỗi / trận nhảy phút ngược
-  if (
-    minuteGap <= 0 ||
-    minuteGap > 20
-  ) {
-
-    return {
-      available: false,
-
-      minuteGap,
-
-      homeAttack: 0,
-      awayAttack: 0,
-
-      homeDangerous: 0,
-      awayDangerous: 0,
-
-      homeSOT: 0,
-      awaySOT: 0,
-
-      homeBlocked: 0,
-      awayBlocked: 0,
-
-      homeCorners: 0,
-      awayCorners: 0,
-
-      totalAttack: 0,
-      totalDangerous: 0,
-      totalSOT: 0,
-      totalBlocked: 0,
-      totalCorners: 0,
-
-      homePressure: 0,
-      awayPressure: 0,
-
-      score: 50,
-
-      text:
-        '⏳ Momentum chưa đủ dữ liệu'
-    };
-  }
-
-
-  function delta(currentValue, oldValue) {
-
-    return Math.max(
-      0,
-      safeNumber(currentValue) -
-      safeNumber(oldValue)
-    );
-  }
-
-
-  const homeAttack =
-    delta(
-      current.homeAttacks,
-      previous.homeAttacks
-    );
-
-  const awayAttack =
-    delta(
-      current.awayAttacks,
-      previous.awayAttacks
-    );
-
-
-  const homeDangerous =
-    delta(
-      current.homeDangerousAttacks,
-      previous.homeDangerousAttacks
-    );
-
-  const awayDangerous =
-    delta(
-      current.awayDangerousAttacks,
-      previous.awayDangerousAttacks
-    );
-
-
-  const homeSOT =
-    delta(
-      current.homeShotsOnTarget,
-      previous.homeShotsOnTarget
-    );
-
-  const awaySOT =
-    delta(
-      current.awayShotsOnTarget,
-      previous.awayShotsOnTarget
-    );
-
-
-  const homeBlocked =
-    delta(
-      current.homeBlockedShots,
-      previous.homeBlockedShots
-    );
-
-  const awayBlocked =
-    delta(
-      current.awayBlockedShots,
-      previous.awayBlockedShots
-    );
-
-
-  const homeCorners =
-    delta(
-      current.homeCorners,
-      previous.homeCorners
-    );
-
-  const awayCorners =
-    delta(
-      current.awayCorners,
-      previous.awayCorners
-    );
-
-
-  const totalAttack =
-    homeAttack +
-    awayAttack;
-
-  const totalDangerous =
-    homeDangerous +
-    awayDangerous;
-
-  const totalSOT =
-    homeSOT +
-    awaySOT;
-
-  const totalBlocked =
-    homeBlocked +
-    awayBlocked;
-
-  const totalCorners =
-    homeCorners +
-    awayCorners;
-
-
-  // Chuẩn hóa về 10 phút
-  const factor =
-    10 /
-    Math.max(
-      minuteGap,
-      1
-    );
-
-
-  const attack10 =
-    totalAttack *
-    factor;
-
-  const dangerous10 =
-    totalDangerous *
-    factor;
-
-  const sot10 =
-    totalSOT *
-    factor;
-
-  const blocked10 =
-    totalBlocked *
-    factor;
-
-  const corners10 =
-    totalCorners *
-    factor;
-
-
-  // ======================================================
-  // MOMENTUM SCORE 0-100
-  // ======================================================
-
-  let score = 20;
-
-
-  // Attack
-  if (attack10 >= 35) {
-    score += 18;
-  } else if (attack10 >= 25) {
-    score += 14;
-  } else if (attack10 >= 15) {
-    score += 9;
-  } else if (attack10 >= 8) {
-    score += 4;
-  }
-
-
-  // Dangerous Attack
-  if (dangerous10 >= 20) {
-    score += 28;
-  } else if (dangerous10 >= 14) {
-    score += 22;
-  } else if (dangerous10 >= 9) {
-    score += 15;
-  } else if (dangerous10 >= 5) {
-    score += 8;
-  }
-
-
-  // SOT
-  if (sot10 >= 4) {
-    score += 25;
-  } else if (sot10 >= 3) {
-    score += 20;
-  } else if (sot10 >= 2) {
-    score += 14;
-  } else if (sot10 >= 1) {
-    score += 7;
-  }
-
-
-
-  // Corners
-  if (corners10 >= 4) {
-    score += 10;
-  } else if (corners10 >= 2) {
-    score += 6;
-  } else if (corners10 >= 1) {
-    score += 3;
-  }
-
-
-  score =
-    clamp(
-      score,
-      0,
-      100
-    );
-
-
-  // ======================================================
-  // MOMENTUM HOME/AWAY
-  // ======================================================
-
-  const homePressure =
-
-    homeAttack * 0.10 +
-
-    homeDangerous * 0.35 +
-
-    homeSOT * 5 +
-
-    homeCorners * 1.8;
-
-
-  const awayPressure =
-
-    awayAttack * 0.10 +
-
-    awayDangerous * 0.35 +
-
-    awaySOT * 5 +
-
-    awayCorners * 1.8;
-
-
-  let text =
-    '⚡ Momentum trung bình';
-
-
-  if (score >= 85) {
-
-    text =
-      '🔥🔥 MOMENTUM CỰC MẠNH';
-
-  } else if (score >= 75) {
-
-    text =
-      '🔥 MOMENTUM RẤT MẠNH';
-
-  } else if (score >= 65) {
-
-    text =
-      '⚡ MOMENTUM MẠNH';
-
-  } else if (score < 40) {
-
-    text =
-      '🐢 Momentum thấp';
-  }
-
-
-  return {
-
-    available: true,
-
-    minuteGap,
-
-    homeAttack,
-    awayAttack,
-
-    homeDangerous,
-    awayDangerous,
-
-    homeSOT,
-    awaySOT,
-
-    homeBlocked,
-    awayBlocked,
-
-    homeCorners,
-    awayCorners,
-
-    totalAttack,
-    totalDangerous,
-    totalSOT,
-    totalBlocked,
-    totalCorners,
-
-    attack10:
-      round1(attack10),
-
-    dangerous10:
-      round1(
-        dangerous10
-      ),
-
-    sot10:
-      round1(sot10),
-
-    blocked10:
-      round1(
-        blocked10
-      ),
-
-    corners10:
-      round1(
-        corners10
-      ),
-
-    homePressure:
-      round1(
-        homePressure
-      ),
-
-    awayPressure:
-      round1(
-        awayPressure
-      ),
-
-    score:
-      round1(score),
-
-    text
-  };
-}
-
-
-// ==========================================================
 // 20. FORMAT MOMENTUM TELEGRAM
 // ==========================================================
 
@@ -5161,211 +4669,6 @@ function calculateTimeScore(
 }
 
 
-// ==========================================================
-// 34. RULE AI ENGINE
-//
-// TRỌNG SỐ:
-//
-// Dangerous Attack      18%
-// Momentum              16%
-// SOT                   14%
-// Đôi công / ép sân     11%
-// Attack                10%
-// Possession pressure    8%
-// Blocked                6%
-// Corners                6%
-// Odds                   7%
-// Cards                  2%
-// Score state             1%
-// Time                    1%
-//
-// TOTAL = 100%
-//
-// ==========================================================
-
-// V3: sole Rule scoring engine; legacy V2 is not evaluated.
-// Scores are heuristic signals, not calibrated probabilities.
-function evaluateRuleV3(stats,momentum,minute,homeScore,awayScore,windows) {
-  // Rule V3: only live match statistics. No minute, time remaining, score gap,
-  // arbitrary uplift/penalty, or momentum modifier to the Rule score.
-  const present=stats?._present||{};
-  const pair=f=>{
-    const h='home'+f,a='away'+f;
-    if(present[h]!==true||present[a]!==true)return null;
-    const x=Number(stats[h]),y=Number(stats[a]);
-    return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
-  };
-  const sum=p=>p?p[0]+p[1]:null;
-  const shots=pair('TotalShots'),sot=pair('ShotsOnTarget');
-  const corners=pair('Corners'),chances=pair('BigChances');
-  const inside=pair('ShotsInsideBox'),xg=pair('ExpectedGoals');
-  const poss=pair('Possession'),red=pair('RedCards');
-  const attacks=pair('Attacks');
-  const groups=[shots,sot,corners,chances,inside,xg,poss,red].filter(Boolean).length;
-  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks']
-    .filter(f=>!['home','away'].every(side=>present[side+f]===true));
-  const reliability={availableGroups:groups,totalGroups:8,coveragePercent:round1(groups/8*100),missing,
-    label:groups>=6?'HIGH_COVERAGE':groups>=4?'PARTIAL_COVERAGE':'LOW_COVERAGE'};
-  if(!shots&&!sot&&!corners&&!chances&&!inside&&!xg)
-    return {efficiency:null,model:'rule-v3.5-independent-evidence-candidate',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  // Existing normalization retained: no invented scoring bonus, fixed uplift or
-  // penalty. Reuse only measured quantities and normalize weights over present data.
-  const soft=(value,reference)=>value===null?null:100*Math.max(0,value)/(Math.max(0,value)+reference*.48);
-  const pace=(p,reference)=>p?soft(sum(p),reference):null;
-  const weighted=items=>{
-    const valid=items.filter(([v])=>v!==null&&Number.isFinite(v));
-    const w=valid.reduce((n,[,weight])=>n+weight,0);
-    return w?valid.reduce((n,[v,weight])=>n+v*weight,0)/w:null;
-  };
-  // Reject inconsistent SOT>shots or box shots>total shots rather than
-  // treating contradictory provider data as quality evidence.
-  const validShooting=!!(shots&&sot&&shots.every((n,i)=>sot[i]<=n));
-  const validInside=!!(inside&&(!shots||shots.every((n,i)=>inside[i]<=n)));
-  const sotRatio=validShooting&&sum(shots)>0?sum(sot)/sum(shots):null;
-  const insideRatio=validInside&&shots&&sum(shots)>0?sum(inside)/sum(shots):null;
-  const sotVolume=pace(sot,9);
-  const shotVolume=pace(shots,23);
-  const cornerVolume=pace(corners,11);
-  const boxVolume=validInside?pace(inside,14):null;
-  const chanceVolume=pace(chances,5);
-  const xgVolume=pace(xg,3.1);
-  // Independent evidence families: do not count the same SOT/box/chance
-  // observation once in Pressure and again in Quality. Pressure is volume
-  // and territory; Quality is the observed ability to threaten the goal.
-  // Missing values are excluded, never silently treated as zero.
-  const quality=weighted([[sotVolume,.38],[chanceVolume,.22],[xgVolume,.27],[boxVolume,.13]]);
-  // Shots and corners are separate pressure observations. Possession alone
-  // cannot create pressure, and is assessed separately below.
-  const pressure=weighted([[shotVolume,.75],[cornerVolume,.25]]);
-  // Tempo is a diagnostic derived from live counts; it is not a second score
-  // or a match-time factor, and is not multiplied into Rule.
-  const tempo=weighted([[shotVolume,.35],[sotVolume,.50],[cornerVolume,.15]]);
-  const tempoEvidence='CUMULATIVE_STAT_SIGNAL';
-  const tempoLevel=tempo===null?'UNKNOWN':tempo>=75?'HIGH':tempo>=48?'MEDIUM':'LOW';
-  // Possession by itself does not demonstrate a scoring chance. Only count
-  // measured territorial control when paired with observed attacking activity.
-  const hasAttackingEvidence=!!(shots||sot||corners||inside||chances||xg);
-  const possessionBalance=poss&&hasAttackingEvidence?Math.min(75,50+Math.abs(poss[0]-poss[1])*.35):null;
-  const core=weighted([[pressure,.57],[quality,.40],[possessionBalance,.03]]);
-  if(core===null)return {efficiency:null,model:'rule-v3.5-independent-evidence-candidate',dataStatus:'INSUFFICIENT_CURRENT_STATS'};
-  const redFactor=1,evidenceFactor=1,qualityFactor=1,recentEvidenceFactor=1;
-  const momentumVerified=false,momentumScore=null,momentumContribution=0;
-  const candidateProbability=ruleV4.predict(stats);
-  const efficiency=candidateProbability===null?round1(clamp(core,0,95)):candidateProbability;
-  return {efficiency,model:candidateProbability===null?'rule-v3.5-independent-evidence-candidate':'rule-v4-audit-logistic',dataStatus:'OK',v3Components:{
-    pressure:pressure===null?null:round1(pressure),quality:quality===null?null:round1(quality),
-    tempo:tempo===null?null:round1(tempo),tempoLevel,tempoEvidence,tempoMethod:'CUMULATIVE_COUNTS_ONLY',
-    redFactor,availableGroups:groups,
-    reliability,evidenceFactor,qualityFactor,recentEvidenceFactor,momentumVerified,momentumScore,momentumContribution,
-    shotAccuracyPercent:sotRatio===null?null:round1(sotRatio*100),
-    boxShotPercent:insideRatio===null?null:round1(insideRatio*100),
-    pressureMethod:'INDEPENDENT_SHOTS_CORNERS',
-    qualityMethod:'SOT_VOLUME_BIG_CHANCES_XG_BOX',
-    modelVersion:candidateProbability===null?'V3_5_INDEPENDENT_EVIDENCE_CANDIDATE':'V4_AUDIT_LOGISTIC'
-  }};
-}
-// Frozen reference: V3 before Advanced upgrade (LIVE FIX version).
-// Comparison only; never used for Telegram or BIG BET decisions.
-
-// Display-only diagnostics: never used to gate alerts.
-function formatV3Advanced(ai, stats, minute) {
-  const c=ai?.v3Components;
-  if (!c) return 'V3 ADVANCED: N/A (insufficient current stats)';
-  const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
-  const available=(field)=>['home','away'].every(side=>stats?._present?.[side+field]===true);
-  const missing=['TotalShots','ShotsOnTarget','Corners','BigChances','ShotsInsideBox','ExpectedGoals','Possession','RedCards','Attacks','DangerousAttacks'].filter(f=>!available(f));
-  return `1.Tempo ${c.tempoLevel} ${fmt(c.tempo)} (cumulative stats) | 2.Pressure ${fmt(c.pressure)} | 3.Quality ${fmt(c.quality)} | 4.Red x${fmt(c.redFactor)} | 5.Data ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 | Evidence x${fmt(c.evidenceFactor)} Accuracy x${fmt(c.qualityFactor)} SOT% ${fmt(c.shotAccuracyPercent)} | Missing ${missing.join(',')||'none'}`;
-}
-function v3TelegramDetail(ai,stats,minute){
-  const c=ai?.v3Components;
-  if(!c)return '🧩 V3 Advanced: Chưa đủ dữ liệu hiện tại';
-  const fmt=x=>x==null?'N/A':Number(x).toFixed(1);
-  const missing=['Attacks','DangerousAttacks','BigChances','ExpectedGoals'].filter(f=>!['home','away'].every(side=>stats?._present?.[side+f]===true));
-  return [
-    `🧩 V3 Advanced: Tempo ${c.tempoLevel} (${fmt(c.tempo)}, ước lượng TB trận)`,
-    `🔥 Pressure ${fmt(c.pressure)} | 🎯 Quality ${fmt(c.quality)}`,
-    `🟥 Red x${fmt(c.redFactor)}`,
-    `📡 Data Reliability: ${c.reliability?.label||'N/A'} ${c.availableGroups}/8 nhóm | Thiếu: ${missing.join(', ')||'không'}` ,
-    `🔎 SOT/Shots ${fmt(c.shotAccuracyPercent)}% | Evidence x${fmt(c.evidenceFactor)} | Quality adjustment x${fmt(c.qualityFactor)}`
-  ].join('\n');
-}
-function estimateRemainingGoalProbability(stats,momentum,minute,homeScore,awayScore,windows,ruleV3) {
-  // Rule V4 is the statistical prior; AI Goal V4 independently learns a
-  // conditional correction from settled WIN/LOSS data. No arbitrary uplift.
-  if (ruleV3?.model === 'rule-v4-audit-logistic' &&
-      Number.isFinite(Number(ruleV3.efficiency))) {
-    const prediction=aiGoalPipeline.predict(stats,windows,Number(ruleV3.efficiency)) || aiGoalV4.predict(stats,Number(ruleV3.efficiency),windows);
-    if(prediction) return {...prediction,divergence:round1(Number(ruleV3.efficiency)-prediction.percent),
-      divergenceFlag:false};
-    return {percent:null,ruleScore:Number(ruleV3.efficiency),calibrated:false,
-      label:'AI Goal V4 thiếu mô hình hoặc dữ liệu phân tích',
-      source:'ai-goal-v4-unavailable',divergenceFlag:false};
-  }
-  // AI Goal V3-Aware is informational only. Current LIVE data is sufficient;
-  // snapshot history is NOT a prerequisite for this estimate.
-  const present=stats?._present||{};
-  const pair=(name)=>{
-    const h='home'+name, a='away'+name;
-    if(present[h]!==true || present[a]!==true) return null;
-    const x=Number(stats[h]), y=Number(stats[a]);
-    return Number.isFinite(x)&&Number.isFinite(y)&&x>=0&&y>=0?[x,y]:null;
-  };
-  const sot=pair('ShotsOnTarget');
-  const shots=pair('TotalShots');
-  const corners=pair('Corners');
-  const chances=pair('BigChances');
-  const reds=pair('RedCards');
-  const poss=pair('Possession');
-  const remaining=Math.max(0,95-Number(minute));
-  if(!Number.isFinite(remaining)||remaining===0) return {percent:0,label:'Hết thời gian ước tính (chưa hiệu chuẩn)',calibrated:false};
-  // Need at least one attacking volume signal, not merely possession.
-  if(!sot&&!shots&&!corners&&!chances)
-    return {percent:null,label:'Thiếu thống kê tấn công LIVE',calibrated:false};
-  const elapsed=Math.max(10,Math.min(95,Number(minute)||10));
-  const sum=p=>p?p[0]+p[1]:null;
-  // Conservative per-minute goal intensity proxy. Missing metrics add nothing,
-  // but are NOT treated as observed zeros. This is NOT a trained model.
-  let rate=0.012;
-  if(sot) rate+=0.19*sum(sot)/elapsed;
-  if(shots) rate+=0.035*sum(shots)/elapsed;
-  if(chances) rate+=0.15*sum(chances)/elapsed;
-  if(corners) rate+=0.012*sum(corners)/elapsed;
-  // V3-AWARE: Rule V3 is a read-only signal; never changes Rule or alert gating.
-  // Keep baseline AI Goal intensity and add a bounded, smooth Rule adjustment.
-  const gap=Math.abs(Number(homeScore)-Number(awayScore));
-  const gameState=gap>=4?0.72:gap===3?0.82:gap===0?1.06:1;
-  const redFactor=reds&&sum(reds)>0?1.07:1;
-  const baseLambda=clamp(remaining*rate*gameState*redFactor,0,4);
-  const ruleScore=ruleV3?.efficiency==null?null:Number(ruleV3.efficiency);
-  const validRule=Number.isFinite(ruleScore)&&ruleScore>=0&&ruleScore<=100;
-  // Smooth multiplier: Rule 70 is neutral; 0..100 maps to ~0.75..1.19.
-  const ruleMultiplier=validRule?clamp(Math.exp((ruleScore-70)*0.003),0.75,1.20):1;
-  // Only verified recent snapshots can affect momentum. Avoid duplicating the
-  // cumulative shot/SOT signal already present in both baseline and Rule V3.
-  const verifiedMomentum=momentum?.available===true&&Number.isFinite(Number(momentum.score));
-  const momentumMultiplier=verifiedMomentum?clamp(Math.exp((Number(momentum.score)-50)*0.002),0.90,1.10):1;
-  // Verified recent Tempo informs goal probability, never Rule V3.
-  // Use existing source-matched 5/10-minute snapshots; no new API calls.
-  const tempoWindow=windows?.ten?.available===true?windows.ten:
-    windows?.five?.available===true?windows.five:null;
-  const tempoStrength=tempoWindow?pressureStrength(tempoWindow):null;
-  // Neutral without verified recent data. Bounded contextual adjustment, not calibrated.
-  const tempoMultiplier=tempoStrength===null?1:
-    clamp(Math.exp((tempoStrength-50)*0.002),0.90,1.10);
-  const lambda=clamp(baseLambda*ruleMultiplier*momentumMultiplier*tempoMultiplier,0,4);
-  const available=[sot,shots,corners,chances,reds,poss].filter(Boolean).length;
-  const percent=round1((1-Math.exp(-lambda))*100);
-  const baselinePercent=round1((1-Math.exp(-baseLambda))*100);
-  const divergence=validRule?round1(ruleScore-percent):null;
-  return {percent,lambda:round1(lambda),baselinePercent,ruleScore:validRule?ruleScore:null,
-    ruleMultiplier:round1(ruleMultiplier),momentumMultiplier:round1(momentumMultiplier),
-    tempoStrength:tempoStrength===null?null:round1(tempoStrength),tempoMultiplier:round1(tempoMultiplier),
-    divergence,divergenceFlag:validRule&&Math.abs(divergence)>=25,
-    label:`AI Goal V3-Aware (${available}/6 nhóm, thử nghiệm chưa hiệu chuẩn)`,
-    calibrated:false,source:'current-live-v3-aware',availableGroups:available};
-}
-
-
 
 
 // ==========================================================
@@ -5418,67 +4721,6 @@ function makeMatchSnapshot(stats, minute, homeScore, awayScore) {
 // Kiểm tra biến động MỚI kể từ cảnh báo gần nhất, không dùng momentum cũ.
 // L18 BIG BET: compare confirmed, monotonic, per-team statistics since alert #1.
 const BIG_SPIKE_MIN_SCORE = 60;
-function detectTenMinuteSpike(previous, current) {
-  if (!previous || !current) return {confirmed:false, score:0, reason:'NO_SNAPSHOT'};
-  const gap = Number(current.minute) - Number(previous.minute);
-  if (!(gap > 0 && gap <= FOLLOWUP_WINDOW_MINUTES))
-    return {confirmed:false,score:0,reason:'INVALID_TIME_GAP'};
-  const delta = (field) => {
-    const keys = ['home'+field,'away'+field];
-    if (!keys.every(k => previous._present?.[k] === true && current._present?.[k] === true && previous._fieldSources?.[k] && previous._fieldSources?.[k] === current._fieldSources?.[k])) return null;
-    const diffs = keys.map(k => Number(current[k]) - Number(previous[k]));
-    if (diffs.some(x => !Number.isFinite(x) || x < 0)) return null;
-    return diffs;
-  };
-  const shots = delta('TotalShots'), sot = delta('ShotsOnTarget');
-  const corners = delta('Corners'), attacks = delta('Attacks');
-  const dangerous = delta('DangerousAttacks');
-  const sum = x => x === null ? null : x[0] + x[1];
-  const sh = sum(shots), so = sum(sot), co = sum(corners);
-  const da = sum(dangerous), at = sum(attacks);
-  const cornerDensity = co === null ? null : co / gap;
-  const pressure = da !== null && at !== null && da >= 9 && at >= 12;
-  const signals = {
-    finishing: (sh !== null && sh >= 4) || (so !== null && so >= 2),
-    corners: co !== null && co >= 2,
-    pressure: pressure
-  };
-  const score = Math.min(100,
-    (sh !== null && sh >= 4 ? 20 : 0) +
-    (so !== null && so >= 2 ? 25 : 0) +
-    (co !== null && co >= 2 ? 15 : 0) +
-    (cornerDensity !== null && cornerDensity >= 0.3 ? 10 : 0) +
-    (pressure ? 30 : 0));
-  const groups = Object.values(signals).filter(Boolean).length;
-  const verifiedFinishing = (so !== null && so >= 1) || (sh !== null && sh >= 2 && ((co !== null && co >= 1) || (da !== null && da >= 9)));
-  const confirmed = score >= BIG_SPIKE_MIN_SCORE && groups >= 2 && verifiedFinishing;
-  return {confirmed,score,groups,cornerDensity,signals,
-    reason:`SPIKE=${score}/100 GROUPS=${groups} SH=${sh ?? 'NA'} SOT=${so ?? 'NA'} COR=${co ?? 'NA'} DENSITY=${cornerDensity?.toFixed(2) ?? 'NA'} DA=${da ?? 'NA'} ATT=${at ?? 'NA'}`};
-}
-
-function shouldSendAlert(matchId, currentPercentage, currentMinute, momentum, stats, homeScore, awayScore) {
-  const current = currentPercentage == null ? NaN : Number(currentPercentage);
-  if (!Number.isFinite(currentMinute) || currentMinute < MIN_TELEGRAM_MINUTE || currentMinute >= 89)
-    return {send:false,bigBet:false,reason:'OUTSIDE_ALERT_MINUTES'};
-  if (!Number.isFinite(current)) return {send:false,bigBet:false,reason:'STATS_MISSING_DYNAMIC_WINDOW'};
-  if (current <= MIN_RUNG_RULE_V4_PERCENTAGE)
-    return {send:false,bigBet:false,reason:`RULE_V4_NOT_ABOVE_${MIN_RUNG_RULE_V4_PERCENTAGE}`};
-  const previous = alertState.get(matchId);
-  if (!previous) return {send:true,bigBet:false,reason:'FIRST_ALERT'};
-  if (previous.alertCount >= MAX_ALERTS_PER_MATCH)
-    return {send:false,bigBet:false,reason:'MAX_2_ALERTS'};
-  const gap = currentMinute - previous.lastMinute;
-  if (gap <= 0) return {send:false,bigBet:false,reason:'WAIT_NEXT_MINUTE'};
-  if (gap > FOLLOWUP_WINDOW_MINUTES) return {send:false,bigBet:false,reason:'FOLLOWUP_EXPIRED'};
-  if (!previous.alertSnapshot) return {send:false,bigBet:false,reason:'RESTART_SNAPSHOT_UNAVAILABLE'};
-  const spike = detectTenMinuteSpike(previous.alertSnapshot,
-    makeMatchSnapshot(stats,currentMinute,homeScore,awayScore));
-  const ruleIncrease = current - Number(previous.lastPercentage);
-  if (!(ruleIncrease >= ALERT_INCREASE_THRESHOLD)) return {send:false,bigBet:false,spike,reason:`RULE_DELTA_${ruleIncrease.toFixed(1)}_BELOW_${ALERT_INCREASE_THRESHOLD}`};
-  if (!spike.confirmed) return {send:false,bigBet:false,spike,
-    reason:`MONITORING ${spike.reason}`};
-  return {send:true,bigBet:true,spike,reason:`BIG_BET ${spike.reason}`};
-}
 // ==========================================================
 // 36. SCORE HELPERS
 // ==========================================================
@@ -6373,313 +5615,6 @@ function cleanTelegramText(
 
 
 // ==========================================================
-// 43. SEND TELEGRAM ALERT
-// ==========================================================
-
-async function sendTelegramAlert(
-  item,
-  alertDecision
-) {
-  if(scanControl.isPaused())return false;
-
-  // Telegram only: never send at 89' or later.
-  if (!Number.isFinite(Number(item.minute)) || Number(item.minute) >= 89) {
-    console.log(`[Telegram BLOCK] MINUTE_89_OR_LATER | ${item.homeName} vs ${item.awayName} | ${item.minute}'`);
-    return false;
-  }
-
-  if (
-    !TELEGRAM_BOT_TOKEN ||
-    !TELEGRAM_CHAT_ID
-  ) {
-
-    console.log(
-      '[Telegram] Thiếu TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID'
-    );
-
-    return false;
-  }
-
-
-  // Prevent a second FIRST alert after an AI NO-STATS alert for the same fixture.
-  // Existing V4 BIG BET follow-up remains governed by its original mechanism.
-  if(alertDecision?.reason==='FIRST_ALERT' && noStatsSentKeys.has(noStatsAlertKey({home:item.homeName,away:item.awayName,updatedAt:new Date().toISOString()})))return false;
-  // Atomically lock a fixture before the first await. The normal alert key alone
-  // is insufficient when two providers resolve the same match under different IDs.
-  const fixtureIdentity = {
-    homeName: item.homeName, awayName: item.awayName,
-    minute: Number(item.minute),
-    kickoff: item.kickoffUTC || item.kickoff || item.startTime || null
-  };
-  const sameActiveFixture = other => {
-    if (resolverTeamScore(other.homeName, fixtureIdentity.homeName) < .90 ||
-        resolverTeamScore(other.awayName, fixtureIdentity.awayName) < .90) return false;
-    if (Number.isFinite(Number(other.minute)) && Number.isFinite(fixtureIdentity.minute) &&
-        Math.abs(Number(other.minute) - fixtureIdentity.minute) > 20) return false;
-    const parseKickoff = value => {
-      if (!value) return null;
-      const n = Number(value);
-      const ms = Number.isFinite(n) && n > 1e9 ? (n < 1e12 ? n * 1000 : n) : Date.parse(value);
-      return Number.isFinite(ms) ? ms : null;
-    };
-    const left = parseKickoff(other.kickoff), right = parseKickoff(fixtureIdentity.kickoff);
-    return left == null || right == null || Math.abs(left - right) <= 30 * 60 * 1000;
-  };
-  if ([...sendingFixtures].some(sameActiveFixture)) {
-    console.log(`[ALERT DEDUP] BLOCK_INFLIGHT_FIXTURE ${item.homeName} vs ${item.awayName}`);
-    return false;
-  }
-  const equivalentPrior = [...alertState.entries()].find(([key, prior]) =>
-    key !== item.alertKey && prior && Number(prior.alertCount) > 0 &&
-    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL &&
-    sameActiveFixture({homeName:prior.homeName,awayName:prior.awayName,
-      minute:prior.lastMinute,kickoff:prior.kickoff})
-  );
-  if (equivalentPrior) {
-    console.log(`[ALERT DEDUP] BLOCK_ALIAS_DUPLICATE ${item.homeName} vs ${item.awayName} | existing=${equivalentPrior[0]}`);
-    return false;
-  }
-  if (sendingKeys.has(item.alertKey)) return false;
-  // A second, stale FIRST_ALERT decision must never be promoted to alert #2.
-  // Genuine BIG BET #2 continues through its existing independent decision.
-  const currentPrior = alertState.get(item.alertKey);
-  if (currentPrior && Number(currentPrior.alertCount) > 0 &&
-      alertDecision?.reason === 'FIRST_ALERT') {
-    console.log(`[ALERT DEDUP] BLOCK_STALE_FIRST ${item.homeName} vs ${item.awayName}`);
-    return false;
-  }
-  sendingKeys.add(item.alertKey);
-  sendingFixtures.add(fixtureIdentity);
-  const percentage =
-    safeNumber(
-      item.ai.efficiency
-    );
-
-
-  const previous =
-    alertState.get(
-      item.alertKey
-    );
-
-
-  const alertNumber =
-    previous
-      ? previous.alertCount + 1
-      : 1;
-
-
-  const isBigBet = alertNumber === 2 && alertDecision?.bigBet === true;
-
-
-  // Tiêu đề Telegram: số lần rung và BIG BET là hai trạng thái riêng.
-  // Không thay đổi điều kiện xác định isBigBet hoặc số lần gửi.
-  let title = alertNumber === 1
-    ? '🔔 TÀI LỘC ĐẾN NHÀAA 🔔'
-    : `🔔 LỘC ĐẾN LẦN ${alertNumber}`;
-
-  if (isBigBet) {
-    title = percentage >= 85
-      ? `🔥🔥🔥 BIG BET RẤT MẠNH — RUNG LẦN ${alertNumber}`
-      : `🔥 BIG BET — RUNG LẦN ${alertNumber}`;
-  }
-
-
-  const scorePrediction =
-    item.scorePrediction;
-
-
-  // Telegram COMPACT: chỉ thay đổi phần hiển thị, không đổi AI/điều kiện gửi.
-  const st = item.stats || {};
-  const pair = (home, away) => `${safeNumber(st[home])}-${safeNumber(st[away])}`;
-  const hasPair = (home, away) =>
-    safeNumber(st[home]) > 0 || safeNumber(st[away]) > 0;
-  const statLines = [];
-  if (hasPair('homeTotalShots', 'awayTotalShots') || hasPair('homeShotsOnTarget', 'awayShotsOnTarget')) {
-    const parts = [];
-    if (hasPair('homeTotalShots', 'awayTotalShots')) parts.push(`Sút ${pair('homeTotalShots', 'awayTotalShots')}`);
-    if (hasPair('homeShotsOnTarget', 'awayShotsOnTarget')) parts.push(`SOT ${pair('homeShotsOnTarget', 'awayShotsOnTarget')}`);
-    statLines.push(`🎯 ${parts.join(' | ')}`);
-  }
-  if (hasPair('homeAttacks', 'awayAttacks') || hasPair('homeDangerousAttacks', 'awayDangerousAttacks')) {
-    const parts = [];
-    if (hasPair('homeAttacks', 'awayAttacks')) parts.push(`ATT ${pair('homeAttacks', 'awayAttacks')}`);
-    if (hasPair('homeDangerousAttacks', 'awayDangerousAttacks')) parts.push(`DA ${pair('homeDangerousAttacks', 'awayDangerousAttacks')}`);
-    statLines.push(`🔥 ${parts.join(' | ')}`);
-  }
-  if (hasPair('homeCorners', 'awayCorners')) statLines.push(`🚩 Góc ${pair('homeCorners', 'awayCorners')}`);
-  if (hasPair('homePossession', 'awayPossession')) statLines.push(`📊 Kiểm soát ${pair('homePossession', 'awayPossession')}%`);
-  const momentum = item.momentum;
-  const changes = [];
-  if (momentum?.available) {
-    const addChange = (label, home, away) => {
-      const h = safeNumber(momentum[home]);
-      const a = safeNumber(momentum[away]);
-      if (h > 0 || a > 0) changes.push(`${label} +${h}/+${a}`);
-    };
-    addChange('ATT', 'homeAttack', 'awayAttack');
-    addChange('DA', 'homeDangerous', 'awayDangerous');
-    addChange('SOT', 'homeSOT', 'awaySOT');
-    addChange('Góc', 'homeCorners', 'awayCorners');
-  }
-  const prediction = item.scorePrediction || {};
-  const pressureText =
-    Number.isFinite(Number(prediction.homeShare)) && Number.isFinite(Number(prediction.awayShare))
-      ? `📊 Sức ép ${prediction.homeShare}%–${prediction.awayShare}%`
-      : null;
-  // CLEAN L18: hiển thị Odds tham khảo, không ảnh hưởng Rule.
-  const odd = item.odds || {};
-  const bookmaker = odd.bookmaker || odd.bookmakerName || 'Nguồn tổng hợp';
-  const oddLine = odd.found && Number(odd.price) > 1
-    ? `💰 Kèo nhà cái (${cleanTelegramText(bookmaker)}): Over ${odd.point ?? "?"} @ ${Number(odd.price).toFixed(2)} — chỉ tham khảo, KHÔNG cộng Rule`
-    : null;
-  const oddNote = oddLine ? ` └─> Odds Over ${Number(odd.price) <= 1.85 ? 'ổn định' : 'tham khảo'} (${Number(odd.price).toFixed(2)})` : null;
-  // xG chỉ phục vụ nhận định ngắn gọn, không in giá trị, không ảnh hưởng Rule/Spike.
-  // Chỉ kết luận về chất lượng cơ hội ĐÃ TẠO khi API xác nhận xG của cả hai đội.
-  const xgAvailable = st._present?.homeExpectedGoals === true && st._present?.awayExpectedGoals === true;
-  const xgHome = Number(st.homeExpectedGoals);
-  const xgAway = Number(st.awayExpectedGoals);
-  let qualityAssessment = null;
-  if (xgAvailable && Number.isFinite(xgHome) && Number.isFinite(xgAway) && xgHome >= 0 && xgAway >= 0) {
-    const xgDiff = xgHome - xgAway;
-    const shotsAvailable = st._present?.homeTotalShots === true && st._present?.awayTotalShots === true;
-    const homeShots = Number(st.homeTotalShots);
-    const awayShots = Number(st.awayTotalShots);
-    if (xgDiff >= 0.5) {
-      qualityAssessment = shotsAvailable && homeShots < awayShots
-        ? '🧠 NHẬN ĐỊNH: Chủ nhà sút ít hơn nhưng tạo cơ hội chất lượng hơn.'
-        : '🧠 NHẬN ĐỊNH: Chủ nhà tạo cơ hội chất lượng vượt trội.';
-    } else if (xgDiff <= -0.5) {
-      qualityAssessment = shotsAvailable && awayShots < homeShots
-        ? '🧠 NHẬN ĐỊNH: Đội khách sút ít hơn nhưng tạo cơ hội chất lượng hơn.'
-        : '🧠 NHẬN ĐỊNH: Đội khách tạo cơ hội chất lượng vượt trội.';
-    } else {
-      qualityAssessment = '🧠 NHẬN ĐỊNH: Chất lượng cơ hội hai đội tương đối cân bằng.';
-    }
-  }
-  const newV4=item.v4Combined;
-  const v4Summary=newV4?[
-    `🧠 AI VERSION 4.0 MỚI: ${newV4.probability==null?'Chưa có dữ liệu':newV4.probability+'%'} xác suất còn ≥1 bàn`,
-    `📈 Bàn thắng kỳ vọng: λ = ${newV4.expectedRemainingGoals==null?'N/A':Number(newV4.expectedRemainingGoals).toFixed(2)} | Ngưỡng ≥ 0.90`,
-    `📋 HT: ${newV4.htGoals??'Chưa xác minh'} bàn | Nguồn dự đoán: ${newV4.source}`,
-    `🔔 Quyết định: ${alertDecision?.reason||'N/A'}`
-  ]:[];
-  const compactStats = [
-    (hasPair('homeAttacks','awayAttacks') || hasPair('homeDangerousAttacks','awayDangerousAttacks') || hasPair('homePossession','awayPossession'))
-      ? `📊 LIVE: Attack ${pair('homeAttacks','awayAttacks')} | Danger ${pair('homeDangerousAttacks','awayDangerousAttacks')} | Poss ${pair('homePossession','awayPossession')}%` : null,
-    (hasPair('homeTotalShots','awayTotalShots') || hasPair('homeShotsOnTarget','awayShotsOnTarget'))
-      ? `🎯 SÚT: Shots ${pair('homeTotalShots','awayTotalShots')} | SOT ${pair('homeShotsOnTarget','awayShotsOnTarget')} | Off ${pair('homeShotsOffTarget','awayShotsOffTarget')}` : null,
-    `🚩 KHÁC: Corner ${pair('homeCorners','awayCorners')} | Big Chance ${pair('homeBigChances','awayBigChances')}`,
-    `🔥 THẾ TRẬN: ${prediction.likelyScorer ? cleanTelegramText(prediction.likelyScorer) : 'Đang phân tích'} | Pressure ${prediction.homeShare ?? '?'}%-${prediction.awayShare ?? '?'}%`,
-    qualityAssessment,
-    `🔎 Rule Confidence: ${item.ruleConfidence?.percent ?? "—"}% (${item.ruleConfidence?.label || "Chưa xác định"}, tham khảo)`,
-    v3TelegramDetail(item.ai, st, item.minute),
-    `🧠 RULE: ${percentage.toFixed(1)}%`,
-    `🎯 AI Goal: ${item.aiGoal?.percent == null ? 'Chưa đủ dữ liệu' : item.aiGoal.percent+'%'} | ${item.aiGoal?.label || 'Chưa hiệu chuẩn'}`,
-    ...(alertDecision?.reason==='V4_COMBINED_LAMBDA'?v4Summary:[`🔔 AI Goal dự đoán còn ≥1 bàn: ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).verdict} | ${aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE).mode} (RUNG yêu cầu Rule V4 >60%)`,]),
-    ...(item.aiGoal?.source==='ai-goal-v4-rule-conditional' ? [`🧠 AI Goal: Ưu thế ${item.aiGoal.teamLean==='HOME'?'chủ nhà':item.aiGoal.teamLean==='AWAY'?'đội khách':'chưa rõ'} | ${item.aiGoal.evidence}`] : []),
-    ...(isBigBet ? [`🔥 BIG SPIKE: ${alertDecision.spike?.score ?? 0}/100 | ${alertDecision.spike?.reason || ""}`] : []),
-    `📈 RULE: ${percentage.toFixed(1)}% | AI Goal FT: ${prediction.text || 'N/A'} | Còn bàn: ${prediction.expectedExtraGoals ?? 'Chưa xác định'}`
-  ];
-  const messageLines = [
-    title,
-    `🏆 Giải đấu: ${cleanTelegramText(item.league)}`,
-    `⚽ Trận: ${cleanTelegramText(item.homeName)} vs ${cleanTelegramText(item.awayName)}`,
-    `⏱ Phút: ${item.minute}' | Tỷ số: ${item.homeScore}-${item.awayScore}`,
-    `⚽ DIỄN BIẾN TỶ SỐ: ${item.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
-    '',
-    ...compactStats,
-    ...(changes.length ? [`⚡ Biến động ${momentum.minuteGap || 7}p: ${changes.join(' | ')}`] : []),
-    '', oddLine, oddNote
-  ];
-  const message = messageLines.filter(line => line !== null && line !== undefined).join('\n').trim();
-
-  try {
-
-    console.log(`[Telegram SENDING] #${alertNumber} | ${item.homeName} vs ${item.awayName}`);
-    const response = await axios.post(
-      `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
-      {
-        chat_id:
-          TELEGRAM_CHAT_ID,
-
-        text:
-          message,
-
-        disable_web_page_preview:
-          true
-      },
-      {
-        timeout: 10000
-      }
-    );
-
-
-    if (response.data?.ok !== true || !response.data?.result?.message_id) {
-      console.error('[Telegram ERROR] API did not confirm send:', response.data?.description || 'missing message_id');
-      return false;
-    }
-    console.log(`[Telegram SENT] message_id=${response.data.result.message_id} | alert #${alertNumber}`);
-    try { await audit.addAlert({...item,alertDecision},alertNumber,response.data.result.message_id); } catch (auditErr) { console.error('[AUDIT SAVE ERROR]',auditErr.message); }
-
-    alertState.set(
-      item.alertKey,
-      {
-        lastPercentage:
-          percentage,
-
-        lastMinute:
-          item.minute,
-
-        alertCount:
-          alertNumber,
-
-        bigBetSent:
-          (previous?.bigBetSent || false) ||
-          isBigBet,
-
-        alertSnapshot: makeMatchSnapshot(item.stats, item.minute, item.homeScore, item.awayScore),
-        homeName:item.homeName, awayName:item.awayName, league:item.league,
-        source:item.source, sourceId:String(item.id || ''),
-        updatedAt:
-          Date.now()
-      }
-    );
-
-
-    console.log(
-      `[Telegram] ${isBigBet ? '🔥 BIG BET' : '🔔 ALERT'} #${alertNumber} | ${item.homeName} vs ${item.awayName} | ${percentage.toFixed(1)}%`
-    );
-
-    // Log xác nhận chỉ xuất hiện SAU KHI Telegram trả về ok/message_id
-    // và snapshot cảnh báo đã được lưu thành công.
-    console.log(
-      `🟢 [ĐÃ BÁO TELEGRAM] ${isBigBet ? '🔥 BIG BET' : '🔔 CẢNH BÁO'} LẦN ${alertNumber}/${MAX_ALERTS_PER_MATCH}` +
-      ` | ${item.homeName} vs ${item.awayName}` +
-      ` | Phút ${item.minute}' | Tỷ số ${item.homeScore}-${item.awayScore}` +
-      ` | Rule ${percentage.toFixed(1)}%` +
-      ` | message_id=${response.data.result.message_id}`
-    );
-
-
-    return true;
-
-  } catch (e) {
-
-    console.error(
-      '[Telegram Error]',
-      e.response?.status || '',
-      e.response?.data?.description || e.message
-    );
-
-    return false;
-  } finally {
-    sendingKeys.delete(item.alertKey);
-    sendingFixtures.delete(fixtureIdentity);
-  }
-}
-
-
-// ==========================================================
 // 44. FETCH ALL LIVE SOURCES
 // ==========================================================
 
@@ -7012,33 +5947,6 @@ function classifyOdds(assessment,payload) {
   }
   return 'VALID';
 }
-async function observeAiGoalOdds(match, minute, aiGoalPercent) {
-  const fetched=await getOddsForMatch(match);
-  const total=Number(match.homeScore)+Number(match.awayScore);
-  const assessment=fetched.payload && Number.isFinite(total)
-    ? aiGoalOddsShadow.evaluate(fetched.payload,total,aiGoalPercent):null;
-  const status=assessment?classifyOdds(assessment,fetched.payload):fetched.status;
-  const id=fetched.fixtureId;
-  const record={key:id?`apisports:${id}`:`${match.source}:${match.id}`,
-    fixtureId:id,minute,score:`${match.homeScore}-${match.awayScore}`,
-    home:match.homeName,away:match.awayName,observedAt:new Date().toISOString(),
-    ...(assessment||{}),probability:null,evaluation:'PENDING_FT',
-    quoteValid:status==='VALID',oddsStatus:status,modelStatus:oddsShadowModel.reason};
-  if(status==='VALID') {
-    record.marketBaselinePercent=assessment.marketImpliedPercent;
-    record.probability=aiGoalOddsShadow.predict(oddsShadowModel,record);
-    record.calibrated=record.probability!==null;
-    if(!oddsShadowSamples.some(x=>x.fixtureId===id)) {
-      oddsShadowSamples.push({...record,observedGoals:total,outcome:null});
-      oddsShadowSamples=oddsShadowSamples.slice(-5000);
-      persistOddsShadow();
-    }
-  }
-  aiGoalOddsRecords.set(record.key,record);
-  if(aiGoalOddsRecords.size>300) aiGoalOddsRecords.delete(aiGoalOddsRecords.keys().next().value);
-  if(status!=='VALID') console.log(`[ODDS SHADOW STATUS] ${match.homeName} vs ${match.awayName} | ${status} | fixture=${id||'none'}`);
-  return record;
-}
 let oddsFtAuditBusy=false;
 async function auditAiGoalOddsFt() {
   if(oddsFtAuditBusy||!APISPORTS_KEY)return;
@@ -7125,32 +6033,11 @@ async function noStatsHistory(teamId) {
     return null;
   }
 }
-// AI Goal V4: reuse the exact AI NO-STATS Poisson estimator as an additional
-// evidence feature. No Rule/AI Goal percentages are fed into lambda.
-async function v4HistoricalGoalFeature(match, minute) {
-  const candidates=[match,...(match.crossSourceMatches||[])];
-  const api=candidates.find(c=>c.source==='apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
-  if(!api)return null;
-  const [home,away]=await Promise.all([
-    noStatsHistory(api.raw.teams.home.id),noStatsHistory(api.raw.teams.away.id)
-  ]);
-  const baseline=aiNoStats.provisionalProbability(minute,home,away);
-  if(!baseline)return null;
-  // Preserve the original, uncalibrated AI NO-STATS Poisson estimate.
-  // FT learning remains observation-only and cannot modify predictions.
-  const lambda=baseline.expectedRemainingGoals;
-  return {expectedRemainingGoals:lambda,
-    probabilityAtLeastOne:baseline.probability,
-    probabilityAtLeastTwo:+(100*(1-Math.exp(-lambda)*(1+lambda))).toFixed(1),
-    baselineExpectedRemainingGoals:baseline.expectedRemainingGoals,
-    historyHomeSample:home.sample,historyAwaySample:away.sample,
-    calibrated:false,source:'AI_NO_STATS_POISSON_HISTORY'};
-}
 // Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
 const NO_STATS_ALERT_MINUTE_MIN = 65;
 const NO_STATS_ALERT_MINUTE_MAX = 88;
 const NO_STATS_ALERT_EXPECTED_GOALS = 0.90;
-// AI NO-STATS EARLY GOAL (separate from BIGGG shadow test).
+// AI NO-STATS EARLY GOAL (confirmed goal event).
 const EARLY_GOAL_BASE_MIN = 60;
 const EARLY_GOAL_BASE_MAX = 64;
 const EARLY_GOAL_GOAL_MAX = 70;
@@ -7257,11 +6144,13 @@ function earlyGoalCandidate(record) {
       Number(e.minute)<=minute);
     if(!goals.length)continue;
     const goalMinute=Math.max(...goals.map(e=>Number(e.minute)));
-    // Only the confirmed new goal is required; Odds are optional display-only data.
+    // BIGGG BET requires a verified LIVE Over price strictly greater than 1.50.
+    // Pre-goal lambda is historical evidence only, not the current forecast.
+    const overOdds=record.bigggOddsValid===true ? Number(record.bigggOverOdds) : NaN;
+    if(!Number.isFinite(overOdds)||overOdds<=1.50)continue;
     return {baselineMinute:Number(baseline.minute),baselineLambda:Number(baseline.expectedRemainingGoals),
       baselineScore:baseline.score,goalMinute,
-      overOdds:record.bigggOddsValid===true&&Number.isFinite(Number(record.bigggOverOdds))?Number(record.bigggOverOdds):null,
-      overLine:record.bigggOddsValid===true?record.bigggOverLine:null};
+      overOdds,overLine:record.bigggOverLine};
   }
   return null;
 }
@@ -7271,10 +6160,27 @@ async function maybeSendNoStatsAlert(record) {
   try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
-  const earlyGoal=Number.isFinite(lambda)&&lambda<NO_STATS_ALERT_EXPECTED_GOALS?earlyGoalCandidate(record):null;
+  const earlyGoal=earlyGoalCandidate(record); // Independent of post-goal lambda.
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
       (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
+  // Odds gate affects SENDING only. Each scan still records fresh AI evidence,
+  // including scores/goals while odds are below threshold; never reuse a stale
+  // pre-goal probability as the current probability after a goal.
+  const liveOverOdds = record.bigggOddsValid === true ? Number(record.bigggOverOdds) : NaN;
+  const hasLiveOverOdds = Number.isFinite(liveOverOdds) && liveOverOdds > 1;
+  const isLowLambda = !earlyGoal && lambda < 1.5;
+  // BIGGG BET: strictly >1.50, verified. BET NHE TAY: >=1.50 if available,
+  // or allow unavailable odds. Other alerts retain the existing >=1.50 gate.
+  const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
+    : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
+    : (hasLiveOverOdds && liveOverOdds >= 1.50);
+  if (!oddsAllowed) {
+    record.oddsGateState='WAIT_ODDS';
+    console.log(`[AI NO-STATS ODDS WAIT] ${record.home} vs ${record.away} | ${minute}' | Over=${hasLiveOverOdds ? liveOverOdds : 'UNAVAILABLE'} | lambda=${lambda} | fresh AI will be rechecked next scan`);
+    return false;
+  }
+  record.oddsGateState='ELIGIBLE';
   // Operator-only Telegram gate: original AI NO-STATS probability and lambda remain untouched.
   if (!earlyGoal && lambda < 1.5 && !scanControl.isLowLambdaAlertsEnabled()) return false;
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
@@ -7447,8 +6353,6 @@ async function observeNoStats(match, minute, liveStats=null) {
     if(over&&under){record.bigggOverOdds=Number(over.odd);record.bigggOverLine=Number(line);
       record.bigggOddsMarket='Match Goals O/U';record.bigggOddsUpdatedAt=assessment?.oddsUpdate||null;record.bigggOddsValid=true;}
   }
-  // Independent BIGGG evidence collection; does not affect Telegram or Poisson.
-  record.bigggExperiment=bigggShadow.observe(record)?.tier||'NGOÀI PHẠM VI THỬ NGHIỆM';
   noStatsRecords.set(record.key, record);
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
@@ -7475,7 +6379,6 @@ async function auditNoStatsFt() {
         const f=response?.response?.[0];
         if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
-        bigggShadow.settle(row.fixtureId,f?.goals?.home!=null&&f?.goals?.away!=null?`${f.goals.home}-${f.goals.away}`:null,status);
         if(['CANC','ABD','PST','SUSP'].includes(status)) {
           row.outcome='VOID';row.evaluation='VOID';row.settledAt=new Date().toISOString();changed=true;continue;
         }
@@ -7553,7 +6456,6 @@ async function auditNoStatsFt() {
         if(!finalScore&&!['CANC','ABD','PST','SUSP'].includes(status))continue;
         if(finalScore && (!Number.isInteger(finalScore.h)||!Number.isInteger(finalScore.a)||finalScore.h<0||finalScore.a<0))continue;
         const score=finalScore?`${finalScore.h}-${finalScore.a}`:null;
-        bigggShadow.settle(id,score,status);
         for(const row of noStatsObservations){
           if(String(row.fixtureId)!==id||row.outcome!==null)continue;
           if(!finalScore){row.outcome='VOID';row.evaluation='VOID';}
@@ -7566,18 +6468,6 @@ async function auditNoStatsFt() {
           row.settledAt=new Date().toISOString();obsChanged=true;
         }
       }catch(e){console.warn('[NO-STATS OBS FT]',id,e.message);}
-    }
-    // BIGGG has its own pending queue, including legacy 60–64 minute records.
-    for(const row of bigggShadow.pendingFixtures(12)){
-      if(pendingObs.has(String(row.fixtureId)))continue;
-      try{
-        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
-        const f=response?.response?.[0];
-        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
-        const status=String(f?.fixture?.status?.short||'').toUpperCase();
-        const score=f?.goals?.home!=null&&f?.goals?.away!=null?`${f.goals.home}-${f.goals.away}`:null;
-        bigggShadow.settle(row.fixtureId,score,status);
-      }catch(e){console.warn('[BIGGG FT]',row.fixtureId,e.message);}
     }
     if(obsChanged)persistNoStatsObservations(noStatsObservations.filter(x=>x.outcome!==null&&x.settledAt));
     // Chronological fixture-level calibration: one first valid 65-88 snapshot per match.
@@ -7607,414 +6497,20 @@ setTimeout(()=>auditNoStatsFt().catch(e=>console.warn('[NO-STATS FT]',e.message)
 // 47. SCAN ONE MATCH
 // ==========================================================
 
-async function analyzeOneMatch(
-  match,
-  allOdds
-) {
-
-  const minuteRaw = match.minute ?? calculateExactMinute(match.raw);
-
-
-  if (
-    minuteRaw === 'HT'
-  ) {
-
-    console.log(
-      `[Skip] HT | ${match.homeName} vs ${match.awayName}`
-    );
-
-    return null;
-  }
-
-
-  const minute =
-    typeof minuteRaw === 'number'
-      ? minuteRaw
-      : parseInt(
-          minuteRaw,
-          10
-        );
-
-
-  // ======================================================
-  // CHỈ QUÉT 46 -> 88
-  // ======================================================
-
-  if (
-    !Number.isFinite(minute) ||
-    minute < 46 ||
-    minute > 88
-  ) {
-
-    return null;
-  }
-
-
-  // ======================================================
-  // FILTER LEAGUE
-  // ======================================================
-
-  if (
-    isFilteredLeague(
-      match.league,
-      match.homeName,
-      match.awayName
-    )
-  ) {
-
-    console.log(
-      `[Skip League] ${match.league} | ${match.homeName} vs ${match.awayName}`
-    );
-
-    return null;
-  }
-
-
-  // ======================================================
-  // FETCH STATS
-  // ======================================================
-
-  const stats =
-    await fetchMatchDetailStats(
-      match
-    );
-
-
-  // Approved issue #9: observe the same AI NO-STATS stream with or without LIVE stats.
-  // No unvalidated stats weighting; existing Rule V4 decision remains unchanged.
-  try { await observeNoStats(match, minute, stats); }
-  catch (error) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName} | ${error.message}`); }
-
-  // ======================================================
-  // MOMENTUM
-  // ======================================================
-
-  // Alert key dùng tên đội để giữ chung
-  // trạng thái nếu API nguồn thay đổi.
-  const canonicalAlertKey = createMatchKey(
-    resolverAliasTokens(match.homeName).join(' '),
-    resolverAliasTokens(match.awayName).join(' ')
-  );
-  // Reuse an existing alert key even when providers spell the same team differently.
-  // Only reuse when both teams are strongly matched; never match on score alone.
-  const matchingAlertKeys = [...alertState.entries()].filter(([key, prior]) =>
-    prior.homeName && prior.awayName &&
-    resolverTeamScore(prior.homeName, match.homeName) >= .90 &&
-    resolverTeamScore(prior.awayName, match.awayName) >= .90 &&
-    // League labels can change after cross-provider resolution. They are NOT identity.
-    // Limit name-based reuse to active match state to avoid confusing future rematches.
-    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL
-  );
-  const sourceIdMatches = [...alertState.entries()].filter(([, prior]) =>
-    prior.source === match.source && prior.sourceId &&
-    String(prior.sourceId) === String(match.id) &&
-    Date.now() - Number(prior.updatedAt || 0) < ALERT_STATE_TTL
-  );
-  const alertKey = sourceIdMatches.length === 1
-    ? sourceIdMatches[0][0]
-    : alertState.has(canonicalAlertKey)
-      ? canonicalAlertKey
-      : matchingAlertKeys.length === 1 ? matchingAlertKeys[0][0] : canonicalAlertKey;
-  if (alertKey !== canonicalAlertKey) {
-    console.log(`[ALERT DEDUP] ${match.homeName} vs ${match.awayName} | reused=${alertKey} | canonical=${canonicalAlertKey} | league=${match.league}`);
-  }
-
-
-  const momentum =
-    calculateMomentum(
-      alertKey,
-      stats,
-      minute
-    );
-
-  // Giai đoạn 46–64: chỉ thu thập dữ liệu và cập nhật Momentum.
-  // Quyết định gửi Telegram chỉ được thực hiện từ phút 65.
-  if (minute < MIN_TELEGRAM_MINUTE) {
-    console.log(`[COLLECT 46-64] ${match.homeName} vs ${match.awayName} | ${minute}' | Momentum=${momentum?.available ? momentum.score : 'N/A'} | NO TELEGRAM`);
-  }
-
-
-  // ======================================================
-  // ODDS
-  // ======================================================
-
-  const odds =
-    findMatchOdds(
-      allOdds,
-      match.homeName,
-      match.awayName,
-      match.homeScore,
-      match.awayScore
-    );
-
-
-  // ======================================================
-  // Nếu không có stats và cũng không odds
-  // thì bỏ qua.
-  // ======================================================
-
-  if (
-    !hasUsefulStats(stats) &&
-    !odds.found
-  ) {
-
-    console.log(
-      ` └─> Không có statistics/odds đủ để phân tích`
-    );
-
-    return null;
-  }
-
-
-  // ======================================================
-  // AI RULE
-  // ======================================================
-
-  const windows=getPressureWindow(alertKey,stats,minute,match.homeScore,match.awayScore);
-  if (false && (!windows.five.available || !windows.ten.available)) console.log(`[DYNAMIC DATA] ${match.homeName} vs ${match.awayName} | ${minute}' | 5m=${windows.five.reason || 'PARTIAL'} | 10m=${windows.ten.reason || 'PARTIAL'} | partial windows allowed; require valid provider-matched delta`);
-  const lastGoal=postGoalState.get(alertKey);
-  const currentTotal=Number(match.homeScore)+Number(match.awayScore);
-  if(lastGoal && currentTotal>lastGoal.total && minute>=lastGoal.minute) {
-    postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current});
-    console.log(`[POST GOAL] ${match.homeName} vs ${match.awayName} | detected at ${minute}' | follow 10m`);
-  } else if (!lastGoal) {
-    postGoalState.set(alertKey,{minute,total:currentTotal,updatedAt:Date.now(),baseline:windows.current,unverified:true});
-  }
-  const postGoal=postGoalState.get(alertKey);
-  const ai = evaluateRuleV3(stats, momentum, minute, match.homeScore, match.awayScore, windows);
-  const aiGoal = estimateRemainingGoalProbability(stats, momentum, minute, match.homeScore, match.awayScore, windows, ai);
-  // AI Goal V4 Poisson feature is additive evidence only. Never changes the
-  // existing AI Goal probability, Rule, Telegram decision or NO-STATS alerts.
-  try {
-    aiGoal.poissonHistory=await v4HistoricalGoalFeature(match,minute);
-  } catch(e) {
-    aiGoal.poissonHistory=null;
-    console.warn(`[AI GOAL V4 POISSON] ${match.homeName} vs ${match.awayName} | ${e.message}`);
-  }
-  // Combined AI Goal is activated ONLY by a separately trained and chronologically
-  // validated calibration model. Without such evidence the original prediction remains.
-  aiGoal.poissonCombination = aiGoalPoissonFusion.predict({
-    aiGoalPercent: aiGoal.percent,
-    rulePercent: ai.efficiency,
-    poisson: aiGoal.poissonHistory
-  });
-  // Immediate fusion is an additional active prediction, never a Telegram gate.
-  // Retain production AI Goal percent unless a validated model exists.
-  if (aiGoal.poissonCombination.status === 'EXPERIMENTAL_ACTIVE') {
-    aiGoal.poissonFusionPercent = aiGoal.poissonCombination.percent;
-    aiGoal.poissonFusionCalibrated = false;
-  }
-  if (aiGoal.poissonCombination.status === 'VALIDATED') {
-    aiGoal.originalPercent = aiGoal.percent;
-    aiGoal.percent = aiGoal.poissonCombination.percent;
-    aiGoal.source = 'ai-goal-v4-poisson-validated-fusion';
-    aiGoal.calibrated = true;
-  }
-  // Non-blocking SHADOW: errors cannot change existing alert or Rule calculations.
-  try { await observeAiGoalOdds(match,minute,aiGoal?.percent); }
-  catch(e) { console.warn(`[AI GOAL ODDS SHADOW] ${e.message}`); }
-  const scenarioAnalysis = v4ScenarioAnalysis.analyze(stats, windows);
-  if(aiGoal.divergenceFlag) console.log(`[AI GOAL V3-AWARE DIVERGENCE] ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${aiGoal.ruleScore}% | AI Goal ${aiGoal.percent}% | Base ${aiGoal.baselinePercent}% | Gap ${aiGoal.divergence}pp | INFO_ONLY`);
-
-
-
-// FT projection from AI Goal V4 only; does not use Rule to choose score.
-// AI Goal estimates P(>=1 additional goal), NOT a trained exact FT score.
-function predictFinalScoreFromAiGoal(homeScore, awayScore, aiGoal, stats) {
-  const h = Number(homeScore), a = Number(awayScore);
-  const p = Number(aiGoal?.percent);
-  const lean = aiGoal?.teamLean;
-  const pressure = calculateTeamPressure(stats);
-  const hp = Number(pressure?.home) || 0;
-  const ap = Number(pressure?.away) || 0;
-  const sum = hp + ap;
-  const base = {
-    home: h, away: a,
-    expectedExtraGoals: null,
-    likelyScorer: 'Chưa xác định',
-    confidence: 'CHƯA HIỆU CHUẨN FT',
-    homePressure: round1(hp), awayPressure: round1(ap),
-    homeShare: sum > 0 ? round1(hp / sum * 100) : null,
-    awayShare: sum > 0 ? round1(ap / sum * 100) : null,
-    source: 'ai-goal-v4-ft-one-goal-scenario',
-    exactScoreCalibrated: false
-  };
-  if (!Number.isFinite(h) || !Number.isFinite(a) ||
-      aiGoal?.percent == null || !Number.isFinite(p) || p < 0 || p > 100)
-    return {...base, text: 'Chưa đủ dữ liệu AI Goal'};
-  // Majority event probability, not an invented number of future goals.
-  if (p <= 50) return {...base, text: 'Chưa đủ cơ sở dự báo FT'};
-  if (lean !== 'HOME' && lean !== 'AWAY')
-    return {...base, text: 'Chưa xác định đội ghi bàn'};
-  const ph = h + (lean === 'HOME' ? 1 : 0);
-  const pa = a + (lean === 'AWAY' ? 1 : 0);
-  return {
-    ...base, home: ph, away: pa,
-    text: `${ph}-${pa} (kịch bản +1, tham khảo)`,
-    expectedExtraGoals: '≥1',
-    likelyScorer: lean === 'HOME' ? 'Chủ nhà' : 'Đội khách',
-    confidence: aiGoal.calibrated === true ? 'AI GOAL ĐÃ HIỆU CHUẨN' : 'AI GOAL CHƯA HIỆU CHUẨN'
-  };
+async function analyzeOneMatch(match, allOdds) {
+  const rawMinute = match.minute ?? calculateExactMinute(match.raw);
+  if (rawMinute === 'HT') return null;
+  const minute = Number.parseInt(rawMinute,10);
+  if (!Number.isFinite(minute) || minute < 46 || minute > 88) return null;
+  if (isFilteredLeague(match.league,match.homeName,match.awayName)) return null;
+  const stats = await fetchMatchDetailStats(match);
+  try { await observeNoStats(match,minute,stats); }
+  catch(e) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName}: ${e.message}`); }
+  const record=[...noStatsRecords.values()].find(r=>r.source===match.source&&String(r.sourceId)===String(match.id)&&Number(r.minute)===minute);
+  const telegramSent=Boolean(record&&noStatsSentKeys.has(noStatsAlertKey(record)));
+  console.log(`[AI THU NGHIEM] ${match.homeName} vs ${match.awayName} | ${minute}' | lambda=${record?.expectedRemainingGoals??'N/A'} | P>=1=${record?.probability??'N/A'}% | telegram=${telegramSent?'SENT':'NOT_SENT'}`);
+  return {...match,minute,stats,telegramSent,aiNoStats:record?{lambda:record.expectedRemainingGoals,probability:record.probability}:null};
 }
-
-  // ======================================================
-  // PREDICT FT SCORE
-  // ======================================================
-
-  const scorePrediction =
-    predictFinalScoreFromAiGoal(
-      match.homeScore,
-      match.awayScore,
-      aiGoal,
-      stats
-    );
-
-
-  // ======================================================
-  // ALERT DECISION
-  // ======================================================
-
-  const alertDecision =
-    shouldSendAlert(
-      alertKey,
-      ai.efficiency,
-      minute,
-      momentum,
-      stats,
-      match.homeScore,
-      match.awayScore
-    );
-
-
-  // After a verified score change, require fresh post-goal evidence before first alert.
-  // POST GOAL only gates sending for the first 10 minutes; it never changes Rule scores.
-  // At exactly minute +10, the normal Rule/Telegram decision applies again.
-  if (!alertState.has(alertKey) && postGoal && !postGoal.unverified && minute>=postGoal.minute && minute-postGoal.minute<10) {
-    const delta={};
-    for(const f of ['TotalShots','ShotsOnTarget','Corners','BigChances'])delta[f]=pressureDelta(postGoal.baseline,windows.current,f);
-    const postWindow={available:Object.values(delta).filter(v=>v!==null).length>=2,delta};
-    if(!pressureEvidence(postWindow)) {
-      alertDecision.send=false;alertDecision.reason='POST_GOAL_WAIT_FRESH_PRESSURE';
-    }
-  }
-
-  // The trained two-stage V4 + four-scenario probability is the final AI Goal
-  // next-goal assessment when independently validated. Until then, keep the
-  // previous production gates and label the decision as uncalibrated.
-  const nextGoalDecision = aiGoalBetDecision.decide(aiGoal,ai.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
-  console.log(`[AI GOAL NEXT-GOAL] ${match.homeName} vs ${match.awayName} | ${minute}' | ${nextGoalDecision.verdict} | AI Goal=${nextGoalDecision.probability ?? 'N/A'}% | Rule=${nextGoalDecision.rule ?? 'N/A'}% | mode=${nextGoalDecision.mode} | reason=${nextGoalDecision.reason}`);
-
-  // UNIFIED AI: reuse the already evaluated AI THỬ NGHIỆM record without
-  // changing its estimator, probability, lambda, or Telegram threshold.
-  const unifiedRecord=[...noStatsRecords.values()].find(r=>
-    r.source===match.source && String(r.sourceId)===String(match.id) && Number(r.minute)===Number(minute));
-  const unifiedLambda=unifiedRecord?.expectedRemainingGoals ?? null;
-  const unifiedProbability=unifiedRecord?.probability ?? null;
-  const v4Combined={expectedRemainingGoals:unifiedLambda,probability:unifiedProbability,
-    htGoals:unifiedRecord?.htGoals??null,source:'AI_THU_NGHIEM_DUY_NHAT',
-    eligible:unifiedRecord!=null&&minute>=NO_STATS_ALERT_MINUTE_MIN&&minute<=NO_STATS_ALERT_MINUTE_MAX&&
-      Number(unifiedLambda)>=NO_STATS_ALERT_EXPECTED_GOALS};
-  // The independent AI THỬ NGHIỆM sender above is now the only Telegram sender.
-  // Old Rule/AI Goal signals are retained as historical data only, never send.
-  alertDecision.send=false;
-  alertDecision.bigBet=false;
-  alertDecision.reason=unifiedRecord?'UNIFIED_AI_THU_NGHIEM':'AI_THU_NGHIEM_NO_DATA';
-  console.log(`[AI THU NGHIEM UNIFIED] ${match.homeName} vs ${match.awayName} | ${minute}' | lambda=${unifiedLambda??'N/A'} | P>=1=${unifiedProbability??'N/A'}% | sent=${unifiedRecord?noStatsSentKeys.has(noStatsAlertKey(unifiedRecord)):false}`);
-
-  const compactGoalTimeline =
-    extractGoalTimeline(
-      match.raw
-    );
-
-
-  const compactBigChance =
-    (
-      stats.homeBigChances > 0 ||
-      stats.awayBigChances > 0
-    )
-      ? ` | BC ${stats.homeBigChances}-${stats.awayBigChances}`
-      : '';
-
-
-  console.log(
-    `⚽ ${match.homeName} ${match.homeScore}-${match.awayScore} ${match.awayName} | ${minute}' | Goals: ${compactGoalTimeline}`
-  );
-
-
-  console.log(
-    `📊 ATT ${stats._present?.homeAttacks===true?stats.homeAttacks:'N/A'}-${stats._present?.awayAttacks===true?stats.awayAttacks:'N/A'} | DA ${stats._present?.homeDangerousAttacks===true?stats.homeDangerousAttacks:'N/A'}-${stats._present?.awayDangerousAttacks===true?stats.awayDangerousAttacks:'N/A'} | SH ${stats.homeTotalShots}-${stats.awayTotalShots} | SOT ${stats.homeShotsOnTarget}-${stats.awayShotsOnTarget} | COR ${stats.homeCorners}-${stats.awayCorners} | POSS ${stats.homePossession}-${stats.awayPossession}${compactBigChance} | 🧠 RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | FT ${scorePrediction.text} | Alert ${alertDecision.send ? 'YES' : 'NO'}`
-  );
-
-
-function calculateRuleConfidence(stats, match, minute, momentum, rule) {
-  // Informational reliability only; never changes Rule or Telegram gating.
-  const fields=['TotalShots','ShotsOnTarget','ShotsOffTarget','BlockedShots','ShotsInsideBox',
-    'ShotsOutsideBox','Corners','Attacks','DangerousAttacks','Possession','ExpectedGoals',
-    'BigChances','YellowCards','RedCards','GoalkeeperSaves','Fouls'];
-  const has=f=>['home','away'].some(side=>stats?._present?.[side+f]===true && Number.isFinite(Number(stats[side+f])));
-  const coverage=fields.filter(has).length;
-  const sources=stats?.fieldSources||stats?._fieldSources||{};
-  const distinctSources=new Set(Object.values(sources).flatMap(v=>Array.isArray(v)?v:[v]).filter(Boolean)).size;
-  const coverageScore=coverage/fields.length*100;
-  const sourceScore=distinctSources>=2?100:distinctSources===1?70:45;
-  const momentumScore=momentum?.available===true?100:40;
-  const percent=Math.round((coverageScore*0.75+sourceScore*0.15+momentumScore*0.10)*100)/100;
-  return {coverage,total:fields.length,percent,label:`${coverage}/${fields.length} chỉ số`,
-    components:{coverage:coverageScore,sourceReliability:sourceScore,momentumReliability:momentumScore},
-    method:'multi-stat-evidence-v1'};
-}
-
-  console.log(`[V3 ADVANCED] ${match.homeName} vs ${match.awayName} | ${minute}' | ${formatV3Advanced(ai,stats,minute)}`);
-  const ruleConfidence = calculateRuleConfidence(stats, match, minute, momentum, ai.efficiency);
-  // Một dòng trạng thái trên mỗi trận/vòng quét; không gửi Telegram khi chưa đủ điều kiện.
-  const followupState = alertState.get(alertKey);
-  const decisionReason = String(alertDecision.reason || 'UNKNOWN');
-  const monitoring = !alertDecision.send && followupState &&
-    (decisionReason.startsWith('WAIT_') || decisionReason.startsWith('NO_NEW_SPIKE') ||
-     decisionReason.startsWith('MONITORING'));
-  const followupStatus = alertDecision.send ? 'DU_DIEU_KIEN_GUI' : (monitoring ? 'DANG_THEO_DOI' : 'KHONG_GUI_LAI');
-  console.log(`[FOLLOWUP] ${followupStatus} | ${match.homeName} vs ${match.awayName} | ${minute}' | RuleV3 ${ai.efficiency == null ? "N/A (STATS_MISSING)" : ai.efficiency+"%"} | GoalAI ${aiGoal.percent === null ? "N/A" : aiGoal.percent+"%"} | Confidence ${ruleConfidence.percent}% (${ruleConfidence.label}) | Lan ${followupState ? followupState.alertCount + 1 : 1} | ${decisionReason}`);
-  const result = {
-
-    ...match,
-
-    ruleConfidence,
-
-    alertKey,
-
-    minute,
-
-    stats,
-
-    momentum,
-
-    odds,
-
-    ai,
-    aiGoal,
-    v4Combined,
-    scenarioAnalysis,
-    trainingWindows: {five:windows.five,ten:windows.ten},
-
-    scorePrediction,
-
-    goalTimeline:
-      compactGoalTimeline,
-
-    alertDecision
-  };
-
-
-  // ======================================================
-  // SEND TELEGRAM
-  // ======================================================
-
-  // Telegram delivery is handled solely by maybeSendNoStatsAlert().
-  result.telegramSent=Boolean(unifiedRecord && noStatsSentKeys.has(noStatsAlertKey(unifiedRecord)));
-
-  return result;
-}
-
 
 // ==========================================================
 // 48. MAIN SCANNER
@@ -8033,7 +6529,7 @@ async function scanLiveMatches() {
   }
 
 
-  try { await Promise.all([scanObserver.init(),bigggShadow.init()]); } catch(e) { console.error('[SHADOW STORAGE INIT] history persistence unavailable; LIVE scan continues:',e.message); }
+  try { await scanObserver.init(); } catch(e) { console.error('[SHADOW STORAGE INIT] history persistence unavailable; LIVE scan continues:',e.message); }
   scanRunning = true;
   const scanHttpStart = {networkCalls:httpMetrics.networkCalls, cacheHits:httpMetrics.cacheHits, fallbackCalls:httpMetrics.fallbackCalls, failedCalls:httpMetrics.failedCalls};
 
@@ -8221,40 +6717,13 @@ async function scanLiveMatches() {
     // SORT LOG
     // ====================================================
 
-    const ranked =
-      results
-        .slice()
-        .sort(
-          (a, b) =>
-            b.ai.efficiency -
-            a.ai.efficiency
-        );
-
-
-    console.log('');
-    console.log(
-      '--------------- TOP RULE + AI GOAL ---------------'
-    );
+    console.log('--------------- AI NO-STATS ---------------');
     console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailAttemptsLifetime=${providerStatsCounters.network} | reusedLifetime=${providerStatsCounters.reused} | emptyReusedLifetime=${providerStatsCounters.skippedUnavailable}`);
     console.log(`[API REQUEST METRICS] networkCalls=${httpMetrics.networkCalls} | cacheHits=${httpMetrics.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls} | failedCalls=${httpMetrics.failedCalls} | scope=PROCESS_LIFETIME | bySource=${JSON.stringify(httpMetrics.bySource)}`);
     console.log(`[API REQUEST THIS SCAN] networkCalls=${httpMetrics.networkCalls-scanHttpStart.networkCalls} | cacheHits=${httpMetrics.cacheHits-scanHttpStart.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls-scanHttpStart.fallbackCalls} | failedCalls=${httpMetrics.failedCalls-scanHttpStart.failedCalls}`);
 
 
-    for (
-      const item of
-      ranked.slice(0, 10)
-    ) {
-
-      const ruleDisplay = item.ai?.efficiency == null ? 'N/A' : item.ai.efficiency + '%';
-      const aiGoalDisplay = item.aiGoal?.percent == null ? 'N/A' : item.aiGoal.percent + '%';
-      const verdict = aiGoalBetDecision.decide(item.aiGoal,item.ai?.efficiency,MIN_SEND_PERCENTAGE,MIN_RUNG_RULE_V4_PERCENTAGE);
-      const betLabel = `${verdict.verdict} (${verdict.mode})`;
-      const sentLabel = item.telegramSent === true ? ' | 🟢 ĐÃ GỬI CẢNH BÁO' : '';
-      console.log(
-        `${item.minute}' | Rule ${ruleDisplay} | AI Goal ${aiGoalDisplay} | AI verdict ${betLabel} | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName}${sentLabel}`
-      );
-    }
-
+    for(const item of results.slice(0,10)) console.log(`${item.minute}' | AI NO-STATS λ=${item.aiNoStats?.lambda??'N/A'} | P>=1=${item.aiNoStats?.probability??'N/A'}% | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName} | Telegram=${item.telegramSent?'SENT':'NOT_SENT'}`);
 
     const duration =
       (
@@ -8309,7 +6778,6 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
     count:aiGoalOddsRecords.size,records:[...aiGoalOddsRecords.values()]});
 });
 
-app.get('/api/biggg-shadow',(req,res)=>{res.set('Cache-Control','no-store');res.json({ok:true,mode:'SHADOW_ONLY',summary:bigggShadow.summary(),...bigggShadow.getRecords(req.query.limit,req.query.offset,req.query.filter)});});
 
 // Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
 app.get('/api/ai-no-stats', (req, res) => {
@@ -8344,7 +6812,7 @@ app.get(
       status: 'ok',
 
       bot:
-        'Football Live AI Rule Bot',
+        'THẦN TÀI MAY MẮN · AI THỬ NGHIỆM',
 
       scanMinutes:
         '46-88',
@@ -8450,24 +6918,8 @@ app.get(
                 match:
                   `${x.homeName} ${x.homeScore}-${x.awayScore} ${x.awayName}`,
 
-                rule:
-                  x.ai.efficiency,
-
-                level:
-                  x.ai.level,
-
-                predictedFT:
-                  x.scorePrediction.text,
-
-                likelyScorer:
-                  x.scorePrediction.likelyScorer,
-
-                momentum:
-                  x.momentum.score,
-
-                alert:
-                  x.alertDecision
-                    .send
+                aiNoStats: x.aiNoStats,
+                telegramSent: x.telegramSent
               })
             )
       });
@@ -8492,17 +6944,12 @@ app.get(
 
 app.locals.scanControl=scanControl;
 scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
-Promise.all([scanObserver.init(),bigggShadow.init()]).catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
+scanObserver.init().catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
 app.locals.noStatsAlertView=noStatsAlertView;
 app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
-// AI Goal scenario training: read settled audit records; does not modify audit or Telegram logic.
-const aiGoalOnlineTrainer = require('./ai_goal_online_trainer');
-const trainAiGoalScenarios = () => aiGoalOnlineTrainer.trainFromAudit(audit).catch(e=>console.warn('[AI GOAL TRAIN]',e.message));
-setTimeout(trainAiGoalScenarios, 45 * 1000);
-setInterval(trainAiGoalScenarios, 60 * 60 * 1000);
 setInterval(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 5 * 60 * 1000);
 setInterval(()=>{if(APISPORTS_KEY)scanObserver.reconcile(apiSportsGet).catch(e=>console.warn('[SCAN HISTORY FT]',e.message));},10*60*1000);
 setTimeout(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 30 * 1000);

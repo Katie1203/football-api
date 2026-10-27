@@ -112,14 +112,15 @@ const form=document.getElementById('form'),pass=document.getElementById('passwor
 eye.addEventListener('click',()=>{pass.type=pass.type==='password'?'text':'password';eye.setAttribute('aria-label',pass.type==='password'?'Hiện mật khẩu':'Ẩn mật khẩu')});
 form.addEventListener('submit',async e=>{e.preventDefault();error.textContent='';submit.disabled=true;try{
 const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({username:document.getElementById('username').value,password:pass.value})});
-const d=await r.json();if(!r.ok||!d.ok)throw Error(d.error||'Đăng nhập không thành công');
-// Verify that the browser actually retained the session cookie before navigating.
-const check=await fetch('/api/auth-status',{credentials:'same-origin',cache:'no-store',redirect:'manual'});
-if(!check.ok){
- throw Error('Mật khẩu được chấp nhận nhưng phiên đăng nhập chưa được lưu. Hãy kiểm tra cookie trên Safari hoặc phiên bản audit.js đã triển khai trên Render. (HTTP '+check.status+')');
+const d=await r.json().catch(()=>null);
+if(!r.ok||!d?.ok){
+ if(r.status===404)throw Error('Máy chủ chưa có API /api/login (HTTP 404). Kiểm tra đã triển khai đúng bản ZIP mới lên Render.');
+ throw Error(d?.error||'Đăng nhập không thành công (HTTP '+r.status+').');
 }
-const next=new URLSearchParams(location.search).get('next');
-const target=next&&next.startsWith('/')&&!next.startsWith('//')?next:'/dashboard';
-location.replace(target);
+// A successful password check alone does not prove Safari saved the session cookie.
+const session=await fetch('/api/login/session',{credentials:'same-origin',cache:'no-store'});
+const verified=await session.json().catch(()=>null);
+if(!session.ok||!verified?.ok)throw Error('Mật khẩu đúng nhưng Safari chưa lưu phiên đăng nhập (HTTP '+session.status+'). Kiểm tra cookie và bản triển khai Render.');
+const next=new URLSearchParams(location.search).get('next');location.assign(next&&next.startsWith('/')&&!next.startsWith('//')?next:'/dashboard');
 }catch(e){error.textContent=e.message}finally{submit.disabled=false}});
 </script></body></html>
