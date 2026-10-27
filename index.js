@@ -5886,12 +5886,17 @@ oddsShadowSamples=readShadowFile(oddsShadowStore);
 try { oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples); }
 catch(e) {console.warn('[ODDS SHADOW TRAIN]',e.message);}
 
-let aiGoalOddsScanCalls = 0;
-const ODDS_CALLS_PER_SCAN = 8;
+// Shared Odds fetch queue: prioritized AI NO-STATS fixtures are never excluded by
+// a fixed per-scan selection. Bound API requests over a rolling minute instead.
 const ODDS_CACHE_MS = 120000;
+const ODDS_REQUESTS_PER_MINUTE = Math.max(1, Math.min(120, Number(process.env.ODDS_REQUESTS_PER_MINUTE) || 30));
+const ODDS_RETRY_MS = 15000;
 const oddsAttemptAt = new Map();
-let oddsScanRound = 0;
-let oddsScanSelected = new Set();
+const oddsRequestTimes = [];
+const oddsPending = new Map();
+const oddsQueued = new Map();
+let oddsWorkerActive = false;
+let oddsBackoffUntil = 0;
 // Resolve only an API-Sports-native fixture ID. Never reuse another provider's ID.
 function resolveOddsFixture(match) {
   const candidates=[match,...(match.crossSourceMatches||[])];
@@ -5905,34 +5910,79 @@ function resolveOddsFixture(match) {
   if(unique.length===1) return {fixture:unique[0],status:'MATCHED_REGISTRY'};
   return {fixture:null,status:unique.length>1?'AMBIGUOUS_FIXTURE':'NO_FIXTURE_ID'};
 }
+function oddsHighPriority(match) {
+  const sources=[match,...(match.crossSourceMatches||[])];
+  return [...noStatsPriorityMatches.values()].some(state=>
+    sources.some(c=>c.source===state.match.source && String(c.id)===String(state.match.id)) &&
+    Number(state.match.minute??calculateExactMinute(state.match.raw))>=65);
+}
 function planOddsScan(matches) {
-  oddsScanRound++;
-  const ids=[...new Set(matches.map(m=>resolveOddsFixture(m).fixture?.id).filter(Boolean).map(String))];
-  // Rotate across eligible fixtures so later fixtures are not starved.
-  const start=ids.length?((oddsScanRound-1)*ODDS_CALLS_PER_SCAN)%ids.length:0;
-  const ordered=[...ids.slice(start),...ids.slice(0,start)];
-  oddsScanSelected=new Set(ordered.slice(0,ODDS_CALLS_PER_SCAN));
-  console.log(`[ODDS SHADOW DISCOVERY] eligible=${ids.length} scheduled=${oddsScanSelected.size} callsLimit=${ODDS_CALLS_PER_SCAN}`);
+  // The worker is shared by the ordinary scan and the 30-second priority scan.
+  // Queue every resolvable fixture; cache prevents redundant requests.
+  for(const match of matches) {
+    const resolved=resolveOddsFixture(match);
+    if(resolved.fixture) enqueueOdds(String(resolved.fixture.id),oddsHighPriority(match));
+  }
+  console.log(`[ODDS QUEUE] fixtures=${matches.length} queued=${oddsQueued.size} quota=${ODDS_REQUESTS_PER_MINUTE}/min`);
+  pumpOddsQueue();
+}
+function enqueueOdds(id,priority=false) {
+  const now=Date.now(),cached=aiGoalOddsCache.get(id);
+  if(cached && now-cached.at<ODDS_CACHE_MS)return;
+  if(oddsPending.has(id))return;
+  const last=oddsAttemptAt.get(id)||0;
+  if(now-last<ODDS_RETRY_MS)return;
+  const existing=oddsQueued.get(id);
+  if(existing) {if(priority)existing.priority=true;return;}
+  oddsQueued.set(id,{priority,queuedAt:now});
+}
+function pumpOddsQueue() {
+  if(oddsWorkerActive || !APISPORTS_KEY)return;
+  oddsWorkerActive=true;
+  (async()=>{
+    try {
+      while(oddsQueued.size) {
+        const now=Date.now();
+        while(oddsRequestTimes.length && oddsRequestTimes[0]<=now-60000)oddsRequestTimes.shift();
+        if(now<oddsBackoffUntil || oddsRequestTimes.length>=ODDS_REQUESTS_PER_MINUTE) {
+          const wait=Math.max(250,now<oddsBackoffUntil?oddsBackoffUntil-now:oddsRequestTimes[0]+60000-now);
+          await new Promise(resolve=>setTimeout(resolve,Math.min(wait,60000)));
+          continue;
+        }
+        const entry=[...oddsQueued.entries()].sort((a,b)=>Number(b[1].priority)-Number(a[1].priority)||a[1].queuedAt-b[1].queuedAt)[0];
+        if(!entry)break;
+        const [id]=entry;oddsQueued.delete(id);
+        if(aiGoalOddsCache.has(id)&&Date.now()-aiGoalOddsCache.get(id).at<ODDS_CACHE_MS)continue;
+        oddsRequestTimes.push(Date.now());oddsAttemptAt.set(id,Date.now());
+        const pending=(async()=>{
+          try {
+            const payload=await apiSportsGet('/odds/live',{fixture:id});
+            aiGoalOddsCache.set(id,{at:Date.now(),payload});
+            return {status:'FETCHED',fixtureId:id,payload};
+          } catch(e) {
+            console.warn(`[ODDS QUEUE FETCH] fixture=${id} | ${e.message}`);
+            if(/429|rate.limit|too many requests/i.test(String(e.message)))oddsBackoffUntil=Date.now()+60000;
+            return {status:'API_ERROR',fixtureId:id,payload:null};
+          }
+        })();
+        oddsPending.set(id,pending);
+        try {await pending;} finally {oddsPending.delete(id);}
+      }
+    } finally {oddsWorkerActive=false;}
+  })().catch(e=>console.warn('[ODDS QUEUE WORKER]',e.message));
 }
 async function getOddsForMatch(match) {
-  if(!APISPORTS_KEY) return {status:'NO_API_KEY',fixtureId:null,payload:null};
+  if(!APISPORTS_KEY)return {status:'NO_API_KEY',fixtureId:null,payload:null};
   const resolved=resolveOddsFixture(match);
-  if(!resolved.fixture) return {status:resolved.status,fixtureId:null,payload:null};
+  if(!resolved.fixture)return {status:resolved.status,fixtureId:null,payload:null};
   const id=String(resolved.fixture.id),now=Date.now();
   const cached=aiGoalOddsCache.get(id);
-  if(cached && now-cached.at<ODDS_CACHE_MS) return {status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload};
-  if(!oddsScanSelected.has(id)) return {status:'WAITING_SCAN_SLOT',fixtureId:id,payload:null};
-  if(aiGoalOddsScanCalls>=ODDS_CALLS_PER_SCAN) return {status:'RATE_LIMIT_SCAN',fixtureId:id,payload:null};
-  aiGoalOddsScanCalls++;
-  oddsAttemptAt.set(id,now);
-  try {
-    const payload=await apiSportsGet('/odds/live',{fixture:id});
-    aiGoalOddsCache.set(id,{at:now,payload});
-    return {status:'FETCHED',fixtureId:id,payload};
-  } catch(e) {
-    console.warn(`[ODDS SHADOW FETCH] fixture=${id} | ${e.message}`);
-    return {status:'API_ERROR',fixtureId:id,payload:null};
-  }
+  if(cached && now-cached.at<ODDS_CACHE_MS)return {status:'FETCHED_CACHE',fixtureId:id,payload:cached.payload};
+  // Include newly qualifying fixtures in the queue immediately, even between scans.
+  enqueueOdds(id,oddsHighPriority(match));
+  pumpOddsQueue();
+  if(oddsPending.has(id))return oddsPending.get(id);
+  return {status:'WAITING_ODDS_QUEUE',fixtureId:id,payload:null};
 }
 function classifyOdds(assessment,payload) {
   if(!Array.isArray(payload?.response)||!payload.response.length) return 'NO_ODDS';
@@ -6214,7 +6264,12 @@ async function maybeSendNoStatsAlert(record) {
   const isLowLambda = !earlyGoal && lambda < 1.5;
   // BIGGG BET: strictly >1.50, verified. BET NHE TAY: >=1.50 if available,
   // or allow unavailable odds. Other alerts retain the existing >=1.50 gate.
+  // Additional gate ONLY for qualifying AI signals from minute 65 onward.
+  // A saved pre-65 signal remains qualifying even if current lambda declines.
+  // All other alert types and existing odds rules remain unchanged.
+  const qualifyingFrom65 = minute >= 65 && (lambda > NO_STATS_ALERT_EXPECTED_GOALS || !!savedUnscoredSignal);
   const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
+    : qualifyingFrom65 ? (hasLiveOverOdds && liveOverOdds >= 1.50)
     : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
     : (hasLiveOverOdds && liveOverOdds >= 1.50);
   if (!oddsAllowed) {
@@ -6397,6 +6452,10 @@ async function observeNoStats(match, minute, liveStats=null) {
   }
   noStatsRecords.set(record.key, record);
   trackNoStatsPriority(match, record);
+  if(Number(record.minute)>=65 && (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS || noStatsPriorityMatches.has(noStatsPriorityKey(match)))) {
+    const oddsFixture=resolveOddsFixture(match).fixture;
+    if(oddsFixture){enqueueOdds(String(oddsFixture.id),true);pumpOddsQueue();}
+  }
   try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
   await maybeSendNoStatsAlert(record);
   updateNoStatsAlertLiveScore(record);
@@ -6760,7 +6819,6 @@ async function scanLiveMatches() {
 
 
     noStatsScanBudget = {events: 0, history: 0};
-    aiGoalOddsScanCalls = 0;
     planOddsScan(eligibleMatches);
     // ====================================================
     // ANALYZE
@@ -7045,6 +7103,20 @@ scanObserver.init().catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
 app.locals.noStatsAlertView=noStatsAlertView;
 app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;
+// Read-only Dashboard view: AI signals waiting for a qualifying LIVE Over price.
+// No extra Odds API calls and no change to Telegram decisions.
+app.locals.noStatsOddsWaitingView=()=>[...noStatsRecords.values()]
+ .filter(r=>r.oddsGateState==='WAIT_ODDS' && Number(r.minute)>=65 && Number(r.minute)<=88
+   && Date.now()-Date.parse(r.updatedAt||0)<15*60*1000
+   && !noStatsSentKeys.has(noStatsAlertKey(r)))
+ .map(r=>({fixtureId:r.fixtureId,home:r.home,away:r.away,league:r.league,
+   minute:r.minute,score:r.score,probability:r.probability,
+   expectedRemainingGoals:r.expectedRemainingGoals,
+   overOdds:r.bigggOddsValid===true?r.bigggOverOdds:null,
+   oddsStatus:r.oddsStatus||'UNAVAILABLE',updatedAt:r.updatedAt,
+   reason:'Chưa đạt điều kiện Odds gửi Telegram'}))
+ .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
 setInterval(()=>audit.reconcile().catch(e=>console.error('[AUDIT FT]',e.message)), 5 * 60 * 1000);

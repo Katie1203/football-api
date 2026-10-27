@@ -215,7 +215,13 @@ function setup(app){setupLogin(app);const scanObserver=require('./scan_observer'
  }catch(e){res.status(503).json({ok:false,error:e.message});}});
 app.get('/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'live-monitor.html'));});app.get('/api/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');const view=scanObserver.liveView();
  const noStats=typeof app.locals.noStatsLiveView==='function'?app.locals.noStatsLiveView():[];
- res.json({...view,noStats});});app.get('/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'scan-history.html'));});app.get('/api/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json(scanObserver.view(req.query));});app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/ai-no-stats',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'ai-no-stats.html'));});app.get('/api/no-stats-alerts',requireAuth,async(req,res)=>{
+ res.json({...view,noStats});});app.get('/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.sendFile(path.join(__dirname,'scan-history.html'));});app.get('/api/scan-history',requireAuth,(req,res)=>{res.set('Cache-Control','no-store');res.json(scanObserver.view(req.query));});app.get('/dashboard',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'dashboard.html'));});app.get('/ai-no-stats',requireAuth,(req,res)=>{res.set('Cache-Control','no-store, no-cache, must-revalidate');res.sendFile(path.join(__dirname,'ai-no-stats.html'));});app.get('/api/no-stats-odds-waiting',requireAuth,(req,res)=>{
+ res.set('Cache-Control','no-store');
+ try {res.json({ok:true,records:typeof app.locals.noStatsOddsWaitingView==='function'
+   ?app.locals.noStatsOddsWaitingView():[]});}
+ catch(e){res.status(503).json({ok:false,error:'Odds waiting unavailable'});}
+});
+app.get('/api/no-stats-alerts',requireAuth,async(req,res)=>{
  res.set('Cache-Control','no-store');
  try{if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();
  const view=typeof app.locals.noStatsAlertView==='function'?app.locals.noStatsAlertView():{ok:true,summary:{sent:0,wins:0,losses:0,pending:0,settled:0,winRate:null},records:[]};

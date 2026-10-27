@@ -1011,20 +1011,37 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
   <button class="promax-refresh" type="button" onclick="window.location.reload()" title="Tải lại trang Dashboard" aria-label="Tải lại trang Dashboard">↻</button>
 <div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI THỬ NGHIỆM</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI NO-STATS.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI THỬ NGHIỆM · BET NHẸ TAY</strong><div class="hint">λ dưới 1,50 · TẮT chỉ ngừng gửi Telegram nhóm này; vẫn phân tích và lưu lịch sử. λ từ 1,50: BET BANH NÓC, không bị ảnh hưởng.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI THỬ NGHIỆM</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI THỬ NGHIỆM</h3><p class="hint">AI THỬ NGHIỆM: gửi phút 65–88 khi bàn còn kỳ vọng ≥ 0.90 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI THỬ NGHIỆM duy nhất</span></div>
 <section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI THỬ NGHIỆM</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI THỬ NGHIỆM</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI THỬ NGHIỆM</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Chỉ chốt FT khi API-Sports hoặc FlashScore xác nhận kết quả chính thức.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI THỬ NGHIỆM...</div>
-<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
+<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
 const el=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pill=x=>'<span class="ai-status">'+esc(x)+'</span>';
-let nsHistory=[],nsPage=1,nsFilter='all';const nsPageSize=21;
+let nsHistory=[],nsOddsWaiting=[],nsPage=1,nsFilter='all';const nsPageSize=21;
 function nsSetFilter(f){nsFilter=f;nsPage=1;nsRenderHistory();}
 function nsGoPage(p){nsPage=p;nsRenderHistory();document.getElementById('noStatsAlerts').scrollIntoView({block:'start'});}
 function nsRenderHistory(){
- const filtered=nsHistory.filter(x=>nsFilter==='all'||(nsFilter==='pending'?String(x.evaluation)==='PENDING_FT':String(x.evaluation)!=='PENDING_FT'));
+ const filtered=nsFilter==='odds'?nsOddsWaiting:nsHistory.filter(x=>{
+   const label=String(x.alertLabel||x.alertType||'').toUpperCase();
+   if(nsFilter==='all')return true;
+   if(nsFilter==='pending')return String(x.evaluation)==='PENDING_FT';
+   if(nsFilter==='settled')return String(x.evaluation)!=='PENDING_FT';
+   if(nsFilter==='big')return label.includes('BIGGG')||label.includes('BIG BET');
+   if(nsFilter==='rung')return label.includes('RUNG');
+   return false;
+ });
  const pages=Math.max(1,Math.ceil(filtered.length/nsPageSize));nsPage=Math.max(1,Math.min(nsPage,pages));
  const pg=document.getElementById('nsPagination');
  pg.innerHTML='<span class="hint">Trang '+nsPage+'/'+pages+' · '+filtered.length+' cảnh báo</span> <button type="button" onclick="nsGoPage('+Math.max(1,nsPage-1)+')" '+(nsPage===1?'disabled':'')+'>Trước</button> '+Array.from({length:pages},(_,i)=>i+1).filter(i=>i===1||i===pages||Math.abs(i-nsPage)<=2).map(i=>'<button type="button" onclick="nsGoPage('+i+')" '+(i===nsPage?'aria-current="page"':'')+'>'+i+'</button>').join(' ')+' <button type="button" onclick="nsGoPage('+Math.min(pages,nsPage+1)+')" '+(nsPage===pages?'disabled':'')+'>Sau</button>';
- document.querySelectorAll('#nsFilters button').forEach((b,i)=>b.setAttribute('aria-pressed',String(['all','pending','settled'][i]===nsFilter)));
+ document.querySelectorAll('#nsFilters button').forEach((b,i)=>b.setAttribute('aria-pressed',String(['all','pending','settled','big','rung','odds'][i]===nsFilter)));
  document.getElementById('noStatsAlertRows').innerHTML=filtered.slice((nsPage-1)*nsPageSize,nsPage*nsPageSize).map(x=>{
+   if(nsFilter==='odds')return '<article class="match-card" style="padding:12px">'+
+     '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
+     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.score||'—')+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
+     '<div class="match-status-inline"><span class="ai-status">CHƯA ĐẠT ODD</span></div>'+
+     '<div class="match-metrics"><div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+esc(x.probability==null?'—':x.probability+'%')+'</strong></div>'+
+     '<div class="match-metric"><small>λ</small><strong>'+esc(x.expectedRemainingGoals??'—')+'</strong></div>'+
+     '<div class="match-metric"><small>Over LIVE</small><strong>'+esc(x.overOdds??'Chưa có')+'</strong></div></div>'+
+     '<div class="hint">'+esc(x.reason||'Chờ Odds')+' · '+esc(x.updatedAt||'')+'</div></article>';
+
    const ft=x.ftScore||null,live=x.liveScore||null,alert=x.score||'—';
    const latest=ft||live||alert;
    const status=String(x.evaluation||'PENDING_FT');
@@ -1044,7 +1061,7 @@ function nsRenderHistory(){
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
-  }).join('')||'<div class="hint">Chưa có cảnh báo Telegram AI THỬ NGHIỆM được lưu.</div>';
+  }).join('')||(nsFilter==='odds'?'<div class="hint">Không có trận đang chờ Odds trong dữ liệu LIVE hiện tại.</div>':'<div class="hint">Không có cảnh báo Telegram thuộc nhóm đã chọn.</div>');
 }
 async function loadNoStatsAlerts(){
  try{
@@ -1059,7 +1076,11 @@ async function loadNoStatsAlerts(){
   el('nsOverDetail').textContent=(over.wins??0)+' WIN / '+(over.losses??0)+' LOSS · '+(over.noLine??0)+' NO LINE';
   el('nsGroups').textContent='Cảnh báo #1 — Còn bàn: '+(s.winRate==null?'—':s.winRate+'%')+' · Over: '+(over.rate==null?'—':over.rate+'%')+' · '+(s.sent??0)+' tín hiệu';
   el('noStatsAlertSummary').textContent='AI THỬ NGHIỆM · '+(s.settled??0)+' đã chốt · '+(s.pending??0)+' PENDING · '+(s.voids??0)+' VOID · Win rate '+(s.winRate==null?'—':s.winRate+'%')+' (chỉ WIN/LOSS đã chốt)';
-  nsHistory=rows;nsRenderHistory();
+  nsHistory=rows;
+  try{const wr=await fetch('/api/no-stats-odds-waiting',{cache:'no-store'});
+    nsOddsWaiting=wr.ok?(await wr.json()).records||[]:[];
+  }catch(e){nsOddsWaiting=[];}
+  nsRenderHistory();
  }catch(e){el('noStatsAlertSummary').textContent='Không tải được Audit Telegram AI NO-STATS: '+e.message;}
 }
 
