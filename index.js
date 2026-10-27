@@ -6938,7 +6938,7 @@ async function scanLiveMatches() {
     );
 
 
-    return ranked;
+    return results;
 
   } catch (e) {
 

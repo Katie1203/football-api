@@ -183,28 +183,41 @@ function bucket(x){return hasExperimental(x)?'experimental':'none';}
 function matchesGroup(x,id){
  if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
  if(id==='rung')return /RUNG/i.test(String(x.sentAlertLabel||''));
- if(id==='odds')return x.oddsWaiting===true;
+ if(id==='odds')return x.oddsVerdict==='FAIL'||x.oddsVerdict==='WAIT';
  return id==='all'||(id==='experimental'&&hasExperimental(x))||(id==='none'&&!hasExperimental(x));
 }
 function pct(x){return hasNumber(x)?Number(x).toFixed(1)+'%':'Chưa có kết quả';}
 function lambdaText(x){return hasNumber(x)?'λ = '+Number(x).toFixed(2):'Chưa có dữ liệu';}
+function oddsInfo(x){
+ const price=hasNumber(x.overOdds)&&Number(x.overOdds)>1?Number(x.overOdds):null;
+ const line=hasNumber(x.overLine)?Number(x.overLine).toFixed(1):null;
+ const status=String(x.oddsStatus||'CHƯA CÓ DỮ LIỆU');
+ const verified=x.oddsValid===true;
+ const verdict=verified&&price!==null?(price>=1.50?'ĐẠT ODDS ≥1.50':'KHÔNG ĐẠT ODDS <1.50'):
+  (/ERROR|NO_API_KEY|429/i.test(status)?'LỖI LẤY KÈO':'CHỜ ODDS / CHƯA XÁC MINH');
+ return '<div class="line"><span>Over LIVE'+(line?' · O/U '+esc(line):'')+'</span><span class="value">'+(price===null?'Chưa có kèo':esc(price.toFixed(2)))+'</span></div>'+
+ '<div class="line"><span>Điều kiện Odds</span><strong>'+verdict+'</strong></div>'+
+ '<div class="line"><span>Trạng thái nguồn</span><span>'+esc(status)+'</span></div>'+
+ (x.oddsUpdatedAt?'<div class="line"><span>Cập nhật Odds</span><span>'+esc(x.oddsUpdatedAt)+'</span></div>':'');
+}
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div><div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.oddsWaiting?'KHÔNG ĐẠT ODD':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi')))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div>'+(x.oddsWaiting?'<div class="line"><span>Over LIVE</span><span class="value">'+esc(x.overOdds??'Chưa có kèo')+'</span></div><div class="line"><span>Trạng thái Odds</span><span>'+esc(x.oddsStatus||'Đang chờ')+'</span></div>':'')+'</article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
 async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows:[];const noStats=Array.isArray(d.noStats)?d.noStats:[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
  // Do not infer BIG BET/RUNG from lambda or from a changing live score.
- const [alertResponse,waitingResponse]=await Promise.allSettled([
+ const [alertResponse,waitingResponse,fullResponse]=await Promise.allSettled([
   fetch('/api/no-stats-alerts',{cache:'no-store'}),
-  fetch('/api/no-stats-odds-waiting',{cache:'no-store'})
+  fetch('/api/no-stats-odds-waiting',{cache:'no-store'}),
+  fetch('/api/ai-no-stats',{cache:'no-store'})
  ]);
  async function recordsFrom(result){
   if(result.status!=='fulfilled'||!result.value.ok)return [];
   try{const json=await result.value.json();return Array.isArray(json.records)?json.records:[];}catch(_){return [];}
  }
- const sentAlerts=await recordsFrom(alertResponse),oddsWaiting=await recordsFrom(waitingResponse);
+ const sentAlerts=await recordsFrom(alertResponse),oddsWaiting=await recordsFrom(waitingResponse),fullOdds=await recordsFrom(fullResponse);
 
  const key=(h,a)=>[h,a].map(v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')).join('|');
  const byId=new Map(noStats.filter(x=>x.fixtureId).map(x=>[String(x.fixtureId),x]));const byName=new Map(noStats.map(x=>[key(x.home,x.away),x]));const seen=new Set();
@@ -215,18 +228,30 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  const sentByName=new Map(sentAlerts.map(x=>[key(x.home,x.away),x]));
  const waitingById=new Map(oddsWaiting.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
  const waitingByName=new Map(oddsWaiting.map(x=>[key(x.home,x.away),x]));
+ const fullById=new Map(fullOdds.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
+ const fullByName=new Map(fullOdds.map(x=>[key(x.home,x.away),x]));
+ function enrichOdds(x,wait){
+  const rec=(x.fixtureId!=null?fullById.get(String(x.fixtureId)):null)||fullByName.get(key(x.home,x.away));
+  const rawPrice=rec?.bigggOverOdds??wait?.overOdds;
+  const valid=rec?.bigggOddsValid===true;
+  const price=hasNumber(rawPrice)?Number(rawPrice):null;
+  const status=rec?.oddsStatus||wait?.oddsStatus||'CHƯA QUÉT ODDS';
+  return {overOdds:price,overLine:rec?.bigggOverLine??wait?.overLine??null,oddsValid:valid,
+   oddsStatus:status,oddsUpdatedAt:rec?.bigggOddsUpdatedAt||null,
+   oddsVerdict:valid&&price!==null?(price>=1.50?'PASS':'FAIL'):'WAIT'};
+ }
  rows=rows.map(x=>{
   const sent=(x.fixtureId!=null?sentById.get(String(x.fixtureId)):null)||sentByName.get(key(x.home,x.away));
   const wait=(x.fixtureId!=null?waitingById.get(String(x.fixtureId)):null)||waitingByName.get(key(x.home,x.away));
   return {...x,sentAlertLabel:sent?String(sent.alertLabel||sent.signalLabel||sent.alertType||''):'',
-   oddsWaiting:!!wait,overOdds:wait?.overOdds??null,oddsStatus:wait?.oddsStatus??null};
+   oddsWaiting:!!wait,...enrichOdds(x,wait)};
  });
  // Odds-waiting fixtures may not appear in the regular LIVE snapshot yet.
  for(const w of oddsWaiting){
   if(rows.some(x=>(x.fixtureId!=null&&w.fixtureId!=null&&String(x.fixtureId)===String(w.fixtureId))||key(x.home,x.away)===key(w.home,w.away)))continue;
   rows.push({fixtureId:w.fixtureId,home:w.home,away:w.away,league:w.league,minute:w.minute,
    scoreH:null,scoreA:null,noStatsProbability:w.probability,expectedRemainingGoals:w.expectedRemainingGoals,
-   oddsWaiting:true,overOdds:w.overOdds??null,oddsStatus:w.oddsStatus||'UNAVAILABLE',at:w.updatedAt});
+   oddsWaiting:true,...enrichOdds(w,w),at:w.updatedAt});
  }
 
  const s=d.summary||{};
