@@ -200,8 +200,24 @@ function oddsInfo(x){
  '<div class="line"><span>Trạng thái nguồn</span><span>'+esc(status)+'</span></div>'+
  (x.oddsUpdatedAt?'<div class="line"><span>Cập nhật Odds</span><span>'+esc(x.oddsUpdatedAt)+'</span></div>':'');
 }
-function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
- $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>matchesGroup(x,id)).length+')</button>').join(' ');
+// Front-end interpolation applies only to ordinary snapshots; priority minutes are verified by API.
+// Prefer a newer AI observation's minute when available. Mark interpolated values as estimates.
+function liveMinute(x){
+ const raw=x.minute;
+ const m=String(raw??'').trim().match(/^(?:LIVE\s*)?(\d+)/i);
+ if(!m)return {value:null,estimated:false};
+ const base=Number(m[1]);
+ if(x.priorityLive)return {value:base,estimated:false};
+ const at=Date.parse(x.minuteObservedAt||x.at||'');
+ if(!Number.isFinite(at))return {value:base,estimated:false};
+ const age=Math.max(0,Date.now()-at);
+ // Interpolate for at most five minutes. Longer gaps are stale, not a verified live clock.
+ const increment=Math.floor(Math.min(age,300000)/60000);
+ return {value:base+increment,estimated:increment>0,stale:age>300000};
+}
+function visibleLive(x){const m=liveMinute(x);return m.value===null||m.value<85;}
+function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
+ $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
  $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
@@ -221,8 +237,13 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
 
  const key=(h,a)=>[h,a].map(v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')).join('|');
  const byId=new Map(noStats.filter(x=>x.fixtureId).map(x=>[String(x.fixtureId),x]));const byName=new Map(noStats.map(x=>[key(x.home,x.away),x]));const seen=new Set();
- rows=rows.map(x=>{const nameCandidate=byName.get(key(x.home,x.away));const n=(x.fixtureId&&byId.get(String(x.fixtureId)))||((!x.fixtureId||!nameCandidate?.fixtureId)?nameCandidate:null);if(n){seen.add(n);return {...x,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent};}return x;});
- for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,analyzed:false,inWindow:true,at:n.at});}
+ rows=rows.map(x=>{const nameCandidate=byName.get(key(x.home,x.away));const n=(x.fixtureId&&byId.get(String(x.fixtureId)))||((!x.fixtureId||!nameCandidate?.fixtureId)?nameCandidate:null);if(n){seen.add(n);
+ const snapshotAt=Date.parse(x.at||'');const aiAt=Date.parse(n.updatedAt||n.at||'');
+ const aiMinute=Number(n.minute);
+ const newer=!x.priorityLive&&Number.isFinite(aiAt)&&(!Number.isFinite(snapshotAt)||aiAt>snapshotAt)&&Number.isFinite(aiMinute)&&aiMinute>=46&&aiMinute<999;
+ return {...x,minute:newer?aiMinute:x.minute,minuteObservedAt:newer?(n.updatedAt||n.at):x.at,
+  noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent};} return x;});
+ for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,analyzed:false,inWindow:true,at:n.updatedAt||n.at,minuteObservedAt:n.updatedAt||n.at});}
  // Match by provider fixture ID when possible; fall back to normalized team names.
  const sentById=new Map(sentAlerts.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
  const sentByName=new Map(sentAlerts.map(x=>[key(x.home,x.away),x]));
@@ -251,13 +272,15 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
   if(rows.some(x=>(x.fixtureId!=null&&w.fixtureId!=null&&String(x.fixtureId)===String(w.fixtureId))||key(x.home,x.away)===key(w.home,w.away)))continue;
   rows.push({fixtureId:w.fixtureId,home:w.home,away:w.away,league:w.league,minute:w.minute,
    scoreH:null,scoreA:null,noStatsProbability:w.probability,expectedRemainingGoals:w.expectedRemainingGoals,
-   oddsWaiting:true,...enrichOdds(w,w),at:w.updatedAt});
+   oddsWaiting:true,...enrichOdds(w,w),at:w.updatedAt,minuteObservedAt:w.updatedAt});
  }
 
+ // Visible rows and tab counts use the same 85-minute cutoff at render time.
+ rows=rows.filter(visibleLive);
  const s=d.summary||{};
- const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (46–88′)',s.total??rows.length],['Đã phân tích',rows.filter(hasExperimental).length],['AI THỬ NGHIỆM',rows.filter(hasExperimental).length]];
+ const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (trước 85′)',rows.filter(visibleLive).length],['Đã phân tích',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length],['AI THỬ NGHIỆM',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
- $('time').textContent='Vòng quét: '+(d.last?.at?new Date(d.last.at).toLocaleString('vi-VN'):'Chưa có dữ liệu');draw();
+ $('time').textContent='Dữ liệu quét máy chủ: '+(d.last?.at?new Date(d.last.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Trang cập nhật mỗi 15 giây; trận ưu tiên dùng phút API xác minh mỗi vòng 30 giây, trận thường có thể ước tính.';draw();
  }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message;}}
 $('q').addEventListener('input',draw);load();setInterval(load,15000);
 </script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>

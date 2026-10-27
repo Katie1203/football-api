@@ -51,6 +51,7 @@ deduplicate();
 function recordScan({totalLive,uniqueLive,eligible,results,candidates=[]}){
  const now=new Date().toISOString(),byKey=new Map((results||[]).map(r=>[fixtureKey(r),r]));
  last={at:now,totalLive,uniqueLive,eligible:eligible.length,analyzed:results.length,failed:Math.max(0,eligible.length-results.length)};
+ const previousPriorityLive=liveNow.filter(x=>x.priorityLive&&Date.now()-Date.parse(x.at||'')<90000);
  liveNow=eligible.map(m=>{
   const key=fixtureKey(m),r=byKey.get(key);
   const minute=numeric(r?.minute??m.minute??m.raw?.fixture?.status?.elapsed);
@@ -60,6 +61,17 @@ function recordScan({totalLive,uniqueLive,eligible,results,candidates=[]}){
    v4PoissonLambda:numeric(r?.aiGoal?.poissonHistory?.expectedRemainingGoals),v4PoissonProbability:numeric(r?.aiGoal?.poissonHistory?.probabilityAtLeastOne),v4PoissonTwoGoals:numeric(r?.aiGoal?.poissonHistory?.probabilityAtLeastTwo),v4PoissonFusionStatus:r?.aiGoal?.poissonCombination?.status||'NOT_ANALYZED',v4PoissonFusionPercent:numeric(r?.aiGoal?.poissonCombination?.percent),
    inWindow:true,analyzed:!!r,reason:r?'ANALYZED':'WAITING_ANALYSIS',at:now};
  }).filter(x=>x.home&&x.away&&x.minute!==null&&x.minute>=46&&x.minute<=88);
+ // A slower ordinary scan must not roll a freshly verified priority minute backwards.
+ // Keep the newer priority snapshot for the same fixture if its minute/score is ahead.
+ for(const previous of previousPriorityLive){
+  const idx=liveNow.findIndex(x=>(previous.fixtureId&&x.fixtureId&&previous.fixtureId===x.fixtureId)||
+   (x.home===previous.home&&x.away===previous.away&&x.league===previous.league));
+  if(idx<0)continue;
+  const incoming=liveNow[idx];
+  if(Number(previous.minute)>Number(incoming.minute) &&
+    Number(previous.scoreH)+Number(previous.scoreA)>=Number(incoming.scoreH)+Number(incoming.scoreA))
+    liveNow[idx]=previous;
+ }
  const index=new Map(rows.map((r,i)=>[r.key,i]));
  for(const m of eligible){
   const r=byKey.get(fixtureKey(m)),key=fixtureKey(m);
@@ -92,6 +104,28 @@ function attachNoStats(record){
   r.noStatsUpdatedAt=record.updatedAt||new Date().toISOString();
  }
  persist();
+}
+// Update the LIVE presentation snapshot from a verified 30-second priority fetch.
+// This is display-only: do not rewrite scan history or alter alert decisions.
+function refreshPriorityLive(match, record){
+ if(!match || !record)return;
+ const minute=numeric(record.minute);
+ if(minute===null)return;
+ const fixtureId=record.fixtureId==null?'':String(record.fixtureId);
+ const norm=x=>String(x||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]/g,'');
+ const same=x=>(fixtureId&&x.fixtureId&&String(x.fixtureId)===fixtureId)||
+   (norm(x.home)===norm(record.home)&&norm(x.away)===norm(record.away)&&
+    (!x.league||!record.league||norm(x.league)===norm(record.league)));
+ const at=new Date().toISOString();
+ const prior=liveNow.find(same);
+ const entry={...(prior||{}),key:prior?.key||fixtureKey(match),fixtureId:fixtureId||prior?.fixtureId||'',
+  league:record.league||match.league||'',home:record.home,away:record.away,minute,
+  scoreH:numeric(match.homeScore),scoreA:numeric(match.awayScore),
+  noStatsProbability:numeric(record.probability),noStatsExpectedGoals:numeric(record.expectedRemainingGoals),
+  noStatsUpdatedAt:record.updatedAt||at,priorityLive:true,minuteVerified:true,
+  inWindow:true,analyzed:true,reason:'PRIORITY_30S_VERIFIED',at};
+ liveNow=liveNow.filter(x=>!same(x));
+ if(minute<85)liveNow.push(entry);
 }
 function liveView(){
  const count=fn=>liveNow.filter(fn).length;
@@ -131,4 +165,4 @@ async function reconcile(apiGet){if(reconciling)return;reconciling=true;try{
  }
  if(changed)persist();
  }finally{reconciling=false;}}
-module.exports={init,recordScan,view,reconcile,trainingSummary,liveView,attachNoStats};
+module.exports={init,recordScan,view,reconcile,trainingSummary,liveView,attachNoStats,refreshPriorityLive};

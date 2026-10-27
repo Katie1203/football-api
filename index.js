@@ -6695,6 +6695,13 @@ async function scanNoStatsPriority() {
         state.match=fresh;
         noStatsScanBudget={events:0,history:0};
         await analyzeOneMatch(fresh, []);
+        // Publish only the freshly verified provider minute and score to LIVE monitor.
+        const priorityRecord=[...noStatsRecords.values()].filter(r=>
+          r.source===fresh.source && String(r.sourceId)===String(fresh.id))
+          .sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')))[0];
+        if(priorityRecord && Number(priorityRecord.minute)===Number(freshMinute)) {
+          scanObserver.refreshPriorityLive(fresh,priorityRecord);
+        }
         console.log(`[AI PRIORITY 30S] REFRESH ${fresh.homeName} ${fresh.homeScore}-${fresh.awayScore} ${fresh.awayName} | ${freshMinute}'`);
       } catch(e) {console.warn(`[AI PRIORITY 30S] ${original.homeName} vs ${original.awayName}: ${e.message}`);}
     }
