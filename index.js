@@ -46,14 +46,50 @@ const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/football-current-live`;
 // API-Football direct provider (not RapidAPI). Set APISPORTS_KEY in Render.
 const APISPORTS_KEY = (process.env.APISPORTS_KEY || '').trim();
 const APISPORTS_URL = 'https://v3.football.api-sports.io';
-async function apiSportsGet(path, params) {
-  if (!APISPORTS_KEY) return null;
-  const {data} = await axios.get(`${APISPORTS_URL}${path}`, {
-    params, headers: {'x-apisports-key': APISPORTS_KEY}, timeout: 11000
+// Switch only on a confirmed daily quota error; ordinary network failures do not switch sources.
+let apiSportsQuotaUntil = 0;
+function apiSportsQuotaExhausted() { return Date.now() < apiSportsQuotaUntil; }
+function apiSportsDailyLimitError(error) {
+  const body = JSON.stringify(error?.response?.data?.errors || error?.response?.data || error?.message || '');
+  return /reached the request limit for the day|daily request limit|daily quota|requests limit for the day/i.test(body);
+}
+function activateFlashFallback(error) {
+  if (!apiSportsDailyLimitError(error)) return false;
+  // Avoid repeated failed calls. One low-frequency probe may recover automatically.
+  apiSportsQuotaUntil = Date.now() + 60 * 60 * 1000;
+  console.warn('[SOURCE FAILOVER] API-Sports daily quota exhausted; FlashScore active for 60 minutes');
+  return true;
+}
+async function flashGet(route, params={}) {
+  if (!FLASHSCORE_API_KEY) return null;
+  const {data} = await axios.get(`https://${FLASHSCORE_HOST}${route}`, {
+    params, headers:{'x-rapidapi-key':FLASHSCORE_API_KEY,'x-rapidapi-host':FLASHSCORE_HOST}, timeout:10000
   });
-  if (data?.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length))
-    throw new Error(`API-Sports error: ${JSON.stringify(data.errors).slice(0,180)}`);
-  return data;
+  return data?.data ?? data?.response ?? data;
+}
+const flashDetailCache = new Map();
+async function flashMatchDetails(id) {
+  if (!id) return null;
+  const key=String(id), cached=flashDetailCache.get(key);
+  if (cached && Date.now()-cached.at<90000) return cached.value;
+  const value=await flashGet('/api/flashscore/v2/matches/details',{match_id:key});
+  flashDetailCache.set(key,{at:Date.now(),value});
+  return value;
+}
+
+async function apiSportsGet(path, params) {
+  if (!APISPORTS_KEY || apiSportsQuotaExhausted()) return null;
+  try {
+    const {data} = await axios.get(`${APISPORTS_URL}${path}`, {
+      params, headers: {'x-apisports-key': APISPORTS_KEY}, timeout: 11000
+    });
+    if (data?.errors && (Array.isArray(data.errors) ? data.errors.length : Object.keys(data.errors).length)) {
+      const error = new Error(`API-Sports error: ${JSON.stringify(data.errors).slice(0,300)}`);
+      activateFlashFallback(error);
+      throw error;
+    }
+    return data;
+  } catch(e) { activateFlashFallback(e); throw e; }
 }
 async function fetchApiSportsLive() {
   if (!APISPORTS_KEY) { console.error('[Source API-Football] APISPORTS_KEY missing'); return []; }
@@ -5621,17 +5657,16 @@ function cleanTelegramText(
 let independentLiveSourceRegistry = [];
 
 async function fetchAllLiveMatches() {
-  const [api, flash] = await Promise.allSettled([fetchApiSportsLive(), fetchLiveMatchesFromFlashScore()]);
-  const all=[];
-  if(api.status==='fulfilled')for(const raw of api.value)all.push(formatApiSportsMatch(raw));
-  else logSourceError('API-Football','LIVE',api.reason);
-  if(flash.status==='fulfilled')for(const raw of flash.value)all.push(formatLiveMatch(raw,'flashscore'));
-  else logSourceError('FlashScore','LIVE',flash.reason);
+  let api=[];
+  if (!apiSportsQuotaExhausted()) api=await fetchApiSportsLive();
+  // Do not query FlashScore in parallel while API-Sports is usable.
+  const useFlash=apiSportsQuotaExhausted() || !APISPORTS_KEY;
+  const flash=useFlash ? await fetchLiveMatchesFromFlashScore() : [];
+  const all=[...api.map(formatApiSportsMatch),...flash.map(raw=>formatLiveMatch(raw,'flashscore'))];
   independentLiveSourceRegistry=all.filter(m=>m&&m.id!=null&&m.homeName&&m.awayName);
-  console.log(`[Live Discovery] API-Sports=${api.status==='fulfilled'?api.value.length:0} FlashScore=${flash.status==='fulfilled'?flash.value.length:0}`);
+  console.log(`[Live Discovery] active=${useFlash?'FlashScore':'API-Sports'} API-Sports=${api.length} FlashScore=${flash.length}`);
   return all;
 }
-
 // ==========================================================
 // 45. DEDUPLICATE MATCHES
 //
@@ -6038,7 +6073,16 @@ async function auditAiGoalOddsFt() {
         const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
         const f=response?.response?.[0];
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
-        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
+        if(String(f?.fixture?.id)!==String(row.fixtureId)) {
+          const flash=await flashNativeFT(row.fixtureId);
+          if(!flash)continue;
+          const total=flash.h+flash.a;
+          row.outcome=total>row.observedGoals?1:0;
+          row.evaluation=row.outcome===1?'WIN':'LOSS';
+          row.ftScore=`${flash.h}-${flash.a}`;row.settledAt=new Date().toISOString();changed=true;
+          noStatsSettledByFixture.set(String(row.fixtureId),row);
+          continue;
+        }
         if(!['FT','AET','PEN'].includes(status))continue;
         if(f?.goals?.home==null||f?.goals?.away==null)continue;
         const finalGoals=Number(f.goals.home)+Number(f.goals.away);
@@ -6077,6 +6121,29 @@ async function noStatsEvents(match) {
     const events = aiNoStats.collectEvents(candidate.raw);
     if (events.length) return {events, source: candidate.source + ':live'};
   }
+  if (match.source==='flashscore' && apiSportsQuotaExhausted()) {
+    const key='flash:'+match.id,cached=noStatsEventCache.get(key);
+    if(cached && Date.now()-cached.at<NO_STATS_EVENT_TTL)return cached.value;
+    if(noStatsScanBudget.events>=5)return {events:[],source:null};
+    noStatsScanBudget.events++;
+    try {
+      const payload=await flashGet('/api/flashscore/v2/matches/match/summary',{match_id:match.id});
+      const groups=Array.isArray(payload)?payload:(payload?.summary||payload?.events||[]);
+      const events=[];
+      for(const group of groups){
+        if(/penalt(?:y|ies) shootout/i.test(String(group?.name||group?.description||'')))continue;
+        const entries=Array.isArray(group?.events)?group.events:Array.isArray(group?.incidents)?group.incidents:[group];
+        for(const item of entries){
+          const minute=parseInt(String(item?.minutes??item?.minute??''),10);
+          const labels=[item?.description,item?.type,...(item?.players||[]).map(p=>p?.type)].join(' ');
+          const kind=/red.?card|second yellow/i.test(labels)?'red_card':/\bvar\b/i.test(labels)?'var':/goal|own goal/i.test(labels)?'goal':null;
+          if(kind&&Number.isInteger(minute)&&minute>=0&&minute<=90)events.push({minute,kind});
+        }
+      }
+      const value={events,source:'flashscore:summary'};
+      noStatsEventCache.set(key,{at:Date.now(),value});return value;
+    }catch(e){console.warn('[FLASH SUMMARY]',match.id,e.message);return {events:[],source:null};}
+  }
   const fixture = candidates.find(c => c.source === 'apisports' && c.id);
   if (!fixture || !APISPORTS_KEY) return {events: [], source: null};
   const key = String(fixture.id), cached = noStatsEventCache.get(key);
@@ -6093,6 +6160,30 @@ async function noStatsEvents(match) {
     noStatsEventCache.set(key, {at: Date.now(), value: {events: [], source: null}});
     return {events: [], source: null};
   }
+}
+async function flashTeamHistory(teamId) {
+  if (!teamId) return null;
+  const key='flash:'+teamId, cached=noStatsHistoryCache.get(key);
+  if(cached && Date.now()-cached.at<NO_STATS_HISTORY_TTL)return cached.value;
+  if(noStatsScanBudget.history>=4)return null;
+  noStatsScanBudget.history++;
+  try {
+    const data=await flashGet('/api/flashscore/v2/teams/results',{team_id:teamId,page:1});
+    const rows=Array.isArray(data)?data:(data?.matches||data?.results||data?.items||[]);
+    const fixtures=rows.filter(r=>{
+      const st=r?.match_status||{};
+      const finished=st.is_finished===true||/^(FT|AET|PEN|FINISHED)$/i.test(String(st.stage||r?.status||''));
+      const h=r?.scores?.home??r?.home_score,a=r?.scores?.away??r?.away_score;
+      return finished && Number.isInteger(Number(h)) && Number.isInteger(Number(a)) &&
+        (String(r?.home_team?.team_id)===String(teamId)||String(r?.away_team?.team_id)===String(teamId));
+    }).sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0)).slice(0,5).map(r=>({
+      fixture:{status:{short:'FT'}},teams:{home:{id:r.home_team.team_id},away:{id:r.away_team.team_id}},
+      goals:{home:Number(r.scores?.home??r.home_score),away:Number(r.scores?.away??r.away_score)}
+    }));
+    const value=aiNoStats.historyFromFixtures(fixtures,teamId);
+    noStatsHistoryCache.set(key,{at:Date.now(),value});
+    return value;
+  }catch(e){console.warn('[FLASH TEAM RESULTS]',teamId,e.message);return null;}
 }
 async function noStatsHistory(teamId) {
   if (!teamId || !APISPORTS_KEY) return null;
@@ -6362,7 +6453,7 @@ async function maybeSendNoStatsAlert(record) {
 function verifiedHalfTimeGoals(match) {
   const sources=[match.raw,...(match.crossSourceMatches||[]).map(x=>x.raw)];
   for(const raw of sources){
-   const ht=raw?.score?.halftime||raw?.scores?.halfTime||raw?.scores?.halftime||null;
+   const ht=raw?.score?.halftime||raw?.scores?.halfTime||raw?.scores?.halftime||(raw?.scores?.home_1st_half!=null&&raw?.scores?.away_1st_half!=null?{home:raw.scores.home_1st_half,away:raw.scores.away_1st_half}:null);
    if(!ht)continue;
    const h=ht.home??ht.homeScore?.current??ht.homeScore;
    const a=ht.away??ht.awayScore?.current??ht.awayScore;
@@ -6371,6 +6462,15 @@ function verifiedHalfTimeGoals(match) {
     return {home:Number(h),away:Number(a),total:Number(h)+Number(a),source:'PROVIDER_VERIFIED'};
   }
   return null;
+}
+async function flashNativeFT(fixtureId) {
+  if(!fixtureId || /^\d+$/.test(String(fixtureId)))return null;
+  try {
+    const detail=await flashMatchDetails(fixtureId);
+    if(String(detail?.match_id)!==String(fixtureId) || detail?.match_status?.is_finished!==true)return null;
+    const h=Number(detail?.scores?.home),a=Number(detail?.scores?.away);
+    return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
+  }catch(e){console.warn('[FLASH FT DETAILS]',fixtureId,e.message);return null;}
 }
 // Historical research snapshots are not Telegram alerts and never change production V4.
 const noStatsObservationStore=process.env.NO_STATS_OBSERVATION_STORE||'./ai_no_stats_observations.json';
@@ -6411,6 +6511,12 @@ function recordNoStatsObservation(record){
  persistNoStatsObservations([noStatsObservations[noStatsObservations.length-1]]);
 }
 async function observeNoStats(match, minute, liveStats=null) {
+  if (match.source==='flashscore' && apiSportsQuotaExhausted()) {
+    try {
+      const detail=await flashMatchDetails(match.id);
+      if(detail?.match_id && String(detail.match_id)===String(match.id)) match.raw={...match.raw,...detail};
+    } catch(e) { console.warn('[FLASH DETAILS]',match.id,e.message); }
+  }
   const ht=verifiedHalfTimeGoals(match);
   if(!ht){console.log(`[AI NO-STATS HT] UNVERIFIED ${match.homeName} vs ${match.awayName}`);return;}
   if(ht.total<1){console.log(`[AI NO-STATS HT] HT_0_0_SKIP ${match.homeName} vs ${match.awayName}`);return;}
@@ -6418,8 +6524,10 @@ async function observeNoStats(match, minute, liveStats=null) {
   const api = candidates.find(c => c.source === 'apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
   const eventResult = await noStatsEvents(match);
   const homeId = api?.raw?.teams?.home?.id, awayId = api?.raw?.teams?.away?.id;
-  const homeHistory = await noStatsHistory(homeId);
-  const awayHistory = await noStatsHistory(awayId);
+  const flashIds=match.source==='flashscore' && apiSportsQuotaExhausted()
+    ? {home:match.raw?.home_team?.team_id,away:match.raw?.away_team?.team_id} : null;
+  const homeHistory = flashIds ? await flashTeamHistory(flashIds.home) : await noStatsHistory(homeId);
+  const awayHistory = flashIds ? await flashTeamHistory(flashIds.away) : await noStatsHistory(awayId);
   const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
     eventSource: eventResult.source, homeHistory, awayHistory});
   // Early Goal uses verified goal events; ordinary AI NO-STATS never uses these to change lambda.
@@ -6463,7 +6571,7 @@ async function observeNoStats(match, minute, liveStats=null) {
    homeCorners:liveStats.homeCorners??null,awayCorners:liveStats.awayCorners??null};}
   // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
   const resolved=resolveOddsFixture(match);
-  record.fixtureId=resolved.fixture?String(resolved.fixture.id):null;
+  record.fixtureId=resolved.fixture?String(resolved.fixture.id):(match.source==='flashscore'&&apiSportsQuotaExhausted()?String(match.id):null);
   record.auditStatus=record.fixtureId?'PENDING_FT':resolved.status;
   const settled=record.fixtureId && noStatsSettledByFixture.get(record.fixtureId);
   if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
@@ -6559,6 +6667,7 @@ async function auditNoStatsFt() {
         let finalScore=null;
         if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
           finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
+        if(!finalScore)finalScore=await flashNativeFT(row.fixtureId);
         if(!finalScore)finalScore=await audit.flashNoStatsFT(row);
         if(!finalScore)continue;
         const total=Number(finalScore.h)+Number(finalScore.a);
@@ -6593,7 +6702,7 @@ async function auditNoStatsFt() {
             finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
         }
         if(!finalScore && !['CANC','ABD','PST','SUSP'].includes(status)){
-          finalScore=await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt});
+          finalScore=await flashNativeFT(id) || await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt});
           if(finalScore)status='FT';
         }
         if(!finalScore&&!['CANC','ABD','PST','SUSP'].includes(status))continue;
@@ -6669,12 +6778,12 @@ async function scanNoStatsPriority() {
       try {
         let fresh=null;
         const apiCandidate=[original,...(original.crossSourceMatches||[])].find(m=>m.source==='apisports');
-        if (apiCandidate && APISPORTS_KEY) {
+        if (apiCandidate && APISPORTS_KEY && !apiSportsQuotaExhausted()) {
           const response=await apiSportsGet('/fixtures',{id:apiCandidate.id});
           const raw=response?.response?.[0];
           if (raw?.fixture?.id) fresh=formatApiSportsMatch(raw);
         }
-        if (!fresh && original.source==='flashscore') {
+        if (!fresh && (original.source==='flashscore'||apiSportsQuotaExhausted())) {
           if (!flashMatches) flashMatches=(await fetchLiveMatchesFromFlashScore()).map(x=>formatLiveMatch(x,'flashscore'));
           fresh=flashMatches.find(m=>String(m.id)===String(original.id));
         }
