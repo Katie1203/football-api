@@ -6269,6 +6269,9 @@ async function maybeSendNoStatsAlert(record) {
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
       (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
+  // Ordinary alerts at 65–88 require current lambda strictly > 0.95,
+  // regardless of LIVE Odds. Early GOAL keeps its independent exception.
+  if (!earlyGoal && minute >= 65 && minute <= 88 && lambda <= 0.95) return false;
   // Odds gate affects SENDING only. Each scan still records fresh AI evidence,
   // including scores/goals while odds are below threshold; never reuse a stale
   // pre-goal probability as the current probability after a goal.
@@ -6279,7 +6282,7 @@ async function maybeSendNoStatsAlert(record) {
   // or allow unavailable odds. Other alerts retain the existing >=1.50 gate.
   // Additional gate ONLY for qualifying AI signals from minute 65 onward.
   // All other alert types and existing odds rules remain unchanged.
-  const qualifyingFrom65 = minute >= 65 && lambda > NO_STATS_ALERT_EXPECTED_GOALS;
+  const qualifyingFrom65 = minute >= 65 && lambda > 0.95;
   const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
     : qualifyingFrom65 ? (hasLiveOverOdds && liveOverOdds >= 1.50)
     : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
