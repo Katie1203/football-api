@@ -6147,20 +6147,6 @@ function trackNoStatsPriority(match, record) {
     console.log(`[AI PRIORITY 30S] ACTIVATE ${record.home} vs ${record.away} | ${minute}' | baseline=${prior?.expectedRemainingGoals??lambda}`);
   }
 }
-// Historical pre-goal signal is used for eligibility only, never as the current AI estimate.
-function noStatsUnscoredBaseline(record) {
-  const minute=Number(record.minute);
-  if (!Number.isFinite(minute) || minute<65 || minute>88) return null;
-  const candidates=noStatsObservations.filter(x=>
-    ((record.fixtureId && String(x.fixtureId||'')===String(record.fixtureId)) ||
-     (!record.fixtureId && x.key && x.key.startsWith(`${record.key}:`))) &&
-    Number(x.minute)>=60 && Number(x.minute)<65 &&
-    Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS &&
-    String(x.score)===String(record.score));
-  return candidates.sort((a,b)=>Number(a.minute)-Number(b.minute))[0]||null;
-}
-
-
 const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
 const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
 const noStatsSendingKeys = new Set();
@@ -6280,10 +6266,9 @@ async function maybeSendNoStatsAlert(record) {
   const minute = Number(record.minute);
   const lambda = Number(record.expectedRemainingGoals);
   const earlyGoal=earlyGoalCandidate(record); // Independent of post-goal lambda.
-  const savedUnscoredSignal = !earlyGoal ? noStatsUnscoredBaseline(record) : null;
   if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
       minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
-      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal && !savedUnscoredSignal)) return false;
+      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
   // Odds gate affects SENDING only. Each scan still records fresh AI evidence,
   // including scores/goals while odds are below threshold; never reuse a stale
   // pre-goal probability as the current probability after a goal.
@@ -6293,9 +6278,8 @@ async function maybeSendNoStatsAlert(record) {
   // BIGGG BET: strictly >1.50, verified. BET NHE TAY: >=1.50 if available,
   // or allow unavailable odds. Other alerts retain the existing >=1.50 gate.
   // Additional gate ONLY for qualifying AI signals from minute 65 onward.
-  // A saved pre-65 signal remains qualifying even if current lambda declines.
   // All other alert types and existing odds rules remain unchanged.
-  const qualifyingFrom65 = minute >= 65 && (lambda > NO_STATS_ALERT_EXPECTED_GOALS || !!savedUnscoredSignal);
+  const qualifyingFrom65 = minute >= 65 && lambda > NO_STATS_ALERT_EXPECTED_GOALS;
   const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
     : qualifyingFrom65 ? (hasLiveOverOdds && liveOverOdds >= 1.50)
     : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
@@ -6427,7 +6411,12 @@ async function observeNoStats(match, minute, liveStats=null) {
     (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS ||
      noStatsPriorityMatches.has(noStatsPriorityKey(match))) &&
     !noStatsSentKeys.has(noStatsAlertKey(record));
-  const odds=await getOddsForMatch(match,{priorityFresh:priorityOdds});
+  // Only qualifying AI fixtures need Odds. Preserve early-goal watchlist eligibility.
+  const needsOdds = Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS ||
+    noStatsPriorityMatches.has(noStatsPriorityKey(match));
+  const odds = needsOdds && !noStatsSentKeys.has(noStatsAlertKey(record))
+    ? await getOddsForMatch(match,{priorityFresh:priorityOdds})
+    : {status:'NOT_REQUIRED',fixtureId:null,payload:null};
   const totalGoals=Number(match.homeScore)+Number(match.awayScore);
   const assessment=odds.payload && Number.isFinite(totalGoals)
     ? aiGoalOddsShadow.evaluate(odds.payload,totalGoals,null):null;
@@ -6859,7 +6848,8 @@ async function scanLiveMatches() {
 
 
     noStatsScanBudget = {events: 0, history: 0};
-    planOddsScan(eligibleMatches);
+    // Quota fix: do not prefetch Odds for every LIVE fixture before AI eligibility.
+    // observeNoStats requests Odds only after the AI has established eligibility.
     // ====================================================
     // ANALYZE
     //

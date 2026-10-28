@@ -265,6 +265,7 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
   const sent=(x.fixtureId!=null?sentById.get(String(x.fixtureId)):null)||sentByName.get(key(x.home,x.away));
   const wait=(x.fixtureId!=null?waitingById.get(String(x.fixtureId)):null)||waitingByName.get(key(x.home,x.away));
   return {...x,sentAlertLabel:sent?String(sent.alertLabel||sent.signalLabel||sent.alertType||''):'',
+   sentTelegram:!!sent||x.noStatsAlertSent===true,
    oddsWaiting:!!wait,...enrichOdds(x,wait)};
  });
  // Odds-waiting fixtures may not appear in the regular LIVE snapshot yet.
@@ -272,11 +273,14 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
   if(rows.some(x=>(x.fixtureId!=null&&w.fixtureId!=null&&String(x.fixtureId)===String(w.fixtureId))||key(x.home,x.away)===key(w.home,w.away)))continue;
   rows.push({fixtureId:w.fixtureId,home:w.home,away:w.away,league:w.league,minute:w.minute,
    scoreH:null,scoreA:null,noStatsProbability:w.probability,expectedRemainingGoals:w.expectedRemainingGoals,
+   sentTelegram:!!((w.fixtureId!=null?sentById.get(String(w.fixtureId)):null)||sentByName.get(key(w.home,w.away))),
    oddsWaiting:true,...enrichOdds(w,w),at:w.updatedAt,minuteObservedAt:w.updatedAt});
  }
 
- // Visible rows and tab counts use the same 85-minute cutoff at render time.
- rows=rows.filter(visibleLive);
+ // Hide successfully alerted fixtures only on the LIVE monitor.
+ // Do not change scan, Telegram, FT audit, or other pages.
+ // Both card display and tab counters share this filtered list.
+ rows=rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent);
  const s=d.summary||{};
  const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (trước 85′)',rows.filter(visibleLive).length],['Đã phân tích',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length],['AI THỬ NGHIỆM',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
