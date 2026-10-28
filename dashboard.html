@@ -996,9 +996,16 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 
 
 </style><style id="tt-telegram-signal-pulse">
-@keyframes ttSignalPulse{0%,100%{opacity:1;filter:brightness(1)}50%{opacity:.64;filter:brightness(1.45)}}
-.tt-alert-pulse{animation:ttSignalPulse 1.25s ease-in-out infinite!important;font-weight:800!important}
-@media(prefers-reduced-motion:reduce){.tt-alert-pulse{animation:none!important}}
+@keyframes ttBetFlash{0%,100%{background:#ff7b00;color:#fff;border-color:#ffce3b;box-shadow:0 0 0 2px #ffb700,0 0 18px 5px #ff7b00;transform:scale(1)}50%{background:#6b2800;color:#fff1c9;border-color:#ff9c00;box-shadow:0 0 0 1px #ff9c00,0 0 5px 1px #ff7b00;transform:scale(1.04)}}
+@keyframes ttBigFlash{0%,100%{background:#ff103e;color:#fff;border-color:#fff;box-shadow:0 0 0 2px #ff365b,0 0 22px 7px #ff123e;transform:scale(1.04)}50%{background:#680013;color:#fff;border-color:#ff4766;box-shadow:0 0 0 1px #c50027,0 0 4px 1px #c50027;transform:scale(1)}}
+#noStatsAlertRows .ai-status.tt-alert-pulse{display:inline-block!important;animation:ttBetFlash .85s steps(2,end) infinite!important;background:#ff7b00!important;color:#fff!important;border:2px solid #ffce3b!important;font-weight:900!important;letter-spacing:.4px!important;padding:6px 10px!important}
+#noStatsAlertRows .ai-status.tt-alert-pulse.tt-big{animation-name:ttBigFlash!important;background:#ff103e!important;border-color:#fff!important}
+#noStatsAlertRows .match-card:has(.tt-big){border:2px solid #ff4561!important}
+.ns-select-label{display:inline-flex;align-items:center;gap:7px;padding:5px 9px;border:1px solid #ffcc5d;border-radius:6px;color:#fff;font-weight:750;background:#4a3a1d;cursor:pointer}
+.ns-select-label input{width:18px;height:18px;accent-color:#f4c447}
+#nsDeleteSelected{background:#a51d2e!important;color:white!important;border-color:#ff6573!important;font-weight:850}
+#nsDeleteSelected:disabled{opacity:.5}
+@media(prefers-reduced-motion:reduce){#noStatsAlertRows .ai-status.tt-alert-pulse{animation:none!important;box-shadow:0 0 0 2px #ffc65b!important}}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1011,13 +1018,29 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
   <button class="promax-refresh" type="button" onclick="window.location.reload()" title="Tải lại trang Dashboard" aria-label="Tải lại trang Dashboard">↻</button>
 <div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI THỬ NGHIỆM</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI NO-STATS.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI THỬ NGHIỆM · BET NHẸ TAY</strong><div class="hint">λ dưới 1,50 · TẮT chỉ ngừng gửi Telegram nhóm này; vẫn phân tích và lưu lịch sử. λ từ 1,50: BET BANH NÓC, không bị ảnh hưởng.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI THỬ NGHIỆM</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI THỬ NGHIỆM</h3><p class="hint">AI THỬ NGHIỆM: gửi phút 65–88 khi bàn còn kỳ vọng ≥ 0.90 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI THỬ NGHIỆM duy nhất</span></div>
 <section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI THỬ NGHIỆM</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI THỬ NGHIỆM</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI THỬ NGHIỆM</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Chỉ chốt FT khi API-Sports hoặc FlashScore xác nhận kết quả chính thức.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI THỬ NGHIỆM...</div>
-<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
+<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
 const el=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pill=x=>'<span class="ai-status">'+esc(x)+'</span>';
-let nsHistory=[],nsOddsWaiting=[],nsPage=1,nsFilter='all';const nsPageSize=21;
+let nsHistory=[],nsOddsWaiting=[],nsPage=1,nsFilter='all';const nsPageSize=21;const nsSelected=new Set();let nsVisibleKeys=[];
 function nsSetFilter(f){nsFilter=f;nsPage=1;nsRenderHistory();}
 function nsGoPage(p){nsPage=p;nsRenderHistory();document.getElementById('noStatsAlerts').scrollIntoView({block:'start'});}
+function nsUpdateSelection(){
+ const n=nsSelected.size,b=el('nsDeleteSelected');b.disabled=!n;b.textContent='🗑 Xóa vĩnh viễn ('+n+')';el('nsSelectionCount').textContent='Đã chọn '+n+' trận';
+}
+function nsToggleSelect(key,checked){if(checked)nsSelected.add(key);else nsSelected.delete(key);nsUpdateSelection();}
+function nsSelectVisible(){nsVisibleKeys.forEach(k=>nsSelected.add(k));nsRenderHistory();}
+function nsClearSelection(){nsSelected.clear();nsRenderHistory();}
+async function nsDeleteSelected(){
+ const keys=[...nsSelected];if(!keys.length)return;
+ if(!confirm('XÓA VĨNH VIỄN '+keys.length+' bản ghi cảnh báo khỏi Dashboard và thống kê WIN/LOSS/FT? Không thể hoàn tác. Tin Telegram đã gửi sẽ không bị thu hồi.'))return;
+ const b=el('nsDeleteSelected');b.disabled=true;
+ try{
+  const r=await fetch('/api/no-stats-alerts/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys})});
+  const data=await r.json();if(!r.ok||!data.ok)throw Error(data.error||'HTTP '+r.status);
+  nsSelected.clear();await loadNoStatsAlerts();alert('Đã xóa vĩnh viễn '+data.deleted+' bản ghi cảnh báo.');
+ }catch(e){alert('Không thể xóa: '+e.message);nsUpdateSelection();}
+}
 function nsRenderHistory(){
  const filtered=nsFilter==='odds'?nsOddsWaiting:nsHistory.filter(x=>{
    const label=String(x.alertLabel||x.alertType||'').toUpperCase();
@@ -1029,6 +1052,8 @@ function nsRenderHistory(){
    return false;
  });
  const pages=Math.max(1,Math.ceil(filtered.length/nsPageSize));nsPage=Math.max(1,Math.min(nsPage,pages));
+ nsVisibleKeys=nsFilter==='odds'?[]:filtered.slice((nsPage-1)*nsPageSize,nsPage*nsPageSize).map(x=>x.key).filter(Boolean);
+ el('nsDeleteTools').style.display=nsFilter==='odds'?'none':'flex';nsUpdateSelection();
  const pg=document.getElementById('nsPagination');
  pg.innerHTML='<span class="hint">Trang '+nsPage+'/'+pages+' · '+filtered.length+' cảnh báo</span> <button type="button" onclick="nsGoPage('+Math.max(1,nsPage-1)+')" '+(nsPage===1?'disabled':'')+'>Trước</button> '+Array.from({length:pages},(_,i)=>i+1).filter(i=>i===1||i===pages||Math.abs(i-nsPage)<=2).map(i=>'<button type="button" onclick="nsGoPage('+i+')" '+(i===nsPage?'aria-current="page"':'')+'>'+i+'</button>').join(' ')+' <button type="button" onclick="nsGoPage('+Math.min(pages,nsPage+1)+')" '+(nsPage===pages?'disabled':'')+'>Sau</button>';
  document.querySelectorAll('#nsFilters button').forEach((b,i)=>b.setAttribute('aria-pressed',String(['all','pending','settled','big','rung','odds'][i]===nsFilter)));
@@ -1050,9 +1075,10 @@ function nsRenderHistory(){
    const pct=x.probability==null?'—':esc(x.probability)+'%';
    const lambda=x.expectedRemainingGoals==null?'—':esc(x.expectedRemainingGoals);
    return '<article class="match-card" style="padding:12px">'+
+    '<label class="ns-select-label"><input type="checkbox" aria-label="Chọn cảnh báo để xóa" data-key="'+encodeURIComponent(x.key||'')+'" '+(nsSelected.has(x.key)?'checked':'')+' onchange="nsToggleSelect(decodeURIComponent(this.dataset.key),this.checked)"> Chọn</label>'+
     '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(latest)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
-    '<div class="match-status-inline"><span class="ai-status ai-bet tt-alert-pulse">'+esc(x.alertLabel||(x.earlyGoal||x.alertType==='BIGGG BET'?'BIGGG BET':(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')))+'</span> '+pill(status)+'</div>'+
+    '<div class="match-status-inline"><span class="ai-status ai-bet tt-alert-pulse '+((x.earlyGoal||/BIGGG|BIG BET/i.test(String(x.alertLabel||x.alertType||'')))?'tt-big':'')+'">'+esc(x.alertLabel||(x.earlyGoal||x.alertType==='BIGGG BET'?'BIGGG BET':(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')))+'</span> '+pill(status)+'</div>'+
     '<div class="match-metrics" style="margin:10px 0">'+
      '<div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+pct+'</strong></div>'+
      ''+

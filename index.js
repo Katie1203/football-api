@@ -6203,6 +6203,19 @@ function updateNoStatsAlertLiveScore(record) {
   row.liveResult=row.liveGoalsAfterAlert==null?'PENDING_LIVE':row.liveGoalsAfterAlert>0?'LIVE_WIN':'LIVE_WAIT';
   persistNoStatsAlertAudit();
 }
+// Explicit Dashboard deletion: remove audit/statistical records, retain sent-key anti-duplicate guard.
+async function deleteNoStatsDashboardAlerts(keys){
+ await ensureNoStatsAlertReady();
+ const selected=new Set(keys);
+ const found=noStatsAlertAudit.filter(r=>selected.has(r.key));
+ if(!found.length)return 0;
+ // Wait for in-flight FT audit writes before deleting persistent records.
+ await noStatsAlertWriteQueue;
+ await audit.deleteNoStatsAlertRecords(found.map(r=>r.key));
+ for(const row of found){const i=noStatsAlertAudit.findIndex(r=>r.key===row.key);if(i>=0)noStatsAlertAudit.splice(i,1);}
+ writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
+ return found.length;
+}
 function noStatsAlertView(){
  const records=noStatsAlertAudit.slice().reverse();
  const wins=records.filter(x=>x.evaluation==='WIN').length;

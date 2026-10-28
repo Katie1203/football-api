@@ -55,6 +55,27 @@ async function saveNoStatsAlertRecord(row){
   fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);
  }
 }
+// Permanently delete selected AI NO-STATS Telegram audit rows (not LIVE scan observations).
+async function deleteNoStatsAlertRecords(keys){
+ const unique=[...new Set(keys.filter(k=>typeof k==='string'&&k.length>0))];
+ if(!unique.length)return 0;
+ if(pool){
+  await init();
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   await client.query('DELETE FROM promax_alert_audit WHERE id = ANY($1::text[])',[unique.map(noStatsAuditId)]);
+   const legacy=await client.query("SELECT to_regclass('public.promax_no_stats_alert_audit') AS name");
+   if(legacy.rows[0]?.name)await client.query("DELETE FROM promax_no_stats_alert_audit WHERE data->>'key' = ANY($1::text[])",[unique]);
+   await client.query('COMMIT');
+  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ }else{
+  const ids=new Set(unique.map(noStatsAuditId));
+  records=records.filter(r=>!ids.has(r.id));
+  fs.writeFileSync(FILE+'.tmp',JSON.stringify(records,null,2));fs.renameSync(FILE+'.tmp',FILE);
+ }
+ return unique.length;
+}
 // Approved issue #1/#3: persist every 65-88 NO-STATS observation for FT audit.
 // Use a separate namespaced table; never modify existing alert records.
 async function loadNoStatsObservations(){
@@ -544,4 +565,4 @@ async function flashNoStatsFT(row){
  return candidate?flashFT(candidate):null;
 }
 async function getSettledTrainingRows(){await init();return records.filter(r=>r.source!=='AI_NO_STATS' && r.alertNumber===1 && (r.goalResult==='WIN'||r.goalResult==='LOSS')).map(r=>({matchKey:r.matchKey,createdAt:r.createdAt,goalResult:r.goalResult,aiGoalProbability:r.aiGoalProbability,rule:r.rule,aiGoalPoissonHistory:r.aiGoalPoissonHistory||null,liveStats:r.liveStats,trainingWindows:r.trainingWindows||null}));}
-module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,flashNoStatsFT,loadNoStatsObservations,saveNoStatsObservation,loadShadowState,saveShadowState};
+module.exports={setup,init,addAlert,reconcile,settleMatch,summarize,scoreResults,getAlertStates,getSettledTrainingRows,updateLiveScores,loadNoStatsAlertRecords,saveNoStatsAlertRecord,deleteNoStatsAlertRecords,flashNoStatsFT,loadNoStatsObservations,saveNoStatsObservation,loadShadowState,saveShadowState};
