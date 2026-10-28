@@ -172,6 +172,31 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 #noStatsAlerts,#noStatsAlerts .ai-metric,#noStatsAlerts .stat,#noStatsAlerts .split>.panel,#noStatsAlertRows>*,#v4AlertsPanel,#audit-list{background:#26353d!important;background-image:none!important;box-shadow:none!important}
 #noStatsAlerts .ai-metric small,#noStatsAlerts .stat small,#noStatsAlerts .hint{color:#d2d9dc!important}
 #noStatsAlertRows .match-card,#noStatsAlertRows article{background:#2c3c44!important;background-image:none!important}
+/* Strong, obvious LIVE signal animation: only qualified AI observations. */
+.card.tt-signal-ready{
+ border:3px solid #27ff6b!important;
+ background:#153e31!important;
+ animation:tt-live-strong-green 1.05s steps(2,end) infinite!important;
+ box-shadow:0 0 24px #21ff75aa,0 0 7px #21ff75!important;
+}
+.card.tt-signal-odds-wait{
+ border:3px solid #ffcc34!important;
+ background:#403821!important;
+ animation:tt-live-strong-amber 1.15s steps(2,end) infinite!important;
+ box-shadow:0 0 24px #ffcb3baa!important;
+}
+.card.tt-signal-ready .teams,.card.tt-signal-odds-wait .teams{color:#ffd54a!important;font-weight:900!important;text-shadow:0 0 9px #ffcf4b55}
+.card.tt-signal-ready .value,.card.tt-signal-odds-wait .value{color:#fff!important}
+.card.tt-signal-ready .minute,.card.tt-signal-odds-wait .minute{font-weight:950!important;font-size:14px!important}
+@keyframes tt-live-strong-green{
+ 0%,100%{border-color:#24ff68;box-shadow:0 0 30px #18ff73cc,0 0 10px #18ff73,inset 0 0 18px #18ff733d;filter:brightness(1.18)}
+ 50%{border-color:#a6ffca;box-shadow:0 0 6px #18ff7366,inset 0 0 2px #18ff7310;filter:brightness(.86)}
+}
+@keyframes tt-live-strong-amber{
+ 0%,100%{border-color:#ffdc42;box-shadow:0 0 30px #ffcf42cc,0 0 10px #ffcf42,inset 0 0 18px #ffcf423d;filter:brightness(1.16)}
+ 50%{border-color:#ffe8a0;box-shadow:0 0 6px #ffcf4266;filter:brightness(.86)}
+}
+@media(prefers-reduced-motion:reduce){.card.tt-signal-ready,.card.tt-signal-odds-wait{animation:none!important;filter:none!important}}
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI THỬ NGHIỆM duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI THỬ NGHIỆM; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang kiểm tra dữ liệu mỗi 15 giây.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -180,6 +205,17 @@ const tabs=[['all','Tất cả'],['experimental','Đã phân tích'],['none','Ch
 const hasNumber=x=>x!==null&&x!==undefined&&x!==''&&Number.isFinite(Number(x));
 const hasExperimental=x=>hasNumber(x.noStatsProbability);
 function bucket(x){return hasExperimental(x)?'experimental':'none';}
+// Only verified AI lambda above 0.95 in the 65–88' window gets an animated border.
+// Amber means odds are still required for the higher-lambda alert; green means
+// the BET NHẸ TAY odds policy permits the signal (other alert gates still apply).
+function signalClass(x){
+ const m=Number(x.minute),l=Number(x.expectedRemainingGoals);
+ if(!Number.isFinite(m)||m<65||m>88||!hasNumber(x.expectedRemainingGoals)||!Number.isFinite(l)||l<=0.95)return '';
+ const odds=hasNumber(x.overOdds)&&Number(x.overOdds)>1?Number(x.overOdds):null;
+ if(x.oddsValid===true&&odds!==null&&odds<1.50)return ' tt-signal-odds-wait';
+ // No verified price: ordinary alerts are eligible, not WAIT_ODDS.
+ return ' tt-signal-ready';
+}
 function matchesGroup(x,id){
  if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
  if(id==='rung')return /RUNG/i.test(String(x.sentAlertLabel||''));
@@ -219,7 +255,7 @@ function visibleLive(x){const m=liveMinute(x);return m.value===null||m.value<85;
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
 async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows:[];const noStats=Array.isArray(d.noStats)?d.noStats:[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.

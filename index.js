@@ -6296,8 +6296,11 @@ async function maybeSendNoStatsAlert(record) {
   // Additional gate ONLY for qualifying AI signals from minute 65 onward.
   // All other alert types and existing odds rules remain unchanged.
   const qualifyingFrom65 = minute >= 65 && lambda > 0.95;
+  // From minute 65: missing/unavailable Odds is NOT a WAIT_ODDS condition.
+  // Only a retrieved, verified Over price below 1.50 blocks the ordinary alert.
+  // Early GOAL / BIGGG BET continues to require a verified price > 1.50.
   const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
-    : qualifyingFrom65 ? (hasLiveOverOdds && liveOverOdds >= 1.50)
+    : qualifyingFrom65 ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
     : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
     : (hasLiveOverOdds && liveOverOdds >= 1.50);
   if (!oddsAllowed) {
