@@ -7147,6 +7147,7 @@ app.locals.scanControl=scanControl;
 scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
 scanObserver.init().catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
 app.locals.noStatsAlertView=noStatsAlertView;
+app.locals.deleteNoStatsDashboardAlerts=deleteNoStatsDashboardAlerts;
 app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
 app.locals.noStatsLiveView=noStatsLiveView;
 // Read-only Dashboard view: AI signals waiting for a qualifying LIVE Over price.

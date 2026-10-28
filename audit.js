@@ -242,6 +242,18 @@ app.get('/live-monitor',requireAuth,(req,res)=>{res.set('Cache-Control','no-stor
    ?app.locals.noStatsOddsWaitingView():[]});}
  catch(e){res.status(503).json({ok:false,error:'Odds waiting unavailable'});}
 });
+app.post('/api/no-stats-alerts/delete',requireAuth,async(req,res)=>{
+ res.set('Cache-Control','no-store');
+ try{
+  const keys=req.body?.keys;
+  if(!Array.isArray(keys)||keys.length<1||keys.length>500||keys.some(k=>typeof k!=='string'||!k.trim()||k.length>500))
+   return res.status(400).json({ok:false,error:'Invalid alert keys (1-500)'});
+  if(typeof app.locals.deleteNoStatsDashboardAlerts!=='function')
+   return res.status(503).json({ok:false,error:'Alert deletion unavailable'});
+  const deleted=await app.locals.deleteNoStatsDashboardAlerts([...new Set(keys)]);
+  return res.json({ok:true,deleted});
+ }catch(e){console.error('[NO-STATS DELETE]',e);return res.status(500).json({ok:false,error:'Không thể xóa cảnh báo: '+e.message});}
+});
 app.get('/api/no-stats-alerts',requireAuth,async(req,res)=>{
  res.set('Cache-Control','no-store');
  try{if(typeof app.locals.ensureNoStatsAlertReady==='function')await app.locals.ensureNoStatsAlertReady();

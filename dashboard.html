@@ -1006,6 +1006,16 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 #nsDeleteSelected{background:#a51d2e!important;color:white!important;border-color:#ff6573!important;font-weight:850}
 #nsDeleteSelected:disabled{opacity:.5}
 @media(prefers-reduced-motion:reduce){#noStatsAlertRows .ai-status.tt-alert-pulse{animation:none!important;box-shadow:0 0 0 2px #ffc65b!important}}
+</style><style id="tt-team-names-gold-20261028">
+/* Team names only: brighter gold. Keep score white and existing status colours. */
+body #audit-list .match-teams .team-home,
+body #audit-list .match-teams .team-away,
+body #noStatsAlertRows .match-teams .team-home,
+body #noStatsAlertRows .match-teams .team-away,
+body #audit-list .match-name,
+body #noStatsAlertRows .match-name {color:#FFD54A!important;font-weight:900!important;text-shadow:0 1px 5px rgba(255,213,74,.25)!important}
+body #audit-list .match-teams .match-score,
+body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-shadow:0 1px 4px rgba(0,0,0,.3)!important}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1037,7 +1047,9 @@ async function nsDeleteSelected(){
  const b=el('nsDeleteSelected');b.disabled=true;
  try{
   const r=await fetch('/api/no-stats-alerts/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({keys})});
-  const data=await r.json();if(!r.ok||!data.ok)throw Error(data.error||'HTTP '+r.status);
+  const raw=await r.text();let data;
+  try{data=JSON.parse(raw);}catch{throw Error('Máy chủ không trả JSON (HTTP '+r.status+'). Kiểm tra phiên đăng nhập và bản deploy Render.');}
+  if(!r.ok||!data.ok)throw Error(data.error||'HTTP '+r.status);
   nsSelected.clear();await loadNoStatsAlerts();alert('Đã xóa vĩnh viễn '+data.deleted+' bản ghi cảnh báo.');
  }catch(e){alert('Không thể xóa: '+e.message);nsUpdateSelection();}
 }
