@@ -1026,7 +1026,17 @@ body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-s
   <a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav>
   <span class="promax-running" id="tt-scan-status">● Đang tải</span><button type="button" class="tt-pause" id="tt-pause" onclick="ttToggleScan()" disabled>Đang tải…</button>
   <button class="promax-refresh" type="button" onclick="window.location.reload()" title="Tải lại trang Dashboard" aria-label="Tải lại trang Dashboard">↻</button>
-<div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI THỬ NGHIỆM</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI NO-STATS.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI THỬ NGHIỆM · BET NHẸ TAY</strong><div class="hint">λ dưới 1,50 · TẮT chỉ ngừng gửi Telegram nhóm này; vẫn phân tích và lưu lịch sử. λ từ 1,50: BET BANH NÓC, không bị ảnh hưởng.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI THỬ NGHIỆM</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI THỬ NGHIỆM</h3><p class="hint">AI THỬ NGHIỆM: gửi phút 65–88 khi bàn còn kỳ vọng ≥ 0.90 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI THỬ NGHIỆM duy nhất</span></div>
+<div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI THỬ NGHIỆM</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI NO-STATS.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI THỬ NGHIỆM · BET NHẸ TAY</strong><div class="hint">λ dưới 1,50 · TẮT chỉ ngừng gửi Telegram nhóm này; vẫn phân tích và lưu lịch sử. λ từ 1,50: BET BANH NÓC, không bị ảnh hưởng.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><style>
+#aiLiveMarketPanel .lm-table th,#aiLiveMarketPanel .lm-table td{padding:9px 8px;border-bottom:1px solid #657067;text-align:left;color:#f3f5f2;font-size:12px;vertical-align:top}
+#aiLiveMarketPanel .lm-table th{color:#f1d17a;font-weight:800}
+#aiLiveMarketPanel .lm-table .lm-num{color:#a9f0c0;font-weight:800;font-size:15px}
+#aiLiveMarketPanel .lm-table .lm-muted{color:#c9d0d0}
+#aiLiveMarketPanel .lm-table .lm-team{color:#ffd54a;font-weight:800}
+</style><section class="panel" id="aiLiveMarketPanel" style="margin:12px 0;border:1px solid #a88c4d;border-radius:12px;padding:14px">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div><h3 style="color:#f1d17a;margin:0 0 5px">AI LIVE + MARKET · THỬ NGHIỆM</h3><div class="hint">Chạy song song, không thay đổi λ AI NO-STATS hoặc Telegram. λ MARKET chỉ hiện khi có cặp Odds LIVE hợp lệ.</div></div><button type="button" onclick="loadAiLiveMarket()">↻ Làm mới AI LIVE</button></div>
+<div class="stats" style="margin:12px 0"><div class="stat"><small>Trận đang theo dõi</small><strong id="lmCount">—</strong></div><div class="stat"><small>Có dữ liệu LIVE</small><strong id="lmLive">—</strong></div><div class="stat"><small>Có λ MARKET</small><strong id="lmMarket">—</strong></div><div class="stat"><small>Chưa hiệu chỉnh</small><strong>THỬ NGHIỆM</strong></div></div>
+<div id="lmMessage" class="hint" aria-live="polite">Đang tải dữ liệu...</div><div style="overflow-x:auto"><table class="lm-table" style="width:100%;border-collapse:collapse;min-width:650px"><thead><tr><th>Trận / phút</th><th>λ NO-STATS</th><th>λ MARKET</th><th>Thống kê LIVE</th><th>Odds / biến động</th></tr></thead><tbody id="lmRows"><tr><td colspan="5">Đang tải...</td></tr></tbody></table></div>
+</section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI THỬ NGHIỆM</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI THỬ NGHIỆM</h3><p class="hint">AI THỬ NGHIỆM: gửi phút 65–88 khi bàn còn kỳ vọng ≥ 0.90 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI THỬ NGHIỆM duy nhất</span></div>
 <section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI THỬ NGHIỆM</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI THỬ NGHIỆM</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI THỬ NGHIỆM</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Chỉ chốt FT khi API-Sports hoặc FlashScore xác nhận kết quả chính thức.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI THỬ NGHIỆM...</div>
 <div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
 const el=id=>document.getElementById(id);
@@ -1130,6 +1140,33 @@ async function loadNoStatsAlerts(){
  }catch(e){el('noStatsAlertSummary').textContent='Không tải được Audit Telegram AI NO-STATS: '+e.message;}
 }
 
+
+async function loadAiLiveMarket(){
+ const msg=el('lmMessage');
+ try{
+  const response=await fetch('/api/ai-no-stats',{cache:'no-store'});
+  if(!response.ok)throw Error('HTTP '+response.status);
+  const data=await response.json();
+  const rows=(Array.isArray(data.records)?data.records:[]).filter(r=>r&&r.aiLiveEnhanced).slice(0,20);
+  const liveCount=rows.filter(r=>{const c=String(r.aiLiveEnhanced.liveCoverage||'').toUpperCase();return c!=='UNAVAILABLE'&&c!=='NONE'&&c!=='N/A'&&c!==''}).length;
+  const marketCount=rows.filter(r=>Number.isFinite(Number(r.aiLiveEnhanced.marketLambda))&&r.aiLiveEnhanced.marketLambda!==null).length;
+  el('lmCount').textContent=rows.length;
+  el('lmLive').textContent=liveCount;
+  el('lmMarket').textContent=marketCount;
+  msg.textContent='20 bản ghi mới nhất (tối đa) · Không phải tín hiệu Telegram · λ MARKET không phải λ kết hợp đã huấn luyện.';
+  el('lmRows').innerHTML=rows.map(r=>{
+   const a=r.aiLiveEnhanced||{};
+   const baseline=r.expectedRemainingGoals;
+   const base=baseline==null?'—':Number(baseline).toFixed(2);
+   const market=a.marketLambda==null?'Chưa có':Number(a.marketLambda).toFixed(2);
+   const odds=a.overOdds!=null&&a.underOdds!=null?'Over '+esc(a.overOdds)+' / Under '+esc(a.underOdds)+' · mốc '+esc(a.marketLine):'Chưa xác minh Odds LIVE';
+   const movement=a.oddsMovement?' · ΔOver '+(a.oddsMovement.overOddsDelta>0?'+':'')+esc(a.oddsMovement.overOddsDelta):'';
+   return '<tr><td><span class="lm-team">'+esc(r.home)+' – '+esc(r.away)+'</span><div class="lm-muted">'+esc(r.minute)+'′ · '+esc(r.score||'')+'</div></td>'+
+    '<td class="lm-num">'+esc(base)+'</td><td class="lm-num">'+esc(market)+'</td><td>'+esc(a.liveCoverage||'Không có')+'</td><td>'+odds+movement+'</td></tr>';
+  }).join('')||'<tr><td colspan="5">Chưa có trận AI LIVE + MARKET để hiển thị.</td></tr>';
+ }catch(err){msg.textContent='Không tải được AI LIVE + MARKET: '+err.message;el('lmRows').innerHTML='<tr><td colspan="5">Không có dữ liệu.</td></tr>';}
+}
+loadAiLiveMarket();setInterval(loadAiLiveMarket,60000);
 loadNoStatsAlerts();setInterval(loadNoStatsAlerts,60000);
 </script>
 <script>
