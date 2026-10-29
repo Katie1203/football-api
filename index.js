@@ -6161,27 +6161,58 @@ async function noStatsEvents(match) {
     return {events: [], source: null};
   }
 }
+// FlashScore team/results returns tournament groups containing matches[], not a flat fixture list.
+// This provider's results endpoint may omit match_status entirely for completed games.
+const FLASH_HISTORY_SCAN_LIMIT = 80;
+function flashHistoryRows(payload) {
+  const root = Array.isArray(payload) ? payload : (payload?.matches || payload?.results || payload?.items || payload?.data || []);
+  if (!Array.isArray(root)) return [];
+  return root.flatMap(group => Array.isArray(group?.matches) ? group.matches : [group]);
+}
+function normalizeFlashHistory(payload, teamId, nowSeconds = Date.now() / 1000) {
+  const seen = new Set();
+  const fixtures = [];
+  for (const r of flashHistoryRows(payload)) {
+    const homeId = r?.home_team?.team_id, awayId = r?.away_team?.team_id;
+    const h = r?.scores?.home ?? r?.home_score, a = r?.scores?.away ?? r?.away_score;
+    const ts = Number(r?.timestamp ?? r?.match_status?.timestamp);
+    const status = r?.match_status || {};
+    const stage = String(status.stage ?? r?.status ?? '').toUpperCase();
+    // A known unfinished game must never enter the recent-results sample.
+    if (status.is_finished === false || status.is_in_progress === true ||
+        /^(LIVE|HT|1ST_HALF|2ND_HALF|SCHEDULED|NOT_STARTED|POSTPONED|CANCELLED)$/.test(stage)) continue;
+    // If status is omitted, only accept a past fixture from the *results* endpoint.
+    if (status.is_finished !== true && !/^(FT|AET|PEN|FINISHED|AFTER_EXTRA_TIME)$/.test(stage) &&
+        !(Number.isFinite(ts) && ts > 0 && ts < nowSeconds - 2 * 3600)) continue;
+    if (homeId == null || awayId == null ||
+        (String(homeId) !== String(teamId) && String(awayId) !== String(teamId)) ||
+        h == null || a == null || !Number.isInteger(Number(h)) || !Number.isInteger(Number(a)) ||
+        Number(h) < 0 || Number(a) < 0) continue;
+    const id = String(r?.match_id || `${homeId}:${awayId}:${ts}`);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    fixtures.push({timestamp:ts || 0,fixture:{status:{short:'FT'}},
+      teams:{home:{id:homeId},away:{id:awayId}},goals:{home:Number(h),away:Number(a)}});
+  }
+  return fixtures.sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
+}
 async function flashTeamHistory(teamId) {
   if (!teamId) return null;
   const key='flash:'+teamId, cached=noStatsHistoryCache.get(key);
   if(cached && Date.now()-cached.at<NO_STATS_HISTORY_TTL)return cached.value;
-  if(noStatsScanBudget.history>=4)return null;
+  if(noStatsScanBudget.history>=FLASH_HISTORY_SCAN_LIMIT) {
+    console.warn(`[FLASH HISTORY BUDGET] limit=${FLASH_HISTORY_SCAN_LIMIT} team=${teamId}`);
+    return null;
+  }
   noStatsScanBudget.history++;
   try {
     const data=await flashGet('/api/flashscore/v2/teams/results',{team_id:teamId,page:1});
-    const rows=Array.isArray(data)?data:(data?.matches||data?.results||data?.items||[]);
-    const fixtures=rows.filter(r=>{
-      const st=r?.match_status||{};
-      const finished=st.is_finished===true||/^(FT|AET|PEN|FINISHED)$/i.test(String(st.stage||r?.status||''));
-      const h=r?.scores?.home??r?.home_score,a=r?.scores?.away??r?.away_score;
-      return finished && Number.isInteger(Number(h)) && Number.isInteger(Number(a)) &&
-        (String(r?.home_team?.team_id)===String(teamId)||String(r?.away_team?.team_id)===String(teamId));
-    }).sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0)).slice(0,5).map(r=>({
-      fixture:{status:{short:'FT'}},teams:{home:{id:r.home_team.team_id},away:{id:r.away_team.team_id}},
-      goals:{home:Number(r.scores?.home??r.home_score),away:Number(r.scores?.away??r.away_score)}
-    }));
+    const rows=flashHistoryRows(data);
+    const fixtures=normalizeFlashHistory(data,teamId);
     const value=aiNoStats.historyFromFixtures(fixtures,teamId);
-    noStatsHistoryCache.set(key,{at:Date.now(),value});
+    console.log(`[FLASH TEAM HISTORY] team=${teamId} rows=${rows.length} valid=${fixtures.length} sample=${value?.sample||0}`);
+    // Do not cache an incomplete sample for six hours; allow recovery on a later scan.
+    if(value?.sample>=3)noStatsHistoryCache.set(key,{at:Date.now(),value});
     return value;
   }catch(e){console.warn('[FLASH TEAM RESULTS]',teamId,e.message);return null;}
 }
@@ -6532,6 +6563,7 @@ async function observeNoStats(match, minute, liveStats=null) {
     ? {home:match.raw?.home_team?.team_id,away:match.raw?.away_team?.team_id} : null;
   const homeHistory = flashIds ? await flashTeamHistory(flashIds.home) : await noStatsHistory(homeId);
   const awayHistory = flashIds ? await flashTeamHistory(flashIds.away) : await noStatsHistory(awayId);
+  if(flashIds)console.log(`[FLASH AI INPUT] ${match.homeName} vs ${match.awayName} | HT=${ht.total} | home=${homeHistory?.sample||0} away=${awayHistory?.sample||0} | events=${eventResult.events.length}`);
   const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
     eventSource: eventResult.source, homeHistory, awayHistory});
   // Early Goal uses verified goal events; ordinary AI NO-STATS never uses these to change lambda.
