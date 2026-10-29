@@ -6438,6 +6438,10 @@ async function maybeSendNoStatsAlert(record) {
         liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT',
         alertNumber:1,telegramMessageId:response.data.result?.message_id||null,
         overLine:earlyGoal?earlyGoal.overLine:(record.oddsLive?.found===true&&Number.isFinite(Number(record.oddsLive?.line))?Number(record.oddsLive.line):null),
+        // Snapshot Odds at the exact Telegram alert; do not infer it later from FT/live data.
+        oddsAtAlertStatus:hasLiveOverOdds?'DAT_ODDS':'CHUA_LAY_DUOC_ODDS',
+        overOddsAtAlert:hasLiveOverOdds?liveOverOdds:null,
+        overLineAtAlert:hasLiveOverOdds&&Number.isFinite(Number(record.bigggOverLine))?Number(record.bigggOverLine):null,
         overResult:'NO_LINE'});
       await persistNoStatsAlertAudit();
     }

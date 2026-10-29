@@ -1086,6 +1086,13 @@ function nsRenderHistory(){
    const resultColor=result==='WIN'?'#55e8ad':result==='LOSS'?'#ff6687':'#f0c768';
    const pct=x.probability==null?'—':esc(x.probability)+'%';
    const lambda=x.expectedRemainingGoals==null?'—':esc(x.expectedRemainingGoals);
+   // Historical records without an Odds snapshot are unknown, not automatically missing.
+   const oddsState=String(x.oddsAtAlertStatus||'');
+   const oddsValue=Number(x.overOddsAtAlert);
+   const oddsKnown=oddsState==='DAT_ODDS'&&x.overOddsAtAlert!=null&&Number.isFinite(oddsValue)&&oddsValue>1;
+   const oddsLabel=oddsKnown?'ĐẠT ODDS':oddsState==='CHUA_LAY_DUOC_ODDS'?'CHƯA LẤY ĐƯỢC ODDS':'CHƯA CÓ DỮ LIỆU LƯU';
+   const oddsDetail=oddsKnown?'Over '+esc(oddsValue.toFixed(2))+(x.overLineAtAlert==null?'':' · Mốc '+esc(x.overLineAtAlert)):'';
+
    return '<article class="match-card" style="padding:12px">'+
     '<label class="ns-select-label"><input type="checkbox" aria-label="Chọn cảnh báo để xóa" data-key="'+encodeURIComponent(x.key||'')+'" '+(nsSelected.has(x.key)?'checked':'')+' onchange="nsToggleSelect(decodeURIComponent(this.dataset.key),this.checked)"> Chọn</label>'+
     '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
@@ -1096,6 +1103,7 @@ function nsRenderHistory(){
      ''+
      '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+
      '<div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
+    '<div class="match-live-score" style="margin-bottom:5px"><b>Odds lúc cảnh báo:</b> <span style="font-weight:800;color:'+(oddsKnown?'#55e8ad':oddsState==='CHUA_LAY_DUOC_ODDS'?'#f0c768':'#aebdc4')+'">'+oddsLabel+'</span>'+oddsDetail+'</div>'+
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
