@@ -5664,6 +5664,8 @@ function cleanTelegramText(
 const BONGDALU_BASE = (process.env.BONGDALU_BASE_URL || 'https://g4mlw.net').replace(/\/+$/,'');
 const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '2').split(',').map(x=>x.trim()).filter(Boolean);
 const bongdaluOddsByMatch = new Map();
+// Metadata learned only from full Bongdalu match records, never guessed from odds.
+const bongdaluMatchMetadata = new Map();
 const bongdaluOddsHistory = new Map();
 const BONGDALU_ODDS_HISTORY_WINDOWS = [1,3,5,10];
 function bongdaluUnwrap(payload) {
@@ -5673,10 +5675,10 @@ function bongdaluUnwrap(payload) {
   if (data && typeof data==='object') for (const k of ['results','matches','list','rows','events','fixtures','MatchList']) if (Array.isArray(data[k])) return data[k];
   throw new Error('Bongdalu response missing expected array');
 }
-async function bongdaluGet(path, query='') {
+async function bongdaluGet(path, query='', options={}) {
   const upstream=path+(query?(path.includes('?')?'&':'?')+query:'');
   const {data}=await axios.get(`${BONGDALU_BASE}/wp-json/wpsport/v1/proxy`,{
-    params:{path:upstream},headers:{Accept:'application/json','Cache-Control':'no-cache, no-store','Pragma':'no-cache'},timeout:12000
+    params:{path:upstream,...(options.cacheBust?{_bdts:Date.now()}: {})},headers:{Accept:'application/json','Cache-Control':'no-cache, no-store','Pragma':'no-cache'},timeout:12000
   });
   return data;
 }
@@ -5692,8 +5694,9 @@ function bdStatus(raw) {
   if (state !== undefined && state !== null && state !== '') {
     const n = Number(state);
     if (n === 0) return 'NS';
-    if (n === 1 || n === 2) return 'LIVE';
-    if (n === 3) return 'FT';
+    if (n === 1 || n === 3) return 'LIVE';
+    if (n === 2) return 'HT';
+    if (n === -1) return 'FT';
     return 'UNKNOWN';
   }
   const v = String(raw?.status?.type ?? raw?.status ?? '').toUpperCase();
@@ -5708,14 +5711,18 @@ function formatBongdaluMatch(raw) {
   const id=raw.ScheduleID??raw.scheduleId??raw.schedule_id??raw.match_id??raw.matchId??raw.RapidEventID??raw.id;
   const home=bdText(raw.HomeTeam??raw.homeTeam??raw.home_team??raw.home??raw.HomeTeamName??raw.home_name);
   const away=bdText(raw.GuestTeam??raw.AwayTeam??raw.guestTeam??raw.awayTeam??raw.away_team??raw.away??raw.GuestTeamName??raw.away_name);
-  if(id==null||!home||!away)return null;
+  if(id==null)return null;
+  const cached=bongdaluMatchMetadata.get(String(id));
+  const resolvedHome=home||cached?.home, resolvedAway=away||cached?.away;
+  if(!resolvedHome||!resolvedAway)return null;
+  if(home&&away)bongdaluMatchMetadata.set(String(id),{home,away,league:bdText(raw.LeagueName??raw.SclassName??raw.leagueName??raw.competition??raw.League),at:Date.now()});
   const minuteRaw=raw.minute??raw.MatchMinute??raw.matchMinute??raw.liveMinute??raw.elapsed;
   const matchMinute=typeof minuteRaw==='number'?minuteRaw:(String(minuteRaw??'').match(/\d+/)?.[0]?Number(String(minuteRaw).match(/\d+/)[0]):null);
   const status=bdStatus(raw);
   const hs=Number(raw.HomeScore??raw.homeScore??raw.home_score??0), as=Number(raw.GuestScore??raw.AwayScore??raw.guestScore??raw.awayScore??raw.away_score??0);
   const homeScore=Number.isFinite(hs)?hs:0, awayScore=Number.isFinite(as)?as:0;
-  const league=bdText(raw.LeagueName??raw.SclassName??raw.leagueName??raw.competition??raw.League);
-  const shaped={id:String(id),source:'bongdalu',homeName:home,awayName:away,homeScore,awayScore,league,
+  const league=bdText(raw.LeagueName??raw.SclassName??raw.leagueName??raw.competition??raw.League)||cached?.league||'';
+  const shaped={id:String(id),source:'bongdalu',homeName:resolvedHome,awayName:resolvedAway,homeScore,awayScore,league,
     minute:status==='HT'?'HT':status==='FT'?999:(matchMinute??0),
     raw:{...raw,_providerSource:'bongdalu',_bongdaluId:String(id),minute:matchMinute??0,
       status:{type:status==='FT'?'finished':status==='HT'?'HT':status==='NS'?'notstarted':'live',minute:matchMinute??0},
@@ -5735,7 +5742,7 @@ function rememberBongdaluOdds(matchId,rows,now=Date.now()) {
 // Only use the odds clock when it agrees with a LIVE match and the bookmaker's
 // own in-play status. Do not infer a minute from the scheduled kickoff time.
 function bongdaluVerifiedOddsMinute(match, rows) {
-  if (Number(match.raw?.MatchState) !== 2) return null; // second half only
+  if (Number(match.raw?.MatchState) !== 3) return null; // Bongdalu second half only
   const candidates = (rows || []).filter(r => String(r.match_id) === String(match.id) &&
     Number(r.match_status) === 4 && Number.isFinite(Number(r.time_of_the_match)) &&
     Number(r.time_of_the_match) >= 45 && Number(r.time_of_the_match) <= 120 &&
@@ -5775,7 +5782,16 @@ function bongdaluMatchPayloadDiagnostic(payload) {
   return {code:payload?.code??null,count:payload?.count??null,top:describe(payload),data:describe(data),dataType:Array.isArray(data)?'array':typeof data};
 }
 async function fetchBongdaluLiveMatches() {
-  const payload=await bongdaluGet('/v1/football/match/live','locale=vi');
+  let payload=await bongdaluGet('/v1/football/match/live','locale=vi');
+  if(Number(payload?.code)===0 && Number(payload?.count)===0 && Array.isArray(payload?.data?.results) && payload.data.results.length===0){
+    // A successful empty response is not proof that there are no live fixtures.
+    // Retry once with a cache-busting proxy URL, without changing the upstream route.
+    try {
+      const retry=await bongdaluGet('/v1/football/match/live','locale=vi',{cacheBust:true});
+      console.log(`[BONGDALU EMPTY RETRY] first=0 | retryCount=${retry?.count??'missing'} | retryRows=${Array.isArray(retry?.data?.results)?retry.data.results.length:Array.isArray(retry?.data?.matches)?retry.data.matches.length:'unknown'}`);
+      if(Number(retry?.code)===0)payload=retry;
+    }catch(e){console.warn(`[BONGDALU EMPTY RETRY] ${e.message}`);}
+  }
   const diagnostic=bongdaluMatchPayloadDiagnostic(payload);
   console.log(`[BONGDALU MATCH RAW] ${JSON.stringify(diagnostic).slice(0,2400)}`);
   const rows=bongdaluUnwrap(payload);
@@ -5786,12 +5802,15 @@ async function fetchBongdaluLiveMatches() {
   const states={};
   for(const r of rows){const key=String(r.MatchState??'missing');states[key]=(states[key]||0)+1;}
   const normalized=rows.map(formatBongdaluMatch).filter(Boolean);
+  if(rows.length && !normalized.length && rows.some(r=>r?.ScheduleID && r?.MatchState!==undefined)){
+    console.warn(`[BONGDALU DELTA ONLY] rows=${rows.length} | no team names in LIVE delta; metadata cache=${bongdaluMatchMetadata.size}. A fixture catalog source is required for names; no synthetic fixtures will be created.`);
+  }
   // Log the actual response schema before rejecting it. Some proxy deployments
   // return odds rows or differently shaped match rows under data.matches.
   const sample=rows.slice(0,3).map(r=>({keys:Object.keys(r||{}).slice(0,28),id:r?.ScheduleID??r?.match_id??r?.id??null,home:r?.homeTeam??r?.HomeTeam??null,away:r?.guestTeam??r?.GuestTeam??null,state:r?.MatchState??null,market:r?.market??null}));
   const invalid=rows.length-normalized.length;
   console.log(`[BONGDALU MATCH RESPONSE] rows=${rows.length} | normalized=${normalized.length} | invalid=${invalid} | states=${JSON.stringify(states)} | sample=${JSON.stringify(sample).slice(0,1600)}`);
-  if(rows.length && !normalized.length)throw new Error(`Bongdalu LIVE schema mismatch: ${rows.length} rows, 0 valid matches; inspect [BONGDALU MATCH RESPONSE] sample`);
+  if(rows.length && !normalized.length)console.warn(`[BONGDALU LIVE SKIP] ${rows.length} delta rows without team metadata; inspect [BONGDALU MATCH RESPONSE] sample`);
   const matches=normalized.filter(m=>m.raw.status.type==='live');
   console.log(`[BONGDALU MATCH FILTER] normalized=${normalized.length} | live=${matches.length}`);
   const grouped=await fetchBongdaluLiveOdds(matches.map(m=>m.id));
