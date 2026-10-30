@@ -5681,11 +5681,22 @@ function bdText(v) {
   return '';
 }
 function bdStatus(raw) {
-  const v=String(raw?.match_status??raw?.matchStatus??raw?.MatchStatus??raw?.MatchState??raw?.status??'').toUpperCase();
-  if(['8','FT','AET','PEN','FINISHED','ENDED'].includes(v))return 'FT';
-  if(['HT','HALF TIME','HALFTIME'].includes(v))return 'HT';
-  if(['0','1','NS','NOT STARTED'].includes(v))return 'NS';
-  return 'LIVE';
+  // Bongdalu match-list schema: MatchState 0=NS, 1=1H, 2=2H, 3=FT.
+  // Do not interpret odds.match_status as match-list MatchState.
+  const state = raw?.MatchState;
+  if (state !== undefined && state !== null && state !== '') {
+    const n = Number(state);
+    if (n === 0) return 'NS';
+    if (n === 1 || n === 2) return 'LIVE';
+    if (n === 3) return 'FT';
+    return 'UNKNOWN';
+  }
+  const v = String(raw?.status?.type ?? raw?.status ?? '').toUpperCase();
+  if (['FT','AET','PEN','FINISHED','ENDED'].includes(v)) return 'FT';
+  if (['HT','HALF TIME','HALFTIME'].includes(v)) return 'HT';
+  if (['NS','NOT STARTED','NOTSTARTED'].includes(v)) return 'NS';
+  if (['LIVE','1H','2H','INPLAY'].includes(v)) return 'LIVE';
+  return 'UNKNOWN';
 }
 function formatBongdaluMatch(raw) {
   if(!raw||typeof raw!=='object')return null;
@@ -5728,9 +5739,9 @@ async function fetchBongdaluLiveOdds(matchIds) {
   return grouped;
 }
 async function fetchBongdaluLiveMatches() {
-  const payload=await bongdaluGet('/v1/football/match/live','lang=vn&locale=vi');
-  const rows=bongdaluUnwrap(payload),matches=rows.map(formatBongdaluMatch).filter(Boolean);
-  if(rows.length&&!matches.length)throw new Error('Bongdalu LIVE response could not normalize any match');
+  const payload=await bongdaluGet('/v1/football/match/live','locale=vi');
+  const rows=bongdaluUnwrap(payload),matches=rows.map(formatBongdaluMatch).filter(m=>m && m.raw.status.type === 'live');
+  if(rows.length && !rows.some(row => formatBongdaluMatch(row))) throw new Error('Bongdalu LIVE response could not normalize any match');
   await fetchBongdaluLiveOdds(matches.map(m=>m.id));
   for(const m of matches){const snap=bongdaluOddsByMatch.get(String(m.id));if(snap)m.raw.bongdaluOdds=snap;}
   console.log(`[Bongdalu LIVE] fixtures=${matches.length} | native IDs only`);
