@@ -5666,6 +5666,41 @@ const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '2').split
 const bongdaluOddsByMatch = new Map();
 // Metadata learned only from full Bongdalu match records, never guessed from odds.
 const bongdaluMatchMetadata = new Map();
+// Captured Bongdalu fixture metadata is a bootstrap snapshot, not a LIVE source.
+// The current LIVE feed remains authoritative for state/score; new IDs require
+// fresh metadata from the configured Bongdalu catalog endpoint.
+try {
+  const bootstrap = require('./bongdalu_fixture_metadata_20261030.json');
+  for (const [id, info] of Object.entries(bootstrap)) {
+    if (info && info.home && info.away) bongdaluMatchMetadata.set(id, {...info, at: 0});
+  }
+  console.log(`[BONGDALU METADATA BOOTSTRAP] fixtures=${bongdaluMatchMetadata.size}`);
+} catch (e) { console.warn(`[BONGDALU METADATA BOOTSTRAP] ${e.message}`); }
+const BONGDALU_FIXTURE_CATALOG_PATH = String(process.env.BONGDALU_FIXTURE_CATALOG_PATH || '').trim();
+let bongdaluCatalogLastFetch = 0;
+async function refreshBongdaluFixtureMetadata() {
+  if (!BONGDALU_FIXTURE_CATALOG_PATH) return;
+  if (!/^\/v1\/football\//.test(BONGDALU_FIXTURE_CATALOG_PATH)) {
+    console.warn('[BONGDALU CATALOG] invalid path; must start /v1/football/'); return;
+  }
+  if (Date.now() - bongdaluCatalogLastFetch < 5 * 60 * 1000) return;
+  bongdaluCatalogLastFetch = Date.now();
+  try {
+    const payload = await bongdaluGet(BONGDALU_FIXTURE_CATALOG_PATH);
+    const rows = bongdaluUnwrap(payload);
+    let added = 0;
+    for (const r of rows) {
+      const id = r?.ScheduleID;
+      const home = bdText(r?.homeTeam ?? r?.HomeTeam);
+      const away = bdText(r?.guestTeam ?? r?.GuestTeam);
+      if (!id || !home || !away) continue;
+      bongdaluMatchMetadata.set(String(id), {home,away,league:bdText(r?.LeagueName ?? r?.SclassName ?? r?.leagueName),at:Date.now()});
+      added++;
+    }
+    console.log(`[BONGDALU CATALOG] rows=${rows.length} | named=${added} | metadata=${bongdaluMatchMetadata.size}`);
+  } catch (e) { console.warn(`[BONGDALU CATALOG] ${e.message}`); }
+}
+
 const bongdaluOddsHistory = new Map();
 const BONGDALU_ODDS_HISTORY_WINDOWS = [1,3,5,10];
 function bongdaluUnwrap(payload) {
@@ -5725,7 +5760,7 @@ function formatBongdaluMatch(raw) {
   const shaped={id:String(id),source:'bongdalu',homeName:resolvedHome,awayName:resolvedAway,homeScore,awayScore,league,
     minute:status==='HT'?'HT':status==='FT'?999:(matchMinute??0),
     raw:{...raw,_providerSource:'bongdalu',_bongdaluId:String(id),minute:matchMinute??0,
-      status:{type:status==='FT'?'finished':status==='HT'?'HT':status==='NS'?'notstarted':'live',minute:matchMinute??0},
+      status:{type:status==='FT'?'finished':status==='HT'?'HT':status==='NS'?'notstarted':status==='LIVE'?'live':'unknown',minute:matchMinute??0},
       homeScore,awayScore}};
   const odds=bongdaluOddsByMatch.get(String(id));if(odds)shaped.raw.bongdaluOdds=odds;
   return shaped;
@@ -5798,6 +5833,10 @@ async function fetchBongdaluLiveMatches() {
   if(rows.length===0){
     console.warn(`[BONGDALU MATCH EMPTY] endpoint=/v1/football/match/live?locale=vi | count=${diagnostic.count??'missing'} | data=${JSON.stringify(diagnostic.data).slice(0,900)} | no LIVE matches can be inferred from odds alone`);
     if(Number(diagnostic.count)>0)throw new Error(`Bongdalu match response count=${diagnostic.count} but extracted rows=0; inspect [BONGDALU MATCH RAW]`);
+  }
+  // Fetch names only when LIVE IDs are not yet in the Bongdalu metadata map.
+  if (rows.some(r => r?.ScheduleID && !bongdaluMatchMetadata.has(String(r.ScheduleID)))) {
+    await refreshBongdaluFixtureMetadata();
   }
   const states={};
   for(const r of rows){const key=String(r.MatchState??'missing');states[key]=(states[key]||0)+1;}
