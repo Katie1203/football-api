@@ -854,9 +854,15 @@ function parseMinuteValue(value) {
 // Verified October 2026 FlashScore / LiveFootball JSON adapters.
 function normalizeProviderMinute(raw, source) {
   if (source === 'bongdalu') {
-    if (Number(raw?.MatchState) === 3) return 999;
+    // MatchState: -1=FT, 0=NS, 1=1H, 2=HT, 3=2H.
+    // Never treat second half as FT; use only a verified minute attached
+    // by the LIVE-delta / odds join, not an estimated diary kickoff clock.
+    const state = Number(raw?.MatchState);
+    if (state === -1) return 999;
+    if (state === 2) return 'HT';
+    if (state !== 1 && state !== 3) return 0;
     const n = Number(raw?.minute);
-    return Number.isFinite(n) && n > 0 && n <= 120 ? n : 0;
+    return Number.isFinite(n) && n > 0 && n <= 120 ? Math.floor(n) : 0;
   }
   if (source === 'flashscore' || raw?.match_status?.live_minute != null) {
     const st = raw?.match_status || {};
@@ -5885,6 +5891,9 @@ async function fetchBongdaluLiveMatches() {
       verifiedMinute++;
     } else missingMinute++;
   }
+  const minuteSample=matches.filter(m=>Number(m.minute)>0).slice(0,12).map(m=>({id:m.id,state:m.raw.MatchState,minute:m.minute,filterMinute:calculateExactMinute(m.raw)}));
+  const verifiedInWindow=matches.filter(m=>{const n=calculateExactMinute(m.raw);return typeof n==='number'&&n>=60&&n<=88;}).length;
+  console.log(`[BONGDALU MINUTE AUDIT] verified=${verifiedMinute} | in60to88=${verifiedInWindow} | sample=${JSON.stringify(minuteSample)}`);
   console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | deltaMinute=${deltaMinutes} | oddsMinute=${oddsMinutes} | unknownMinute=${missingMinute} | native IDs only`);
   return matches;
 }
@@ -7240,6 +7249,7 @@ async function scanLiveMatches() {
     // ====================================================
 
     const eligibleMatches = [];
+    const filterAudit={unknownMinute:0,halfTime:0,outsideWindow:0,filteredLeague:0,accepted:0};
 
 
     for (
@@ -7255,6 +7265,7 @@ async function scanLiveMatches() {
       if (
         minuteRaw === 'HT'
       ) {
+        filterAudit.halfTime++;
         continue;
       }
 
@@ -7270,10 +7281,10 @@ async function scanLiveMatches() {
 
 
       if (
-        !Number.isFinite(minute) ||
-        minute < 60 ||
-        minute > 88
-      ) {
+        !Number.isFinite(minute) || minute <= 0
+      ) {filterAudit.unknownMinute++;continue;}
+      if (minute < 60 || minute > 88) {
+        filterAudit.outsideWindow++;
         continue;
       }
 
@@ -7285,6 +7296,7 @@ async function scanLiveMatches() {
           match.awayName
         )
       ) {
+        filterAudit.filteredLeague++;
         continue;
       }
 
@@ -7292,9 +7304,10 @@ async function scanLiveMatches() {
       eligibleMatches.push(
         match
       );
+      filterAudit.accepted++;
     }
 
-
+    console.log(`[BONGDALU FILTER AUDIT] ${JSON.stringify(filterAudit)}`);
     console.log(
       `[Live] Đủ điều kiện phút 60-88: ${eligibleMatches.length}`
     );
