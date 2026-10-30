@@ -5705,9 +5705,9 @@ function bdStatus(raw) {
 }
 function formatBongdaluMatch(raw) {
   if(!raw||typeof raw!=='object')return null;
-  const id=raw.ScheduleID??raw.scheduleId??raw.match_id??raw.matchId??raw.RapidEventID;
-  const home=bdText(raw.HomeTeam??raw.homeTeam??raw.home??raw.HomeTeamName);
-  const away=bdText(raw.GuestTeam??raw.AwayTeam??raw.guestTeam??raw.awayTeam??raw.away??raw.GuestTeamName);
+  const id=raw.ScheduleID??raw.scheduleId??raw.schedule_id??raw.match_id??raw.matchId??raw.RapidEventID??raw.id;
+  const home=bdText(raw.HomeTeam??raw.homeTeam??raw.home_team??raw.home??raw.HomeTeamName??raw.home_name);
+  const away=bdText(raw.GuestTeam??raw.AwayTeam??raw.guestTeam??raw.awayTeam??raw.away_team??raw.away??raw.GuestTeamName??raw.away_name);
   if(id==null||!home||!away)return null;
   const minuteRaw=raw.minute??raw.MatchMinute??raw.matchMinute??raw.liveMinute??raw.elapsed;
   const matchMinute=typeof minuteRaw==='number'?minuteRaw:(String(minuteRaw??'').match(/\d+/)?.[0]?Number(String(minuteRaw).match(/\d+/)[0]):null);
@@ -5774,9 +5774,14 @@ async function fetchBongdaluLiveMatches() {
   const states={};
   for(const r of rows){const key=String(r.MatchState??'missing');states[key]=(states[key]||0)+1;}
   const normalized=rows.map(formatBongdaluMatch).filter(Boolean);
-  if(rows.length && !normalized.length)throw new Error('Bongdalu LIVE response could not normalize any match');
+  // Log the actual response schema before rejecting it. Some proxy deployments
+  // return odds rows or differently shaped match rows under data.matches.
+  const sample=rows.slice(0,3).map(r=>({keys:Object.keys(r||{}).slice(0,28),id:r?.ScheduleID??r?.match_id??r?.id??null,home:r?.homeTeam??r?.HomeTeam??null,away:r?.guestTeam??r?.GuestTeam??null,state:r?.MatchState??null,market:r?.market??null}));
+  const invalid=rows.length-normalized.length;
+  console.log(`[BONGDALU MATCH RESPONSE] rows=${rows.length} | normalized=${normalized.length} | invalid=${invalid} | states=${JSON.stringify(states)} | sample=${JSON.stringify(sample).slice(0,1600)}`);
+  if(rows.length && !normalized.length)throw new Error(`Bongdalu LIVE schema mismatch: ${rows.length} rows, 0 valid matches; inspect [BONGDALU MATCH RESPONSE] sample`);
   const matches=normalized.filter(m=>m.raw.status.type==='live');
-  console.log(`[BONGDALU MATCH RESPONSE] rows=${rows.length} | normalized=${normalized.length} | states=${JSON.stringify(states)} | live=${matches.length}`);
+  console.log(`[BONGDALU MATCH FILTER] normalized=${normalized.length} | live=${matches.length}`);
   const grouped=await fetchBongdaluLiveOdds(matches.map(m=>m.id));
   let verifiedMinute=0, missingMinute=0;
   for(const m of matches){
