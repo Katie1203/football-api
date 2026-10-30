@@ -61,7 +61,7 @@ function activateFlashFallback(error) {
   return true;
 }
 async function flashGet(route, params={}) {
-  if (!FLASHSCORE_API_KEY) return null;
+  if (!FLASHSCORE_API_KEY || !apiSportsQuotaExhausted()) return null;
   const {data} = await axios.get(`https://${FLASHSCORE_HOST}${route}`, {
     params, headers:{'x-rapidapi-key':FLASHSCORE_API_KEY,'x-rapidapi-host':FLASHSCORE_HOST}, timeout:10000
   });
@@ -1265,6 +1265,7 @@ async function fetchLiveMatchesFromSofaScore() {
 // ==========================================================
 
 async function fetchLiveMatchesFromFlashScore() {
+  if (!apiSportsQuotaExhausted()) return [];
 
   try {
 
@@ -5660,7 +5661,7 @@ async function fetchAllLiveMatches() {
   let api=[];
   if (!apiSportsQuotaExhausted()) api=await fetchApiSportsLive();
   // Do not query FlashScore in parallel while API-Sports is usable.
-  const useFlash=apiSportsQuotaExhausted() || !APISPORTS_KEY;
+  const useFlash=apiSportsQuotaExhausted();
   const flash=useFlash ? await fetchLiveMatchesFromFlashScore() : [];
   const all=[...api.map(formatApiSportsMatch),...flash.map(raw=>formatLiveMatch(raw,'flashscore'))];
   independentLiveSourceRegistry=all.filter(m=>m&&m.id!=null&&m.homeName&&m.awayName);
@@ -6070,7 +6071,7 @@ async function auditAiGoalOddsFt() {
     let changed=false;
     for(const row of pending) {
       try {
-        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const response=/^\d+$/.test(String(row.fixtureId)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id:row.fixtureId}) : null;
         const f=response?.response?.[0];
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
         if(String(f?.fixture?.id)!==String(row.fixtureId)) {
@@ -6473,7 +6474,10 @@ async function maybeSendNoStatsAlert(record) {
         oddsAtAlertStatus:hasLiveOverOdds?'DAT_ODDS':'CHUA_LAY_DUOC_ODDS',
         overOddsAtAlert:hasLiveOverOdds?liveOverOdds:null,
         overLineAtAlert:hasLiveOverOdds&&Number.isFinite(Number(record.bigggOverLine))?Number(record.bigggOverLine):null,
-        overResult:'NO_LINE'});
+        overResult:'NO_LINE',
+        marketSnapshotAtAlert:record.aiLiveEnhanced?.marketStatus==='VALID' && Number.isFinite(record.aiLiveEnhanced?.marketLambda)
+          ? {...record.aiLiveEnhanced, snapshotAt:new Date().toISOString(), scoreAtAlert:record.score} : null,
+        marketFtEvaluation:'PENDING_FT'});
       await persistNoStatsAlertAudit();
     }
     console.log(`[AI NO-STATS ALERT SENT] ${record.home} vs ${record.away} | ${minute}' | lambda=${lambda}`);
@@ -6499,7 +6503,7 @@ function verifiedHalfTimeGoals(match) {
   return null;
 }
 async function flashNativeFT(fixtureId) {
-  if(!fixtureId || /^\d+$/.test(String(fixtureId)))return null;
+  if(!apiSportsQuotaExhausted() || !fixtureId || /^\d+$/.test(String(fixtureId)))return null;
   try {
     const detail=await flashMatchDetails(fixtureId);
     if(String(detail?.match_id)!==String(fixtureId) || detail?.match_status?.is_finished!==true)return null;
@@ -6713,7 +6717,7 @@ async function auditNoStatsFt() {
     let changed=false;
     for(const row of pending) {
       try {
-        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const response=/^\d+$/.test(String(row.fixtureId)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id:row.fixtureId}) : null;
         const f=response?.response?.[0];
         if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
         const status=String(f?.fixture?.status?.short||'').toUpperCase();
@@ -6736,7 +6740,7 @@ async function auditNoStatsFt() {
     for(const row of noStatsAlertAudit.filter(x=>x.evaluation==='PENDING_FT'&&x.fixtureId&&
       Date.now()-Date.parse(x.sentAt)>20*60*1000).slice(0,6)){
       try{
-        const response=await apiSportsGet('/fixtures',{id:row.fixtureId});
+        const response=/^\d+$/.test(String(row.fixtureId)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id:row.fixtureId}) : null;
         const f=response?.response?.[0];
         const fixtureMatches=String(f?.fixture?.id)===String(row.fixtureId);
         if(fixtureMatches&&f?.goals?.home!=null&&f?.goals?.away!=null){
@@ -6749,17 +6753,19 @@ async function auditNoStatsFt() {
         }
         const status=fixtureMatches?String(f?.fixture?.status?.short||'').toUpperCase():'';
         if(['CANC','ABD','PST','SUSP'].includes(status)){
-          row.evaluation='VOID';row.settledAt=new Date().toISOString();alertChanged=true;continue;
+          row.evaluation='VOID';row.marketFtEvaluation='VOID';row.settledAt=new Date().toISOString();alertChanged=true;continue;
         }
         let finalScore=null;
         if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
           finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
         if(!finalScore)finalScore=await flashNativeFT(row.fixtureId);
-        if(!finalScore)finalScore=await audit.flashNoStatsFT(row);
+        if(!finalScore && apiSportsQuotaExhausted())finalScore=await audit.flashNoStatsFT(row);
         if(!finalScore)continue;
         const total=Number(finalScore.h)+Number(finalScore.a);
         if(!Number.isFinite(total)||!Number.isFinite(row.observedGoals)||total<row.observedGoals)continue;
         row.evaluation=total>row.observedGoals?'WIN':'LOSS';
+        row.marketFtEvaluation=row.marketSnapshotAtAlert?.marketStatus==='VALID' && Number.isFinite(Number(row.marketSnapshotAtAlert?.marketLambda))
+          ? (total>row.observedGoals?'WIN':'LOSS') : 'N/A';
         row.ftScore=`${finalScore.h}-${finalScore.a}`;
         row.overResult=row.overLine==null?'NO_LINE':total>row.overLine?'WIN':total<row.overLine?'LOSS':'PUSH';
         row.liveScore=row.ftScore;
@@ -6781,7 +6787,7 @@ async function auditNoStatsFt() {
     for(const [id,representative] of [...pendingObs].slice(0,12)){
       try{
         let finalScore=null,status='';
-        const response=await apiSportsGet('/fixtures',{id});
+        const response=/^\d+$/.test(String(id)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id}) : null;
         const f=response?.response?.[0];
         if(String(f?.fixture?.id)===id){
           status=String(f?.fixture?.status?.short||'').toUpperCase();
@@ -6789,7 +6795,7 @@ async function auditNoStatsFt() {
             finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
         }
         if(!finalScore && !['CANC','ABD','PST','SUSP'].includes(status)){
-          finalScore=await flashNativeFT(id) || await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt});
+          finalScore=apiSportsQuotaExhausted() ? (await flashNativeFT(id) || await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt})) : null;
           if(finalScore)status='FT';
         }
         if(!finalScore&&!['CANC','ABD','PST','SUSP'].includes(status))continue;
@@ -6870,7 +6876,7 @@ async function scanNoStatsPriority() {
           const raw=response?.response?.[0];
           if (raw?.fixture?.id) fresh=formatApiSportsMatch(raw);
         }
-        if (!fresh && (original.source==='flashscore'||apiSportsQuotaExhausted())) {
+        if (!fresh && apiSportsQuotaExhausted()) {
           if (!flashMatches) flashMatches=(await fetchLiveMatchesFromFlashScore()).map(x=>formatLiveMatch(x,'flashscore'));
           fresh=flashMatches.find(m=>String(m.id)===String(original.id));
         }
