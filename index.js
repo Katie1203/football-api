@@ -5768,9 +5768,21 @@ async function fetchBongdaluLiveOdds(matchIds) {
   console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size}`);
   return grouped;
 }
+function bongdaluMatchPayloadDiagnostic(payload) {
+  // Shape-only diagnostics: never log cookies, headers or private tokens.
+  const data=payload?.data;
+  const describe=(obj)=>obj&&typeof obj==='object'?Object.fromEntries(Object.entries(obj).slice(0,20).map(([key,value])=>[key,Array.isArray(value)?`array(${value.length})`:value===null?'null':typeof value==='object'?`object(${Object.keys(value).slice(0,10).join(',')})`:typeof value])):{};
+  return {code:payload?.code??null,count:payload?.count??null,top:describe(payload),data:describe(data),dataType:Array.isArray(data)?'array':typeof data};
+}
 async function fetchBongdaluLiveMatches() {
   const payload=await bongdaluGet('/v1/football/match/live','locale=vi');
+  const diagnostic=bongdaluMatchPayloadDiagnostic(payload);
+  console.log(`[BONGDALU MATCH RAW] ${JSON.stringify(diagnostic).slice(0,2400)}`);
   const rows=bongdaluUnwrap(payload);
+  if(rows.length===0){
+    console.warn(`[BONGDALU MATCH EMPTY] endpoint=/v1/football/match/live?locale=vi | count=${diagnostic.count??'missing'} | data=${JSON.stringify(diagnostic.data).slice(0,900)} | no LIVE matches can be inferred from odds alone`);
+    if(Number(diagnostic.count)>0)throw new Error(`Bongdalu match response count=${diagnostic.count} but extracted rows=0; inspect [BONGDALU MATCH RAW]`);
+  }
   const states={};
   for(const r of rows){const key=String(r.MatchState??'missing');states[key]=(states[key]||0)+1;}
   const normalized=rows.map(formatBongdaluMatch).filter(Boolean);
