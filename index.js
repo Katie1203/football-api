@@ -5814,6 +5814,19 @@ function bongdaluMatchPayloadDiagnostic(payload) {
   const describe=(obj)=>obj&&typeof obj==='object'?Object.fromEntries(Object.entries(obj).slice(0,20).map(([key,value])=>[key,Array.isArray(value)?`array(${value.length})`:value===null?'null':typeof value==='object'?`object(${Object.keys(value).slice(0,10).join(',')})`:typeof value])):{};
   return {code:payload?.code??null,count:payload?.count??null,top:describe(payload),data:describe(data),dataType:Array.isArray(data)?'array':typeof data};
 }
+// Bongdalu LIVE delta matchTime is a Unix timestamp marking the start of
+// the CURRENT half (not the fixture kickoff). Only use it alongside a fresh
+// LIVE delta state for the same native ScheduleID; never estimate from diary kickoff.
+function bongdaluVerifiedDeltaMinute(delta, nowMs=Date.now()) {
+  if (!delta || typeof delta !== 'object') return null;
+  const state=Number(delta.MatchState), ts=Number(delta.matchTime);
+  if (![1,3].includes(state) || !Number.isFinite(ts) || ts<1000000000) return null;
+  const elapsed=(nowMs-ts*1000)/60000;
+  if (!Number.isFinite(elapsed) || elapsed < -1.5) return null;
+  if (state===1 && elapsed>=0 && elapsed<=50) return Math.max(1,Math.floor(elapsed)+1);
+  if (state===3 && elapsed>=0 && elapsed<=70) return 45+Math.floor(elapsed);
+  return null;
+}
 async function fetchBongdaluLiveMatches() {
   // Diary is the verified full fixture source; LIVE is a partial delta feed.
   // An empty delta is NOT evidence that the diary's live fixtures ended.
@@ -5835,10 +5848,12 @@ async function fetchBongdaluLiveMatches() {
   const byId=new Map();
   for(const r of diaryRows)if(r?.ScheduleID)byId.set(String(r.ScheduleID),r);
   let joined=0, unmatched=0;
+  const verifiedDeltaById=new Map();
   for(const r of deltaRows) {
     const id=r?.ScheduleID;
     if(!id || !byId.has(String(id))){unmatched++;continue;}
-    byId.set(String(id),{...byId.get(String(id)),...r});joined++;
+    byId.set(String(id),{...byId.get(String(id)),...r});
+    verifiedDeltaById.set(String(id),r);joined++;
   }
   const rows=[...byId.values()];
   console.log(`[BONGDALU DIARY JOIN] diary=${diaryRows.length} | delta=${deltaRows.length} | joined=${joined} | unmatchedDelta=${unmatched}`);
@@ -5857,17 +5872,20 @@ async function fetchBongdaluLiveMatches() {
   const matches=normalized.filter(m=>m.raw.status.type==='live' || m.raw.status.type==='HT');
   console.log(`[BONGDALU MATCH FILTER] normalized=${normalized.length} | live=${matches.length}`);
   const grouped=await fetchBongdaluLiveOdds(matches.map(m=>m.id));
-  let verifiedMinute=0, missingMinute=0;
+  let verifiedMinute=0, missingMinute=0, deltaMinutes=0, oddsMinutes=0;
   for(const m of matches){
     const snap=bongdaluOddsByMatch.get(String(m.id));
     if(snap)m.raw.bongdaluOdds=snap;
-    const minute=Number(m.minute)>0?Number(m.minute):bongdaluVerifiedOddsMinute(m,grouped.get(String(m.id))||[]);
+    const fromDelta=bongdaluVerifiedDeltaMinute(verifiedDeltaById.get(String(m.id)));
+    const fromOdds=bongdaluVerifiedOddsMinute(m,grouped.get(String(m.id))||[]);
+    const minute=fromDelta??fromOdds;
+    if(fromDelta!==null)deltaMinutes++;else if(fromOdds!==null)oddsMinutes++;
     if(minute!==null && Number.isFinite(minute) && minute>0){
       m.minute=minute;m.raw.minute=minute;m.raw.status.minute=minute;
       verifiedMinute++;
     } else missingMinute++;
   }
-  console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | unknownMinute=${missingMinute} | native IDs only`);
+  console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | deltaMinute=${deltaMinutes} | oddsMinute=${oddsMinutes} | unknownMinute=${missingMinute} | native IDs only`);
   return matches;
 }
 
