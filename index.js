@@ -44,7 +44,8 @@ const LIVE_FOOTBALL_URL = `https://${LIVE_FOOTBALL_HOST}/football-current-live`;
 
 
 // API-Football direct provider (not RapidAPI). Set APISPORTS_KEY in Render.
-const APISPORTS_KEY = (process.env.APISPORTS_KEY || '').trim();
+// Bongdalu is the sole provider for new LIVE fixtures, IDs, scores, Odds and FT.
+const APISPORTS_KEY = '';
 const APISPORTS_URL = 'https://v3.football.api-sports.io';
 // Switch only on a confirmed daily quota error; ordinary network failures do not switch sources.
 let apiSportsQuotaUntil = 0;
@@ -190,7 +191,7 @@ const STATS_CACHE_TTL =
 
 // Quét 5 phút / lần
 const SCAN_INTERVAL_MS =
-  5 * 60 * 1000;
+  5 * 1000;
 
 
 const alertState = new Map();
@@ -5651,6 +5652,91 @@ function cleanTelegramText(
 }
 
 
+
+// ==========================================================
+// BONGDALU PRIMARY LIVE ADAPTER (based on user's Network captures)
+// ==========================================================
+const BONGDALU_BASE = (process.env.BONGDALU_BASE_URL || 'https://g4mlw.net').replace(/\/+$/,'');
+const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '22').split(',').map(x=>x.trim()).filter(Boolean);
+const bongdaluOddsByMatch = new Map();
+const bongdaluOddsHistory = new Map();
+const BONGDALU_ODDS_HISTORY_WINDOWS = [1,3,5,10];
+function bongdaluUnwrap(payload) {
+  if (!payload || typeof payload !== 'object' || Number(payload.code) !== 0) throw new Error('Bongdalu proxy response code is not 0');
+  const data=payload.data;
+  if (Array.isArray(data)) return data;
+  if (data && typeof data==='object') for (const k of ['results','matches','list','rows','events','fixtures','MatchList']) if (Array.isArray(data[k])) return data[k];
+  throw new Error('Bongdalu response missing expected array');
+}
+async function bongdaluGet(path, query='') {
+  const upstream=path+(query?(path.includes('?')?'&':'?')+query:'');
+  const {data}=await axios.get(`${BONGDALU_BASE}/wp-json/wpsport/v1/proxy`,{
+    params:{path:upstream},headers:{Accept:'application/json','Cache-Control':'no-cache, no-store','Pragma':'no-cache'},timeout:12000
+  });
+  return data;
+}
+function bdText(v) {
+  if(typeof v==='string')return v.trim();
+  if(v&&typeof v==='object')return String(v.name||v.Name||v.teamName||v.TeamName||'').trim();
+  return '';
+}
+function bdStatus(raw) {
+  const v=String(raw?.match_status??raw?.matchStatus??raw?.MatchStatus??raw?.MatchState??raw?.status??'').toUpperCase();
+  if(['8','FT','AET','PEN','FINISHED','ENDED'].includes(v))return 'FT';
+  if(['HT','HALF TIME','HALFTIME'].includes(v))return 'HT';
+  if(['0','1','NS','NOT STARTED'].includes(v))return 'NS';
+  return 'LIVE';
+}
+function formatBongdaluMatch(raw) {
+  if(!raw||typeof raw!=='object')return null;
+  const id=raw.ScheduleID??raw.scheduleId??raw.match_id??raw.matchId??raw.RapidEventID;
+  const home=bdText(raw.HomeTeam??raw.homeTeam??raw.home??raw.HomeTeamName);
+  const away=bdText(raw.GuestTeam??raw.AwayTeam??raw.guestTeam??raw.awayTeam??raw.away??raw.GuestTeamName);
+  if(id==null||!home||!away)return null;
+  const minuteRaw=raw.minute??raw.MatchMinute??raw.matchMinute??raw.liveMinute??raw.elapsed;
+  const matchMinute=typeof minuteRaw==='number'?minuteRaw:(String(minuteRaw??'').match(/\d+/)?.[0]?Number(String(minuteRaw).match(/\d+/)[0]):null);
+  const status=bdStatus(raw);
+  const hs=Number(raw.HomeScore??raw.homeScore??raw.home_score??0), as=Number(raw.GuestScore??raw.AwayScore??raw.guestScore??raw.awayScore??raw.away_score??0);
+  const homeScore=Number.isFinite(hs)?hs:0, awayScore=Number.isFinite(as)?as:0;
+  const league=bdText(raw.LeagueName??raw.SclassName??raw.leagueName??raw.competition??raw.League);
+  const shaped={id:String(id),source:'bongdalu',homeName:home,awayName:away,homeScore,awayScore,league,
+    minute:status==='HT'?'HT':status==='FT'?999:(matchMinute??0),
+    raw:{...raw,_providerSource:'bongdalu',_bongdaluId:String(id),minute:matchMinute??0,
+      status:{type:status==='FT'?'finished':status==='HT'?'HT':status==='NS'?'notstarted':'live',minute:matchMinute??0},
+      homeScore,awayScore}};
+  const odds=bongdaluOddsByMatch.get(String(id));if(odds)shaped.raw.bongdaluOdds=odds;
+  return shaped;
+}
+function rememberBongdaluOdds(matchId,rows,now=Date.now()) {
+  const key=String(matchId),valid=(rows||[]).filter(x=>x&&String(x.match_id)===key);
+  const previous=bongdaluOddsHistory.get(key)||[];
+  const signature=JSON.stringify(valid.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score]));
+  if(!previous.length||previous[previous.length-1].signature!==signature)previous.push({at:now,signature,rows:valid});
+  while(previous.length&&now-previous[0].at>10*60*1000)previous.shift();
+  bongdaluOddsHistory.set(key,previous);
+  return {rows:valid,history:Object.fromEntries(BONGDALU_ODDS_HISTORY_WINDOWS.map(min=>[`${min}m`,previous.filter(x=>now-x.at<=min*60000).map(x=>({at:x.at,rows:x.rows}))]))};
+}
+async function fetchBongdaluLiveOdds(matchIds) {
+  const all=[];
+  for(const companyId of BONGDALU_COMPANIES) {
+    try {const payload=await bongdaluGet('/v1/football/odds/live',`companyid=${encodeURIComponent(companyId)}&locale=vi`);all.push(...bongdaluUnwrap(payload));}
+    catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);}
+  }
+  const wanted=new Set((matchIds||[]).map(String)),grouped=new Map();
+  for(const row of all){const id=String(row.match_id??'');if(!id||(wanted.size&&!wanted.has(id)))continue;if(!grouped.has(id))grouped.set(id,[]);grouped.get(id).push(row);}
+  for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[]));
+  return grouped;
+}
+async function fetchBongdaluLiveMatches() {
+  const payload=await bongdaluGet('/v1/football/match/live','lang=vn&locale=vi');
+  const rows=bongdaluUnwrap(payload),matches=rows.map(formatBongdaluMatch).filter(Boolean);
+  if(rows.length&&!matches.length)throw new Error('Bongdalu LIVE response could not normalize any match');
+  await fetchBongdaluLiveOdds(matches.map(m=>m.id));
+  for(const m of matches){const snap=bongdaluOddsByMatch.get(String(m.id));if(snap)m.raw.bongdaluOdds=snap;}
+  console.log(`[Bongdalu LIVE] fixtures=${matches.length} | native IDs only`);
+  return matches;
+}
+
 // ==========================================================
 // 44. FETCH ALL LIVE SOURCES
 // ==========================================================
@@ -5658,15 +5744,15 @@ function cleanTelegramText(
 let independentLiveSourceRegistry = [];
 
 async function fetchAllLiveMatches() {
-  let api=[];
-  if (!apiSportsQuotaExhausted()) api=await fetchApiSportsLive();
-  // Do not query FlashScore in parallel while API-Sports is usable.
-  const useFlash=apiSportsQuotaExhausted();
-  const flash=useFlash ? await fetchLiveMatchesFromFlashScore() : [];
-  const all=[...api.map(formatApiSportsMatch),...flash.map(raw=>formatLiveMatch(raw,'flashscore'))];
-  independentLiveSourceRegistry=all.filter(m=>m&&m.id!=null&&m.homeName&&m.awayName);
-  console.log(`[Live Discovery] active=${useFlash?'FlashScore':'API-Sports'} API-Sports=${api.length} FlashScore=${flash.length}`);
-  return all;
+  try {
+    const all=await fetchBongdaluLiveMatches();
+    independentLiveSourceRegistry=all.filter(m=>m&&m.id!=null&&m.homeName&&m.awayName);
+    return independentLiveSourceRegistry;
+  } catch(e) {
+    console.error(`[BONGDALU PRIMARY LIVE] ${e.message}`);
+    independentLiveSourceRegistry=[];
+    return [];
+  }
 }
 // ==========================================================
 // 45. DEDUPLICATE MATCHES
@@ -5973,24 +6059,10 @@ function enqueueOdds(id,priority=false,forceFresh=false) {
   if(existing) {if(priority)existing.priority=true;if(forceFresh)existing.forceFresh=true;return;}
   oddsQueued.set(id,{priority,forceFresh,queuedAt:now});
 }
-// LIVE bet IDs may differ across API versions. Read the official catalog once per day;
-// the research calculation still requires a verified FULL_TIME match-goals market.
-let liveBetsCatalogAt=0;
-let liveBetsCatalog=[];
-async function refreshLiveBetsCatalog(){
-  if(!APISPORTS_KEY||apiSportsQuotaExhausted()||Date.now()-liveBetsCatalogAt<86400000)return;
-  liveBetsCatalogAt=Date.now();
-  try{
-    const data=await apiSportsGet('/odds/live/bets',{});
-    if(Array.isArray(data?.response))liveBetsCatalog=data.response;
-    console.log(`[ODDS LIVE BETS] catalog=${liveBetsCatalog.length}`);
-  }catch(e){console.warn('[ODDS LIVE BETS]',e.message);}
-}
 function pumpOddsQueue() {
   if(oddsWorkerActive || !APISPORTS_KEY)return;
   oddsWorkerActive=true;
   (async()=>{
-    await refreshLiveBetsCatalog();
     try {
       while(oddsQueued.size) {
         const now=Date.now();
@@ -6410,6 +6482,8 @@ function earlyGoalCandidate(record) {
   return null;
 }
 async function maybeSendNoStatsAlert(record) {
+  // AI THỬ NGHIỆM remains comparison-only; AI LIVE exclusively owns Telegram.
+  return false;
   if(scanControl.isPaused())return false;
   // Storage errors must never block a qualifying Telegram alert.
   try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
@@ -6582,47 +6656,19 @@ function computeLiveMarketResearch(record, match, odds, liveStats) {
   if(record.oddsStatus!=='VALID'||!Array.isArray(odds?.payload?.response))return result;
   const total=Number(match.homeScore)+Number(match.awayScore);
   if(!Number.isFinite(total))return result;
-  // Infer remaining-goals Poisson mean from the actual FULL_TIME O/U line.
-  // For a line L and G goals already scored, Over wins with at least
-  // floor(L)+1-G additional goals. Do not mistake arbitrary lines for P(next goal).
-  const markets=odds.payload.response.flatMap(row=>Array.isArray(row?.odds)?row.odds:[]);
-  const catalogIds=new Set(liveBetsCatalog.filter(b=>/^(match goals|total goals|goals over\/under)$/i.test(String(b.name||'').trim())).map(b=>Number(b.id)));
-  const market=markets.find(m=>Number(m.id)===25 || catalogIds.has(Number(m.id)) || /^(match goals|total goals|goals over\/under)$/i.test(String(m.name||'').trim()));
+  // FULL_TIME Match Goals O/U at current total + 0.5 prices the next goal.
+  const line=total+0.5;
+  const markets=odds.payload.response[0]?.odds||[];
+  const market=markets.find(m=>Number(m.id)===25);
   const values=market?.values||[];
-  const parsed=values.map(v=>{
-    const label=String(v.value||'').trim();
-    const matchLabel=label.match(/^(Over|Under)\s*([0-9]+(?:\.[0-9]+)?)?$/i);
-    const side=matchLabel?.[1]?.toLowerCase();
-    const line=Number(v.handicap??matchLabel?.[2]);
-    const price=Number(v.odd);
-    return {side,line,price,suspended:v.suspended===true||v.active===false};
-  }).filter(v=>v.side&&Number.isFinite(v.line)&&Math.abs(v.line-Math.round(v.line))===0.5&&v.price>1&&!v.suspended);
-  const candidates=[];
-  for(const over of parsed.filter(v=>v.side==='over')){
-    const under=parsed.find(v=>v.side==='under'&&v.line===over.line);
-    if(!under)continue;
-    const needed=Math.floor(over.line)+1-total;
-    if(needed<1)continue; // already decided line, not informative about future goals
-    const pOver=(1/over.price)/((1/over.price)+(1/under.price));
-    if(!(pOver>0&&pOver<1))continue;
-    // Poisson survival P(X>=needed) = 1 - e^-lambda * sum_{k=0}^{needed-1} lambda^k/k!
-    const survival=lambda=>{
-      let term=Math.exp(-lambda),cdf=term;
-      for(let k=1;k<needed;k++){term*=lambda/k;cdf+=term;}
-      return Math.max(0,Math.min(1,1-cdf));
-    };
-    let lo=0,hi=20;
-    for(let j=0;j<65;j++){const mid=(lo+hi)/2;if(survival(mid)<pOver)lo=mid;else hi=mid;}
-    const lambda=(lo+hi)/2;
-    if(!Number.isFinite(lambda)||lambda>=19.999)continue;
-    candidates.push({line:over.line,overOdds:over.price,underOdds:under.price,pOver,lambda,needed});
-  }
-  if(!candidates.length)return result;
-  // Prefer a near-the-money line (roughly 50/50) to avoid unstable far-tail inversion.
-  candidates.sort((a,b)=>Math.abs(a.pOver-.5)-Math.abs(b.pOver-.5)||a.needed-b.needed);
-  const chosen=candidates[0];
-  const {line,overOdds,underOdds,lambda:marketLambda}=chosen;
-  const marketProbability=100*(1-Math.exp(-marketLambda));
+  const eligible=v=>v&&v.suspended===false&&Number(v.odd)>1&&Number(v.handicap)===line;
+  const over=values.find(v=>v.value==='Over'&&eligible(v));
+  const under=values.find(v=>v.value==='Under'&&eligible(v));
+  if(!over||!under)return result;
+  const overOdds=Number(over.odd),underOdds=Number(under.odd);
+  const pOver=(1/overOdds)/((1/overOdds)+(1/underOdds)); // remove two-way margin
+  if(!(pOver>0&&pOver<1))return result;
+  const marketLambda=-Math.log(1-pOver);
   const id=String(record.fixtureId||record.key||match.id);
   const previous=liveMarketPrevious.get(id);
   const current={line,overOdds,underOdds,at:Date.now(),total};
@@ -6630,9 +6676,9 @@ function computeLiveMarketResearch(record, match, odds, liveStats) {
   if(liveMarketPrevious.size>500)liveMarketPrevious.delete(liveMarketPrevious.keys().next().value);
   const comparable=previous&&previous.total===total&&previous.line===line&&current.at-previous.at<=20*60*1000;
   return {...result,status:'MARKET_OBSERVED',marketStatus:'VALID',marketLambda:Number(marketLambda.toFixed(4)),
-    marketProbability:Number(marketProbability.toFixed(2)),marketLine:line,overOdds,underOdds,
-    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number(marketProbability.toFixed(2)),
-    calculationSource:'LIVE_MARKET_ODDS_POISSON_LINE',marketGoalsNeeded:chosen.needed,
+    marketProbability:Number((pOver*100).toFixed(2)),marketLine:line,overOdds,underOdds,
+    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number((pOver*100).toFixed(2)),
+    calculationSource:'LIVE_MARKET_ODDS',
     oddsMovement:comparable?{overOddsDelta:Number((overOdds-previous.overOdds).toFixed(3)),
       underOddsDelta:Number((underOdds-previous.underOdds).toFixed(3)),seconds:Math.round((current.at-previous.at)/1000)}:null};
 }
@@ -6912,16 +6958,8 @@ async function scanNoStatsPriority() {
       const original=state.match;
       try {
         let fresh=null;
-        const apiCandidate=[original,...(original.crossSourceMatches||[])].find(m=>m.source==='apisports');
-        if (apiCandidate && APISPORTS_KEY && !apiSportsQuotaExhausted()) {
-          const response=await apiSportsGet('/fixtures',{id:apiCandidate.id});
-          const raw=response?.response?.[0];
-          if (raw?.fixture?.id) fresh=formatApiSportsMatch(raw);
-        }
-        if (!fresh && apiSportsQuotaExhausted()) {
-          if (!flashMatches) flashMatches=(await fetchLiveMatchesFromFlashScore()).map(x=>formatLiveMatch(x,'flashscore'));
-          fresh=flashMatches.find(m=>String(m.id)===String(original.id));
-        }
+        const bongMatches=await fetchBongdaluLiveMatches();
+        fresh=bongMatches.find(m=>String(m.id)===String(original.id));
         if (!fresh) {
           console.warn(`[AI PRIORITY 30S] STALE LIVE ${original.homeName} vs ${original.awayName} | no fresh verified fixture`);
           continue; // Do not pretend old minute/score is fresh.
@@ -7026,7 +7064,7 @@ async function scanLiveMatches() {
 
 
     console.log(
-      `[Live] Tổng từ API: ${liveMatches.length}`
+      `[Live] Tổng trận Bongdalu: ${liveMatches.length}`
     );
 
 
@@ -7081,7 +7119,7 @@ async function scanLiveMatches() {
 
       if (
         !Number.isFinite(minute) ||
-        minute < 46 ||
+        minute < 60 ||
         minute > 88
       ) {
         continue;
@@ -7106,7 +7144,7 @@ async function scanLiveMatches() {
 
 
     console.log(
-      `[Live] Đủ điều kiện phút 46-88: ${eligibleMatches.length}`
+      `[Live] Đủ điều kiện phút 60-88: ${eligibleMatches.length}`
     );
 
 
@@ -7437,12 +7475,12 @@ app.listen(
 
 
     console.log(
-      'Scan minute: 46 -> 88'
+      'Scan minute: 60 -> 88'
     );
 
 
     console.log(
-      `Auto scan every ${SCAN_INTERVAL_MS / 60000} minutes`
+      `Auto scan every ${SCAN_INTERVAL_MS / 1000} seconds`
     );
 
 
