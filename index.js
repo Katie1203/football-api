@@ -5973,10 +5973,24 @@ function enqueueOdds(id,priority=false,forceFresh=false) {
   if(existing) {if(priority)existing.priority=true;if(forceFresh)existing.forceFresh=true;return;}
   oddsQueued.set(id,{priority,forceFresh,queuedAt:now});
 }
+// LIVE bet IDs may differ across API versions. Read the official catalog once per day;
+// the research calculation still requires a verified FULL_TIME match-goals market.
+let liveBetsCatalogAt=0;
+let liveBetsCatalog=[];
+async function refreshLiveBetsCatalog(){
+  if(!APISPORTS_KEY||apiSportsQuotaExhausted()||Date.now()-liveBetsCatalogAt<86400000)return;
+  liveBetsCatalogAt=Date.now();
+  try{
+    const data=await apiSportsGet('/odds/live/bets',{});
+    if(Array.isArray(data?.response))liveBetsCatalog=data.response;
+    console.log(`[ODDS LIVE BETS] catalog=${liveBetsCatalog.length}`);
+  }catch(e){console.warn('[ODDS LIVE BETS]',e.message);}
+}
 function pumpOddsQueue() {
   if(oddsWorkerActive || !APISPORTS_KEY)return;
   oddsWorkerActive=true;
   (async()=>{
+    await refreshLiveBetsCatalog();
     try {
       while(oddsQueued.size) {
         const now=Date.now();
@@ -6568,19 +6582,47 @@ function computeLiveMarketResearch(record, match, odds, liveStats) {
   if(record.oddsStatus!=='VALID'||!Array.isArray(odds?.payload?.response))return result;
   const total=Number(match.homeScore)+Number(match.awayScore);
   if(!Number.isFinite(total))return result;
-  // FULL_TIME Match Goals O/U at current total + 0.5 prices the next goal.
-  const line=total+0.5;
-  const markets=odds.payload.response[0]?.odds||[];
-  const market=markets.find(m=>Number(m.id)===25);
+  // Infer remaining-goals Poisson mean from the actual FULL_TIME O/U line.
+  // For a line L and G goals already scored, Over wins with at least
+  // floor(L)+1-G additional goals. Do not mistake arbitrary lines for P(next goal).
+  const markets=odds.payload.response.flatMap(row=>Array.isArray(row?.odds)?row.odds:[]);
+  const catalogIds=new Set(liveBetsCatalog.filter(b=>/^(match goals|total goals|goals over\/under)$/i.test(String(b.name||'').trim())).map(b=>Number(b.id)));
+  const market=markets.find(m=>Number(m.id)===25 || catalogIds.has(Number(m.id)) || /^(match goals|total goals|goals over\/under)$/i.test(String(m.name||'').trim()));
   const values=market?.values||[];
-  const eligible=v=>v&&v.suspended===false&&Number(v.odd)>1&&Number(v.handicap)===line;
-  const over=values.find(v=>v.value==='Over'&&eligible(v));
-  const under=values.find(v=>v.value==='Under'&&eligible(v));
-  if(!over||!under)return result;
-  const overOdds=Number(over.odd),underOdds=Number(under.odd);
-  const pOver=(1/overOdds)/((1/overOdds)+(1/underOdds)); // remove two-way margin
-  if(!(pOver>0&&pOver<1))return result;
-  const marketLambda=-Math.log(1-pOver);
+  const parsed=values.map(v=>{
+    const label=String(v.value||'').trim();
+    const matchLabel=label.match(/^(Over|Under)\s*([0-9]+(?:\.[0-9]+)?)?$/i);
+    const side=matchLabel?.[1]?.toLowerCase();
+    const line=Number(v.handicap??matchLabel?.[2]);
+    const price=Number(v.odd);
+    return {side,line,price,suspended:v.suspended===true||v.active===false};
+  }).filter(v=>v.side&&Number.isFinite(v.line)&&Math.abs(v.line-Math.round(v.line))===0.5&&v.price>1&&!v.suspended);
+  const candidates=[];
+  for(const over of parsed.filter(v=>v.side==='over')){
+    const under=parsed.find(v=>v.side==='under'&&v.line===over.line);
+    if(!under)continue;
+    const needed=Math.floor(over.line)+1-total;
+    if(needed<1)continue; // already decided line, not informative about future goals
+    const pOver=(1/over.price)/((1/over.price)+(1/under.price));
+    if(!(pOver>0&&pOver<1))continue;
+    // Poisson survival P(X>=needed) = 1 - e^-lambda * sum_{k=0}^{needed-1} lambda^k/k!
+    const survival=lambda=>{
+      let term=Math.exp(-lambda),cdf=term;
+      for(let k=1;k<needed;k++){term*=lambda/k;cdf+=term;}
+      return Math.max(0,Math.min(1,1-cdf));
+    };
+    let lo=0,hi=20;
+    for(let j=0;j<65;j++){const mid=(lo+hi)/2;if(survival(mid)<pOver)lo=mid;else hi=mid;}
+    const lambda=(lo+hi)/2;
+    if(!Number.isFinite(lambda)||lambda>=19.999)continue;
+    candidates.push({line:over.line,overOdds:over.price,underOdds:under.price,pOver,lambda,needed});
+  }
+  if(!candidates.length)return result;
+  // Prefer a near-the-money line (roughly 50/50) to avoid unstable far-tail inversion.
+  candidates.sort((a,b)=>Math.abs(a.pOver-.5)-Math.abs(b.pOver-.5)||a.needed-b.needed);
+  const chosen=candidates[0];
+  const {line,overOdds,underOdds,lambda:marketLambda}=chosen;
+  const marketProbability=100*(1-Math.exp(-marketLambda));
   const id=String(record.fixtureId||record.key||match.id);
   const previous=liveMarketPrevious.get(id);
   const current={line,overOdds,underOdds,at:Date.now(),total};
@@ -6588,9 +6630,9 @@ function computeLiveMarketResearch(record, match, odds, liveStats) {
   if(liveMarketPrevious.size>500)liveMarketPrevious.delete(liveMarketPrevious.keys().next().value);
   const comparable=previous&&previous.total===total&&previous.line===line&&current.at-previous.at<=20*60*1000;
   return {...result,status:'MARKET_OBSERVED',marketStatus:'VALID',marketLambda:Number(marketLambda.toFixed(4)),
-    marketProbability:Number((pOver*100).toFixed(2)),marketLine:line,overOdds,underOdds,
-    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number((pOver*100).toFixed(2)),
-    calculationSource:'LIVE_MARKET_ODDS',
+    marketProbability:Number(marketProbability.toFixed(2)),marketLine:line,overOdds,underOdds,
+    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number(marketProbability.toFixed(2)),
+    calculationSource:'LIVE_MARKET_ODDS_POISSON_LINE',marketGoalsNeeded:chosen.needed,
     oddsMovement:comparable?{overOddsDelta:Number((overOdds-previous.overOdds).toFixed(3)),
       underOddsDelta:Number((underOdds-previous.underOdds).toFixed(3)),seconds:Math.round((current.at-previous.at)/1000)}:null};
 }
