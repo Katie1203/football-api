@@ -189,7 +189,7 @@ const ALERT_STATE_TTL =
 const STATS_CACHE_TTL =
   90 * 1000;
 
-// Quét 5 phút / lần
+// Quét Bongdalu mỗi 5 giây
 const SCAN_INTERVAL_MS =
   5 * 1000;
 
@@ -5826,18 +5826,6 @@ async function fetchBongdaluLiveMatches() {
       console.log(`[BONGDALU EMPTY RETRY] first=0 | retryCount=${retry?.count??'missing'} | retryRows=${Array.isArray(retry?.data?.results)?retry.data.results.length:Array.isArray(retry?.data?.matches)?retry.data.matches.length:'unknown'}`);
       if(Number(retry?.code)===0)payload=retry;
     }catch(e){console.warn(`[BONGDALU EMPTY RETRY] ${e.message}`);}
-  }
-  // The Bongdalu migration notes also recorded the same LIVE route with
-  // lang=vn&locale=vi. Only probe that documented query variant after the
-  // standard request and its cache-bust retry both return empty.
-  // Never manufacture LIVE fixtures from odds or the static metadata snapshot.
-  if (Number(payload?.code) === 0 && bongdaluUnwrap(payload).length === 0) {
-    try {
-      const alternate = await bongdaluGet('/v1/football/match/live', 'lang=vn&locale=vi', {cacheBust:true});
-      const alternateRows = Number(alternate?.code) === 0 ? bongdaluUnwrap(alternate) : [];
-      console.log(`[BONGDALU LIVE QUERY VARIANT] query=lang=vn&locale=vi | count=${alternate?.count??'missing'} | rows=${alternateRows.length}`);
-      if (alternateRows.length) payload = alternate;
-    } catch (e) { console.warn(`[BONGDALU LIVE QUERY VARIANT] ${e.message}`); }
   }
   const diagnostic=bongdaluMatchPayloadDiagnostic(payload);
   console.log(`[BONGDALU MATCH RAW] ${JSON.stringify(diagnostic).slice(0,2400)}`);
