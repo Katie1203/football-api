@@ -171,6 +171,92 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 #noStatsAlertRows .match-card,#noStatsAlertRows article{background:#2c3c44!important;background-image:none!important}
 </style><style>/* Compact comparison cards */
 .match-card{padding:9px!important}.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:6px 0!important}.match-card .match-metric{padding:7px!important;min-height:56px!important}.match-card .match-metric strong{font-size:18px!important}.match-card .match-teams{margin:5px 0!important}.market-side{margin:5px 0!important;padding:7px!important}.market-explain{font-size:11px;margin-top:4px}.market-explain summary{cursor:pointer;color:#f1d17a;font-weight:700}.market-explain[open] summary{margin-bottom:4px}@media(max-width:550px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+</style><style id="tt-compact-card-v2">
+/* Compact card layout: five comparison figures in one line on desktop */
+.match-card{padding:8px!important;gap:4px!important}
+.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:4px!important;margin:5px 0!important;align-items:stretch!important}
+.match-card .match-metric{min-width:0!important;min-height:0!important;padding:6px 5px!important;margin:0!important;border-radius:7px!important}
+.match-card .match-metric small{font-size:9px!important;line-height:1.25!important;display:block!important;overflow-wrap:anywhere}
+.match-card .match-metric strong{font-size:16px!important;line-height:1.15!important;display:block!important;margin:2px 0!important}
+.match-card .match-metric .match-result{padding:3px!important;font-size:14px!important}
+.match-card .match-teams{margin:3px 0!important;line-height:1.2!important}
+.match-card .match-live-score{margin:3px 0!important;line-height:1.3!important}
+.match-card .market-explain{grid-column:1/-1!important;margin:0!important;padding:0!important;font-size:10px!important;line-height:1.3!important}
+.match-card .market-explain summary{padding:3px 6px!important;line-height:1.2!important;font-size:10px!important}
+.match-card .market-explain:not([open]){height:auto!important}
+.match-card .market-explain[open]>div{padding:5px!important}
+.match-card .market-side{margin:3px 0!important;padding:5px!important}
+@media(max-width:650px){.match-card .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}.match-card .match-metric{padding:5px!important}}
+@media(max-width:380px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+</style><style id="tt-ultra-compact-cards-20261030">
+/* Final override: the real audit alert cards, not a decorative wrapper. */
+#noStatsAlertRows .match-card, #audit-list .match-card, .audit-scroll .match-card{
+ display:flex!important;flex-direction:column!important;gap:3px!important;
+ padding:7px 9px!important;min-height:0!important;margin:0!important;
+ border-radius:8px!important;line-height:1.2!important;
+}
+#noStatsAlertRows .match-card>*,#audit-list .match-card>*{margin-top:0!important;margin-bottom:0!important;min-height:0!important}
+#noStatsAlertRows .ns-select-label,#audit-list .ns-select-label{
+ display:inline-flex!important;align-self:flex-start!important;width:auto!important;
+ padding:2px 5px!important;margin:0!important;gap:4px!important;
+ font-size:10px!important;line-height:1!important;border-radius:4px!important;
+}
+#noStatsAlertRows .ns-select-label input,#audit-list .ns-select-label input{width:12px!important;height:12px!important;margin:0!important}
+#noStatsAlertRows .match-head-left,#audit-list .match-head-left{gap:4px!important;font-size:10px!important;line-height:1.1!important}
+#noStatsAlertRows .match-minute,#audit-list .match-minute{padding:2px 4px!important;font-size:10px!important}
+#noStatsAlertRows .match-teams,#audit-list .match-teams{
+ display:flex!important;justify-content:center!important;align-items:center!important;
+ min-height:0!important;padding:2px 0!important;margin:0!important;gap:4px!important;
+}
+#noStatsAlertRows .match-name,#audit-list .match-name{font-size:12px!important;line-height:1.15!important}
+#noStatsAlertRows .match-score,#audit-list .match-score{font-size:17px!important;line-height:1!important}
+#noStatsAlertRows .match-status-inline,#audit-list .match-status-inline{margin:1px 0!important;font-size:10px!important;line-height:1.1!important}
+#noStatsAlertRows .ai-status,#audit-list .ai-status{padding:3px 5px!important;font-size:10px!important}
+#noStatsAlertRows .match-metrics,#audit-list .match-metrics{
+ display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
+ gap:3px!important;margin:3px 0!important;align-items:stretch!important;
+}
+#noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{
+ grid-area:auto!important;grid-column:auto!important;min-width:0!important;min-height:0!important;
+ padding:4px 3px!important;margin:0!important;border-radius:5px!important;
+ display:flex!important;flex-direction:column!important;justify-content:center!important;
+}
+#noStatsAlertRows .match-metric small,#audit-list .match-metric small{
+ font-size:8px!important;line-height:1.12!important;overflow-wrap:anywhere!important;
+}
+#noStatsAlertRows .match-metric strong,#audit-list .match-metric strong{
+ font-size:14px!important;line-height:1.1!important;margin:2px 0!important;
+}
+#noStatsAlertRows .match-metric .match-result,#audit-list .match-metric .match-result{
+ padding:2px!important;font-size:12px!important;line-height:1.1!important;
+}
+#noStatsAlertRows .market-explain,#audit-list .market-explain{
+ grid-column:1/-1!important;grid-area:auto!important;margin:0!important;padding:0!important;
+ font-size:9px!important;line-height:1.1!important;
+}
+#noStatsAlertRows .market-explain summary,#audit-list .market-explain summary{
+ display:inline-block!important;width:auto!important;padding:2px 4px!important;
+ font-size:9px!important;line-height:1.1!important;
+}
+#noStatsAlertRows .market-explain:not([open])>div,#audit-list .market-explain:not([open])>div{display:none!important}
+#noStatsAlertRows .match-live-score,#audit-list .match-live-score{
+ font-size:9px!important;line-height:1.15!important;margin:1px 0!important;text-align:left!important;
+}
+#noStatsAlertRows .hint,#audit-list .hint{font-size:9px!important;line-height:1.15!important;margin:1px 0!important}
+@media(max-width:600px){
+ #noStatsAlertRows .match-metrics,#audit-list .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+ #noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{grid-column:auto!important}
+ #noStatsAlertRows .market-explain,#audit-list .market-explain{grid-column:1/-1!important}
+}
+/* Other two views: compact their existing cards without changing data. */
+body .matches .match-card{padding:7px!important;gap:3px!important;min-height:0!important}
+body .matches .match-main{gap:4px!important;margin:4px 0!important}
+body .matches .metric{padding:4px!important;min-height:0!important}
+body .matches .metric strong{font-size:14px!important}
+body .matches .metric small{font-size:9px!important}
+body .matches .teams{padding:2px!important}
+body .matches .match-bottom{padding-top:4px!important;font-size:10px!important}
+body .matches details summary{font-size:10px!important}
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats" class="tt-current">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="sub">THẦN TÀI MAY MẮN · AI NO-STATS</div><h1>AI THỬ NGHIỆM · Tất cả trận được quét</h1><div class="hint">Dùng chung lượt quét và kết quả AI THỬ NGHIỆM với Theo dõi LIVE · Bao gồm trận chưa đủ dữ liệu</div></div><div class="toolbar"><a href="/dashboard">← Dashboard</a><button onclick="load()">↻ Làm mới</button></div></header><section class="stats"><div class="stat"><small>Trận theo dõi</small><strong id="total">—</strong></div><div class="stat"><small>Có ước lượng</small><strong id="estimated">—</strong></div><div class="stat"><small>Thiếu dữ liệu</small><strong id="missing">—</strong></div><div class="stat"><small>Trạng thái</small><strong style="font-size:17px">ĐỒNG BỘ</strong></div></section><section class="panel"><div class="toolbar"><h3 style="margin:3px 0">Danh sách trận đấu</h3><span class="hint" id="status">Đang tải...</span></div><div id="cards" class="matches"></div></section><section class="panel" style="margin-top:12px"><div class="toolbar"><h3 style="margin:3px 0">Lịch sử Audit FT · AI THỬ NGHIỆM</h3><span class="hint" id="auditCounts">Đang tải...</span></div><div id="auditHistory" class="matches"></div><div class="toolbar" style="margin-top:10px"><button id="prevHistory" onclick="historyPage=Math.max(1,historyPage-1);fetchHistoryPage()">‹ Trước</button><span id="historyPageInfo" class="hint"></span><button id="nextHistory" onclick="historyPage++;fetchHistoryPage()">Tiếp ›</button></div></section><section class="panel" style="margin-top:12px"><div class="toolbar"><h3>Lịch sử cảnh báo Telegram · AI THỬ NGHIỆM</h3><span id="betHistorySummary" class="hint">Đang tải...</span></div><div class="toolbar" style="margin:10px 0"><button id="betTabAll" onclick="setBetTab('all')">TẤT CẢ</button><button id="betTabRegular" onclick="setBetTab('regular')">AI NO-STATS</button><button id="betTabBiggg" onclick="setBetTab('biggg')">BIGGG BET</button></div><div id="betHistoryRows" class="matches"></div></section><section class="panel" style="margin-top:12px"><h3>Hiệu quả AI THỬ NGHIỆM · Lịch sử FT</h3><div id="ftLearning" class="hint">Đang tải dữ liệu học...</div></section><p class="note">Poisson chỉ được hiệu chuẩn khi mô hình học từ FT vượt qua kiểm định; trước đó giữ nguyên xác suất gốc. Giao diện chỉ hiển thị Odds khi API trả về dữ liệu được liên kết đúng trận; không tự tính hoặc gán xác suất Odds nếu backend chưa cung cấp. Audit FT được đối chiếu theo Fixture ID API-Sports và lưu trên ổ đĩa đã cấu hình; dữ liệu cũ trước bản cập nhật không thể tự khôi phục nếu chưa lưu mẫu.</p></main><script>
 let historyPage=1,allHistory=[];
 let betTab='all',betAlertHistory=[];
