@@ -853,6 +853,11 @@ function parseMinuteValue(value) {
 
 // Verified October 2026 FlashScore / LiveFootball JSON adapters.
 function normalizeProviderMinute(raw, source) {
+  if (source === 'bongdalu') {
+    if (Number(raw?.MatchState) === 3) return 999;
+    const n = Number(raw?.minute);
+    return Number.isFinite(n) && n > 0 && n <= 120 ? n : 0;
+  }
   if (source === 'flashscore' || raw?.match_status?.live_minute != null) {
     const st = raw?.match_status || {};
     if (st.is_finished || st.is_cancelled || st.is_postponed) return 999;
@@ -5657,7 +5662,7 @@ function cleanTelegramText(
 // BONGDALU PRIMARY LIVE ADAPTER (based on user's Network captures)
 // ==========================================================
 const BONGDALU_BASE = (process.env.BONGDALU_BASE_URL || 'https://g4mlw.net').replace(/\/+$/,'');
-const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '22').split(',').map(x=>x.trim()).filter(Boolean);
+const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '2').split(',').map(x=>x.trim()).filter(Boolean);
 const bongdaluOddsByMatch = new Map();
 const bongdaluOddsHistory = new Map();
 const BONGDALU_ODDS_HISTORY_WINDOWS = [1,3,5,10];
@@ -5727,24 +5732,63 @@ function rememberBongdaluOdds(matchId,rows,now=Date.now()) {
   bongdaluOddsHistory.set(key,previous);
   return {rows:valid,history:Object.fromEntries(BONGDALU_ODDS_HISTORY_WINDOWS.map(min=>[`${min}m`,previous.filter(x=>now-x.at<=min*60000).map(x=>({at:x.at,rows:x.rows}))]))};
 }
+// Only use the odds clock when it agrees with a LIVE match and the bookmaker's
+// own in-play status. Do not infer a minute from the scheduled kickoff time.
+function bongdaluVerifiedOddsMinute(match, rows) {
+  if (Number(match.raw?.MatchState) !== 2) return null; // second half only
+  const candidates = (rows || []).filter(r => String(r.match_id) === String(match.id) &&
+    Number(r.match_status) === 4 && Number.isFinite(Number(r.time_of_the_match)) &&
+    Number(r.time_of_the_match) >= 45 && Number(r.time_of_the_match) <= 120 &&
+    String(r.score || '') === `${match.homeScore}-${match.awayScore}`);
+  // An odds snapshot may lag the match score. Never accept mismatched scores.
+  if (!candidates.length) return null;
+  const minutes = candidates.map(r => Number(r.time_of_the_match));
+  const lo = Math.min(...minutes), hi = Math.max(...minutes);
+  if (hi - lo > 2) return null; // inconsistent bookmaker snapshots
+  return hi;
+}
 async function fetchBongdaluLiveOdds(matchIds) {
   const all=[];
   for(const companyId of BONGDALU_COMPANIES) {
-    try {const payload=await bongdaluGet('/v1/football/odds/live',`companyid=${encodeURIComponent(companyId)}&locale=vi`);all.push(...bongdaluUnwrap(payload));}
-    catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);}
+    try {
+      const payload=await bongdaluGet('/v1/football/odds/live',`companyid=${encodeURIComponent(companyId)}&locale=vi`);
+      const rows=bongdaluUnwrap(payload);
+      all.push(...rows);
+      console.log(`[BONGDALU ODDS LIVE] company=${companyId} | rows=${rows.length} | OU=${rows.filter(x=>String(x.market).toUpperCase()==='OU').length}`);
+    } catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);}
   }
   const wanted=new Set((matchIds||[]).map(String)),grouped=new Map();
-  for(const row of all){const id=String(row.match_id??'');if(!id||(wanted.size&&!wanted.has(id)))continue;if(!grouped.has(id))grouped.set(id,[]);grouped.get(id).push(row);}
+  for(const row of all){
+    const id=String(row.match_id??'');
+    if(!id||!wanted.has(id))continue;
+    if(!grouped.has(id))grouped.set(id,[]);
+    grouped.get(id).push(row);
+  }
   for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[]));
+  console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size}`);
   return grouped;
 }
 async function fetchBongdaluLiveMatches() {
   const payload=await bongdaluGet('/v1/football/match/live','locale=vi');
-  const rows=bongdaluUnwrap(payload),matches=rows.map(formatBongdaluMatch).filter(m=>m && m.raw.status.type === 'live');
-  if(rows.length && !rows.some(row => formatBongdaluMatch(row))) throw new Error('Bongdalu LIVE response could not normalize any match');
-  await fetchBongdaluLiveOdds(matches.map(m=>m.id));
-  for(const m of matches){const snap=bongdaluOddsByMatch.get(String(m.id));if(snap)m.raw.bongdaluOdds=snap;}
-  console.log(`[Bongdalu LIVE] fixtures=${matches.length} | native IDs only`);
+  const rows=bongdaluUnwrap(payload);
+  const states={};
+  for(const r of rows){const key=String(r.MatchState??'missing');states[key]=(states[key]||0)+1;}
+  const normalized=rows.map(formatBongdaluMatch).filter(Boolean);
+  if(rows.length && !normalized.length)throw new Error('Bongdalu LIVE response could not normalize any match');
+  const matches=normalized.filter(m=>m.raw.status.type==='live');
+  console.log(`[BONGDALU MATCH RESPONSE] rows=${rows.length} | normalized=${normalized.length} | states=${JSON.stringify(states)} | live=${matches.length}`);
+  const grouped=await fetchBongdaluLiveOdds(matches.map(m=>m.id));
+  let verifiedMinute=0, missingMinute=0;
+  for(const m of matches){
+    const snap=bongdaluOddsByMatch.get(String(m.id));
+    if(snap)m.raw.bongdaluOdds=snap;
+    const minute=Number(m.minute)>0?Number(m.minute):bongdaluVerifiedOddsMinute(m,grouped.get(String(m.id))||[]);
+    if(minute!==null && Number.isFinite(minute) && minute>0){
+      m.minute=minute;m.raw.minute=minute;m.raw.status.minute=minute;
+      verifiedMinute++;
+    } else missingMinute++;
+  }
+  console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | unknownMinute=${missingMinute} | native IDs only`);
   return matches;
 }
 
