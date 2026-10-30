@@ -5668,7 +5668,7 @@ function cleanTelegramText(
 // BONGDALU PRIMARY LIVE ADAPTER (based on user's Network captures)
 // ==========================================================
 const BONGDALU_BASE = (process.env.BONGDALU_BASE_URL || 'https://g4mlw.net').replace(/\/+$/,'');
-const BONGDALU_COMPANIES = String(process.env.BONGDALU_COMPANY_IDS || '2').split(',').map(x=>x.trim()).filter(Boolean);
+const BONGDALU_COMPANIES = [...new Set(String(process.env.BONGDALU_COMPANY_IDS || '2,22').split(',').map(x=>x.trim()).filter(x=>/^\d+$/.test(x)))].slice(0,8);
 const bongdaluOddsByMatch = new Map();
 // Metadata learned only from full Bongdalu match records, never guessed from odds.
 const bongdaluMatchMetadata = new Map();
@@ -5769,14 +5769,25 @@ function formatBongdaluMatch(raw) {
   const odds=bongdaluOddsByMatch.get(String(id));if(odds)shaped.raw.bongdaluOdds=odds;
   return shaped;
 }
-function rememberBongdaluOdds(matchId,rows,now=Date.now()) {
-  const key=String(matchId),valid=(rows||[]).filter(x=>x&&String(x.match_id)===key);
+function rememberBongdaluOdds(matchId,rows,now=Date.now(),fetchSucceeded=true) {
+  const key=String(matchId);
+  const valid=(rows||[]).filter(x=>x&&String(x.match_id)===key&&String(x.market).toUpperCase()==='OU');
   const previous=bongdaluOddsHistory.get(key)||[];
-  const signature=JSON.stringify(valid.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score]));
-  if(!previous.length||previous[previous.length-1].signature!==signature)previous.push({at:now,signature,rows:valid});
+  // A failed/empty upstream response is not a real market movement. Do not
+  // overwrite the latest valid odds with an artificial zero-odds snapshot.
+  if(fetchSucceeded && valid.length) {
+    const signature=JSON.stringify(valid.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score,x.provider_time]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
+    if(!previous.length||previous[previous.length-1].signature!==signature)
+      previous.push({at:now,signature,rows:valid});
+  }
   while(previous.length&&now-previous[0].at>10*60*1000)previous.shift();
-  bongdaluOddsHistory.set(key,previous);
-  return {rows:valid,history:Object.fromEntries(BONGDALU_ODDS_HISTORY_WINDOWS.map(min=>[`${min}m`,previous.filter(x=>now-x.at<=min*60000).map(x=>({at:x.at,rows:x.rows}))]))};
+  if(previous.length)bongdaluOddsHistory.set(key,previous);
+  else bongdaluOddsHistory.delete(key);
+  const latest=previous[previous.length-1];
+  // stale=true means display/history only: NEVER use old odds as a new signal.
+  return {rows:latest?.rows||[],stale:!fetchSucceeded||!valid.length,
+    lastReceivedAt:latest?.at||null,history:Object.fromEntries(BONGDALU_ODDS_HISTORY_WINDOWS.map(min=>
+      [`${min}m`,previous.filter(x=>now-x.at<=min*60000).map(x=>({at:x.at,rows:x.rows}))]))};
 }
 // Only use the odds clock when it agrees with a LIVE match and the bookmaker's
 // own in-play status. Do not infer a minute from the scheduled kickoff time.
@@ -5794,24 +5805,36 @@ function bongdaluVerifiedOddsMinute(match, rows) {
   return hi;
 }
 async function fetchBongdaluLiveOdds(matchIds) {
+  const wanted=new Set((matchIds||[]).map(String));
+  if(!wanted.size)return new Map();
   const all=[];
-  for(const companyId of BONGDALU_COMPANIES) {
+  const results=await Promise.all(BONGDALU_COMPANIES.map(async companyId=>{
     try {
-      const payload=await bongdaluGet('/v1/football/odds/live',`companyid=${encodeURIComponent(companyId)}&locale=vi`);
+      // Cache-bust proxy/CDN; odds LIVE must not be a cached snapshot.
+      const payload=await bongdaluGet('/v1/football/odds/live',
+        `companyid=${encodeURIComponent(companyId)}&locale=vi`,{cacheBust:true});
       const rows=bongdaluUnwrap(payload);
-      all.push(...rows);
-      console.log(`[BONGDALU ODDS LIVE] company=${companyId} | rows=${rows.length} | OU=${rows.filter(x=>String(x.market).toUpperCase()==='OU').length}`);
-    } catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);}
-  }
-  const wanted=new Set((matchIds||[]).map(String)),grouped=new Map();
-  for(const row of all){
-    const id=String(row.match_id??'');
+      const ou=rows.filter(x=>String(x?.market).toUpperCase()==='OU');
+      console.log(`[BONGDALU ODDS LIVE] company=${companyId} | rows=${rows.length} | OU=${ou.length} | code=${payload?.code} | count=${payload?.count??'N/A'}`);
+      if(!rows.length)console.warn(`[BONGDALU ODDS EMPTY] company=${companyId} | dataKeys=${Object.keys(payload?.data||{}).join(',')} | requestedMatches=${wanted.size}`);
+      return {companyId,rows,ok:true};
+    }catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);return {companyId,rows:[],ok:false};}
+  }));
+  const grouped=new Map(),companiesWithOU=new Set();
+  for(const result of results)for(const row of result.rows){
+    if(String(row?.market).toUpperCase()!=='OU')continue;
+    const id=String(row.match_id??row.matchId??row.ScheduleID??'');
     if(!id||!wanted.has(id))continue;
+    const normalized={...row,match_id:id,company_id:row.company_id??result.companyId};
     if(!grouped.has(id))grouped.set(id,[]);
-    grouped.get(id).push(row);
+    grouped.get(id).push(normalized);
+    companiesWithOU.add(String(normalized.company_id));
   }
-  for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[]));
-  console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size}`);
+  const now=Date.now();
+  const anySuccess=results.some(r=>r.ok);
+  for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[],now,anySuccess));
+  console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size} | bookmakers=${companiesWithOU.size} | configured=${BONGDALU_COMPANIES.join(',')} | failedSources=${results.filter(r=>!r.ok).length}`);
+  if(!grouped.size)console.warn('[BONGDALU ODDS UNAVAILABLE] No LIVE OU rows matched active native fixture IDs; AI LIVE RUNG must not infer market signals from missing odds.');
   return grouped;
 }
 function bongdaluMatchPayloadDiagnostic(payload) {
