@@ -5827,6 +5827,18 @@ async function fetchBongdaluLiveMatches() {
       if(Number(retry?.code)===0)payload=retry;
     }catch(e){console.warn(`[BONGDALU EMPTY RETRY] ${e.message}`);}
   }
+  // The Bongdalu migration notes also recorded the same LIVE route with
+  // lang=vn&locale=vi. Only probe that documented query variant after the
+  // standard request and its cache-bust retry both return empty.
+  // Never manufacture LIVE fixtures from odds or the static metadata snapshot.
+  if (Number(payload?.code) === 0 && bongdaluUnwrap(payload).length === 0) {
+    try {
+      const alternate = await bongdaluGet('/v1/football/match/live', 'lang=vn&locale=vi', {cacheBust:true});
+      const alternateRows = Number(alternate?.code) === 0 ? bongdaluUnwrap(alternate) : [];
+      console.log(`[BONGDALU LIVE QUERY VARIANT] query=lang=vn&locale=vi | count=${alternate?.count??'missing'} | rows=${alternateRows.length}`);
+      if (alternateRows.length) payload = alternate;
+    } catch (e) { console.warn(`[BONGDALU LIVE QUERY VARIANT] ${e.message}`); }
+  }
   const diagnostic=bongdaluMatchPayloadDiagnostic(payload);
   console.log(`[BONGDALU MATCH RAW] ${JSON.stringify(diagnostic).slice(0,2400)}`);
   const rows=bongdaluUnwrap(payload);
