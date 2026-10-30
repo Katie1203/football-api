@@ -252,10 +252,24 @@ function liveMinute(x){
  return {value:base+increment,estimated:increment>0,stale:age>300000};
 }
 function visibleLive(x){const m=liveMinute(x);return m.value===null||m.value<85;}
+
+function marketSideBySide(x){
+ const a=x&&x.aiLiveEnhanced;
+ const num=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));
+ const lambda=a&&num(a.combinedLambda)?Number(a.combinedLambda).toFixed(2):'N/A';
+ const prob=a&&num(a.combinedProbability)?Number(a.combinedProbability).toFixed(1)+'%':'N/A';
+ const coverage=a?.liveCoverage||'Chưa có dữ liệu LIVE';
+ const status=a?.marketStatus==='VALID'?'Odds LIVE hợp lệ':'Chưa có Odds LIVE hợp lệ';
+ return '<div class="market-side" style="margin:9px 0;padding:9px;border:1px solid #a88c4d;border-radius:8px;background:#24363a">'+
+ '<b style="color:#f1d17a">AI LIVE + MARKET</b><div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:5px">'+
+ '<span>λ LIVE + MARKET: <b>'+lambda+'</b></span><span>Xác suất MARKET: <b>'+prob+'</b></span></div>'+
+ '<small>'+status+' · LIVE: '+String(coverage).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))+'</small></div>';
+}
+
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
 async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows:[];const noStats=Array.isArray(d.noStats)?d.noStats:[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
@@ -278,8 +292,8 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  const aiMinute=Number(n.minute);
  const newer=!x.priorityLive&&Number.isFinite(aiAt)&&(!Number.isFinite(snapshotAt)||aiAt>snapshotAt)&&Number.isFinite(aiMinute)&&aiMinute>=46&&aiMinute<999;
  return {...x,minute:newer?aiMinute:x.minute,minuteObservedAt:newer?(n.updatedAt||n.at):x.at,
-  noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent};} return x;});
- for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,analyzed:false,inWindow:true,at:n.updatedAt||n.at,minuteObservedAt:n.updatedAt||n.at});}
+  noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,aiLiveEnhanced:n.aiLiveEnhanced||null};} return x;});
+ for(const n of noStats){if(seen.has(n))continue;rows.push({fixtureId:n.fixtureId,home:n.home,away:n.away,league:n.league,minute:n.minute,scoreH:null,scoreA:null,goal:null,rule:null,noStatsProbability:n.probability,expectedRemainingGoals:n.expectedRemainingGoals,noStatsAlertSent:n.alertSent,aiLiveEnhanced:n.aiLiveEnhanced||null,analyzed:false,inWindow:true,at:n.updatedAt||n.at,minuteObservedAt:n.updatedAt||n.at});}
  // Match by provider fixture ID when possible; fall back to normalized team names.
  const sentById=new Map(sentAlerts.filter(x=>x.fixtureId!=null).map(x=>[String(x.fixtureId),x]));
  const sentByName=new Map(sentAlerts.map(x=>[key(x.home,x.away),x]));

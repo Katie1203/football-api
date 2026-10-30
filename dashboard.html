@@ -1111,7 +1111,7 @@ function nsRenderHistory(){
     '<div class="match-metrics" style="margin:10px 0">'+
      '<div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+pct+'</strong></div>'+
      ''+
-     '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+
+     '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+marketAlertCard(x)+
      '<div class="match-metric match-ft-metric"><small>Kết quả</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
     '<div class="match-live-score" style="margin-bottom:5px"><b>Odds lúc cảnh báo:</b> <span style="font-weight:800;color:'+(oddsKnown?'#55e8ad':oddsState==='CHUA_LAY_DUOC_ODDS'?'#f0c768':'#aebdc4')+'">'+oddsLabel+'</span>'+oddsDetail+'</div>'+
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
@@ -1119,6 +1119,9 @@ function nsRenderHistory(){
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
   }).join('')||(nsFilter==='odds'?'<div class="hint">Không có trận đang chờ Odds trong dữ liệu LIVE hiện tại.</div>':'<div class="hint">Không có cảnh báo Telegram thuộc nhóm đã chọn.</div>');
 }
+let marketLiveById=new Map(),marketLiveByName=new Map();
+const marketNameKey=(h,a)=>[h,a].map(v=>String(v||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]/g,'')).join('|');
+function marketAlertCard(x){const m=(x.fixtureId!=null&&marketLiveById.get(String(x.fixtureId)))||marketLiveByName.get(marketNameKey(x.home,x.away));const a=m?.aiLiveEnhanced;const n=v=>v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v));return '<div class="match-metric"><small>AI LIVE + MARKET</small><strong>'+(a&&n(a.combinedProbability)?Number(a.combinedProbability).toFixed(1)+'%':'N/A')+'</strong><small>λ LIVE + MARKET: '+(a&&n(a.combinedLambda)?Number(a.combinedLambda).toFixed(2):'N/A')+'</small></div>';}
 async function loadNoStatsAlerts(){
  try{
   const r=await fetch('/api/no-stats-alerts',{cache:'no-store'});
@@ -1147,18 +1150,22 @@ async function loadAiLiveMarket(){
   const response=await fetch('/api/ai-no-stats',{cache:'no-store'});
   if(!response.ok)throw Error('HTTP '+response.status);
   const data=await response.json();
-  const rows=(Array.isArray(data.records)?data.records:[]).filter(r=>r&&r.aiLiveEnhanced).slice(0,20);
+  const all=(Array.isArray(data.records)?data.records:[]).filter(r=>r&&r.aiLiveEnhanced);
+  marketLiveById=new Map(all.filter(r=>r.fixtureId!=null).map(r=>[String(r.fixtureId),r]));
+  marketLiveByName=new Map(all.map(r=>[marketNameKey(r.home,r.away),r]));
+  const rows=all.slice(0,20);
   const liveCount=rows.filter(r=>{const c=String(r.aiLiveEnhanced.liveCoverage||'').toUpperCase();return c!=='UNAVAILABLE'&&c!=='NONE'&&c!=='N/A'&&c!==''}).length;
   const marketCount=rows.filter(r=>Number.isFinite(Number(r.aiLiveEnhanced.marketLambda))&&r.aiLiveEnhanced.marketLambda!==null).length;
-  el('lmCount').textContent=rows.length;
+  el('lmCount').textContent=all.length;
   el('lmLive').textContent=liveCount;
   el('lmMarket').textContent=marketCount;
-  msg.textContent='20 bản ghi mới nhất (tối đa) · Không phải tín hiệu Telegram · λ MARKET không phải λ kết hợp đã huấn luyện.';
+  msg.textContent='20 bản ghi mới nhất (tối đa) · Chỉ hiển thị Odds LIVE đã xác minh; N/A nếu chưa có.';
+  if(typeof nsRenderHistory==='function')nsRenderHistory();
   el('lmRows').innerHTML=rows.map(r=>{
    const a=r.aiLiveEnhanced||{};
    const baseline=r.expectedRemainingGoals;
    const base=baseline==null?'—':Number(baseline).toFixed(2);
-   const market=a.marketLambda==null?'Chưa có':Number(a.marketLambda).toFixed(2);
+   const market=a.combinedLambda==null?'Chưa có':Number(a.combinedLambda).toFixed(2);
    const odds=a.overOdds!=null&&a.underOdds!=null?'Over '+esc(a.overOdds)+' / Under '+esc(a.underOdds)+' · mốc '+esc(a.marketLine):'Chưa xác minh Odds LIVE';
    const movement=a.oddsMovement?' · ΔOver '+(a.oddsMovement.overOddsDelta>0?'+':'')+esc(a.oddsMovement.overOddsDelta):'';
    return '<tr><td><span class="lm-team">'+esc(r.home)+' – '+esc(r.away)+'</span><div class="lm-muted">'+esc(r.minute)+'′ · '+esc(r.score||'')+'</div></td>'+

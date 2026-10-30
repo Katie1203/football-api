@@ -6541,9 +6541,54 @@ function recordNoStatsObservation(record){
  noStatsObservations.push({key,fixtureId:record.fixtureId||null,home:record.home,away:record.away,league:record.league,
   minute:record.minute,score:record.score,expectedRemainingGoals:record.expectedRemainingGoals,
   probability:record.probability,baselineProbability:record.baselineProbability,model:record.probabilityModel,htGoals:record.htGoals,
-  observedAt:record.updatedAt,telegramSent:false,outcome:null});
+  observedAt:record.updatedAt,telegramSent:false,outcome:null,
+  aiLiveEnhanced:record.aiLiveEnhanced||null,liveStatsEvidence:record.liveStatsEvidence||null});
  if(noStatsObservations.length>15000)noStatsObservations.splice(0,noStatsObservations.length-15000);
  persistNoStatsObservations([noStatsObservations[noStatsObservations.length-1]]);
+}
+// Unified AI LIVE + MARKET research only. Never modifies production lambda or Telegram.
+// Market odds are used only when API-Sports explicitly validates a fresh LIVE quote.
+const liveMarketPrevious = new Map();
+function computeLiveMarketResearch(record, match, odds, liveStats) {
+  const baseline=Number(record.expectedRemainingGoals);
+  const stats=record.liveStatsEvidence||null;
+  const result={status:'BASELINE_ONLY',lambda:Number.isFinite(baseline)?baseline:null,
+    probability:Number.isFinite(baseline)?Number((100*(1-Math.exp(-baseline))).toFixed(2)):null,
+    liveCoverage:stats?.coverage??'UNAVAILABLE',marketStatus:record.oddsStatus||'NO_ODDS',
+    marketLambda:null,marketProbability:null,marketLine:null,overOdds:null,underOdds:null,
+    combinedLambda:Number.isFinite(baseline)?baseline:null,
+    combinedProbability:Number.isFinite(baseline)?Number((100*(1-Math.exp(-baseline))).toFixed(2)):null,
+    calculationSource:Number.isFinite(baseline)?'NO_STATS_FALLBACK':'NO_BASELINE',
+    oddsMovement:null,updatedAt:new Date().toISOString(),mode:'LIVE_MARKET_ACTIVE'};
+  // Do not treat missing LIVE stats as zero; no hand-picked multiplier.
+  if(record.oddsStatus!=='VALID'||!Array.isArray(odds?.payload?.response))return result;
+  const total=Number(match.homeScore)+Number(match.awayScore);
+  if(!Number.isFinite(total))return result;
+  // FULL_TIME Match Goals O/U at current total + 0.5 prices the next goal.
+  const line=total+0.5;
+  const markets=odds.payload.response[0]?.odds||[];
+  const market=markets.find(m=>Number(m.id)===25);
+  const values=market?.values||[];
+  const eligible=v=>v&&v.suspended===false&&Number(v.odd)>1&&Number(v.handicap)===line;
+  const over=values.find(v=>v.value==='Over'&&eligible(v));
+  const under=values.find(v=>v.value==='Under'&&eligible(v));
+  if(!over||!under)return result;
+  const overOdds=Number(over.odd),underOdds=Number(under.odd);
+  const pOver=(1/overOdds)/((1/overOdds)+(1/underOdds)); // remove two-way margin
+  if(!(pOver>0&&pOver<1))return result;
+  const marketLambda=-Math.log(1-pOver);
+  const id=String(record.fixtureId||record.key||match.id);
+  const previous=liveMarketPrevious.get(id);
+  const current={line,overOdds,underOdds,at:Date.now(),total};
+  liveMarketPrevious.set(id,current);
+  if(liveMarketPrevious.size>500)liveMarketPrevious.delete(liveMarketPrevious.keys().next().value);
+  const comparable=previous&&previous.total===total&&previous.line===line&&current.at-previous.at<=20*60*1000;
+  return {...result,status:'MARKET_OBSERVED',marketStatus:'VALID',marketLambda:Number(marketLambda.toFixed(4)),
+    marketProbability:Number((pOver*100).toFixed(2)),marketLine:line,overOdds,underOdds,
+    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number((pOver*100).toFixed(2)),
+    calculationSource:'LIVE_MARKET_ODDS',
+    oddsMovement:comparable?{overOddsDelta:Number((overOdds-previous.overOdds).toFixed(3)),
+      underOddsDelta:Number((underOdds-previous.underOdds).toFixed(3)),seconds:Math.round((current.at-previous.at)/1000)}:null};
 }
 async function observeNoStats(match, minute, liveStats=null) {
   if (match.source==='flashscore' && apiSportsQuotaExhausted()) {
@@ -6605,6 +6650,11 @@ async function observeNoStats(match, minute, liveStats=null) {
    homeShots:liveStats.homeTotalShots??null,awayShots:liveStats.awayTotalShots??null,
    homeSOT:liveStats.homeShotsOnTarget??null,awaySOT:liveStats.awayShotsOnTarget??null,
    homeCorners:liveStats.homeCorners??null,awayCorners:liveStats.awayCorners??null};}
+  // Combined LIVE+MARKET shadow: market-derived lambda is displayed/stored separately.
+  // A learned LIVE correction is NOT enabled until out-of-sample calibration exists.
+  record.aiLiveEnhanced=computeLiveMarketResearch(record,match,odds,liveStats);
+  // Shadow estimate: use de-vigged in-play market probability when verified, otherwise NO-STATS.
+  // Live SH/SOT remain diagnostic until statistically fitted; never invent coefficients.
   // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
   const resolved=resolveOddsFixture(match);
   record.fixtureId=resolved.fixture?String(resolved.fixture.id):(match.source==='flashscore'&&apiSportsQuotaExhausted()?String(match.id):null);
@@ -6646,6 +6696,7 @@ async function observeNoStats(match, minute, liveStats=null) {
   updateNoStatsAlertLiveScore(record);
   // Bounded memory; no writes to Audit and no Telegram alerts.
   if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
+  console.log(`[AI LIVE+MARKET SHADOW] ${record.home} vs ${record.away} | ${minute}' | LIVE=${record.aiLiveEnhanced?.liveCoverage} | MARKET=${record.aiLiveEnhanced?.marketStatus} | marketLambda=${record.aiLiveEnhanced?.marketLambda??'N/A'} | baselineLambda=${record.expectedRemainingGoals??'N/A'} | combinedLambda=${record.aiLiveEnhanced?.combinedLambda??'N/A'} | source=${record.aiLiveEnhanced?.calculationSource}`);
   console.log(`[AI THU NGHIEM] ${record.home} vs ${record.away} | ${minute}' | HT=${record.htGoals} | lambda=${record.expectedRemainingGoals??'N/A'} | P>=1=${record.probability??'N/A'}% | LIVE=${record.liveStatsEvidence?.coverage??'N/A'} | telegram=${noStatsSentKeys.has(noStatsAlertKey(record))?'SENT':'NOT_SENT'} | evidence=${record.evidence}`);
 }
 
