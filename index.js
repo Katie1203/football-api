@@ -5717,7 +5717,7 @@ function bongdaluUnwrap(payload) {
 async function bongdaluGet(path, query='', options={}) {
   const upstream=path+(query?(path.includes('?')?'&':'?')+query:'');
   const {data}=await axios.get(`${BONGDALU_BASE}/wp-json/wpsport/v1/proxy`,{
-    params:{path:upstream,...(options.cacheBust?{_bdts:Date.now()}: {})},headers:{Accept:'application/json','Cache-Control':'no-cache, no-store','Pragma':'no-cache'},timeout:12000
+    params:{path:upstream,...(options.cacheBust?{_bdts:Date.now()}: {})},headers:{Accept:'application/json','Cache-Control':'no-cache, no-store','Pragma':'no-cache'},timeout:options.timeoutMs || 12000
   });
   return data;
 }
@@ -5812,7 +5812,7 @@ async function fetchBongdaluLiveOdds(matchIds) {
     try {
       // Cache-bust proxy/CDN; odds LIVE must not be a cached snapshot.
       const payload=await bongdaluGet('/v1/football/odds/live',
-        `companyid=${encodeURIComponent(companyId)}&locale=vi`,{cacheBust:true});
+        `companyid=${encodeURIComponent(companyId)}&locale=vi`,{cacheBust:true,timeoutMs:6500});
       const rows=bongdaluUnwrap(payload);
       const ou=rows.filter(x=>String(x?.market).toUpperCase()==='OU');
       console.log(`[BONGDALU ODDS LIVE] company=${companyId} | rows=${rows.length} | OU=${ou.length} | code=${payload?.code} | count=${payload?.count??'N/A'}`);
@@ -5821,10 +5821,12 @@ async function fetchBongdaluLiveOdds(matchIds) {
     }catch(e){console.warn(`[BONGDALU ODDS LIVE] company=${companyId}: ${e.message}`);return {companyId,rows:[],ok:false};}
   }));
   const grouped=new Map(),companiesWithOU=new Set();
+  const unmatchedIds=new Map(), allOuIds=new Set();
   for(const result of results)for(const row of result.rows){
     if(String(row?.market).toUpperCase()!=='OU')continue;
     const id=String(row.match_id??row.matchId??row.ScheduleID??'');
-    if(!id||!wanted.has(id))continue;
+    if(id)allOuIds.add(id);
+    if(!id||!wanted.has(id)){if(id)unmatchedIds.set(id,(unmatchedIds.get(id)||0)+1);continue;}
     const normalized={...row,match_id:id,company_id:row.company_id??result.companyId};
     if(!grouped.has(id))grouped.set(id,[]);
     grouped.get(id).push(normalized);
@@ -5833,7 +5835,8 @@ async function fetchBongdaluLiveOdds(matchIds) {
   const now=Date.now();
   const anySuccess=results.some(r=>r.ok);
   for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[],now,anySuccess));
-  console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size} | bookmakers=${companiesWithOU.size} | configured=${BONGDALU_COMPANIES.join(',')} | failedSources=${results.filter(r=>!r.ok).length}`);
+  console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size} | bookmakers=${companiesWithOU.size} | configured=${BONGDALU_COMPANIES.join(',')} | failedSources=${results.filter(r=>!r.ok).length} | oddsUniqueIds=${allOuIds.size} | unmatchedOddsIds=${unmatchedIds.size}`);
+  if(unmatchedIds.size) console.log(`[BONGDALU ODDS ID AUDIT] activeSample=${JSON.stringify([...wanted].slice(0,5))} | oddsSample=${JSON.stringify([...unmatchedIds.keys()].slice(0,5))} | matchedSample=${JSON.stringify([...grouped.keys()].slice(0,5))}`);
   if(!grouped.size)console.warn('[BONGDALU ODDS UNAVAILABLE] No LIVE OU rows matched active native fixture IDs; AI LIVE RUNG must not infer market signals from missing odds.');
   return grouped;
 }
@@ -5918,6 +5921,7 @@ async function fetchBongdaluLiveMatches() {
   const verifiedInWindow=matches.filter(m=>{const n=calculateExactMinute(m.raw);return typeof n==='number'&&n>=60&&n<=88;}).length;
   console.log(`[BONGDALU MINUTE AUDIT] verified=${verifiedMinute} | in60to88=${verifiedInWindow} | sample=${JSON.stringify(minuteSample)}`);
   console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | deltaMinute=${deltaMinutes} | oddsMinute=${oddsMinutes} | unknownMinute=${missingMinute} | native IDs only`);
+  if(missingMinute) console.warn(`[BONGDALU MINUTE UNVERIFIED] count=${missingMinute} | no synthetic minute from diary kickoff; inspect delta.matchTime and odds.time_of_the_match for the same ScheduleID`);
   return matches;
 }
 
@@ -7199,8 +7203,9 @@ async function scanLiveMatches() {
   }
 
 
-  try { await scanObserver.init(); } catch(e) { console.error('[SHADOW STORAGE INIT] history persistence unavailable; LIVE scan continues:',e.message); }
+  // Lock before any await: concurrent timer callbacks must never start two scans.
   scanRunning = true;
+  try { await scanObserver.init(); } catch(e) { console.error('[SHADOW STORAGE INIT] history persistence unavailable; LIVE scan continues:',e.message); }
   const scanHttpStart = {networkCalls:httpMetrics.networkCalls, cacheHits:httpMetrics.cacheHits, fallbackCalls:httpMetrics.fallbackCalls, failedCalls:httpMetrics.failedCalls};
 
   const startedAt =
