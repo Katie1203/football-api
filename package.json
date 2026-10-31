@@ -1,9 +1,19 @@
 {
-  "name": "than-tai-may-man-bongdalu",
+  "name": "than-tai-ai-live-rung",
   "version": "1.0.0",
   "private": true,
+  "description": "Bongdalu-only live market observation and AI LIVE RUNG alerts",
   "main": "index.js",
-  "scripts": {"start": "node index.js", "test": "node test_bongdalu_patch.js && node test_regression_extended.js"},
-  "engines": {"node": ">=20"},
-  "dependencies": {"express": "^4.21.2", "axios": "^1.7.9", "pg": "^8.13.1"}
+  "scripts": {
+    "start": "node index.js",
+    "test": "node test_bongdalu_repair.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
 }

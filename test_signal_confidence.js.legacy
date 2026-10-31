@@ -1,0 +1,13 @@
+'use strict';
+const assert=require('assert');
+const {signalConfidence}=require('./signal_confidence');
+const at=Date.now();
+const market={bookmakers:[{bookmakerId:'a',observedAt:at},{bookmakerId:'b',observedAt:at}],changes:[{bookmakerId:'a',marketMove:true,scoreChanged:false,lineDelta:0.5,observedAt:at},{bookmakerId:'b',marketMove:true,scoreChanged:false,lineDelta:0.25,observedAt:at}]};
+const sample=Array.from({length:30},(_,i)=>({status:'sent',decision:{level:'BIG BET'},score:'1-1',ft:{home:i<21?2:1,away:1},marketEvidenceAtAlert:{fresh:true,bookmakerCount:2,recentBookmakerCount:2,maxLineIncrease:0.5}}));
+const c=signalConfidence('BIG BET',market,sample,at);
+assert.strictEqual(c.probability,70);
+assert.strictEqual(c.sampleSize,30);
+assert.strictEqual(signalConfidence('BIG BET',market,sample.slice(0,29),at).probability,null);
+assert.strictEqual(signalConfidence('BET NHẸ TAY',market,sample,at).probability,null);
+assert.strictEqual(signalConfidence('BIG BET',market,sample,at+20000).probability,null);
+console.log('Signal confidence tests passed');

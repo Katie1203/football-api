@@ -1,0 +1,7 @@
+BẢN KIỂM THỬ - CHƯA XÁC NHẬN PRODUCTION
+- Không có require AI NO-STATS hoặc các module AI NO-STATS.
+- AI LIVE RUNG độc lập; nguồn Bongdalu proxy, companyid=2.
+- Cần xác minh companyid=2 thực sự là BET365 từ metadata nhà cung cấp.
+- Quy tắc BIG BET trong bản này dùng hai lần tăng line của cùng nhà cái trong 5 phút; đây là logic thử nghiệm, chưa được người dùng phê duyệt để deploy.
+- Chưa kiểm thử startup do thiếu npm dependencies; chưa kiểm thử dữ liệu LIVE thực tế, Telegram, PostgreSQL.
+- KHÔNG GHI ĐÈ PRODUCTION trước khi xác minh các điểm trên.

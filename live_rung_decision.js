@@ -1,16 +1,15 @@
 'use strict';
-// Observable market movement, no invented probability or legacy AI outputs.
+// Single bookmaker BET365; never require cross-bookmaker consensus.
 function decideLiveRung(match,market){
- const empty={level:null,reason:'Chưa có biến động Tài LIVE được xác nhận',overOdds:null};
- if(!market||!Array.isArray(market.changes))return empty;
- const quotes=(market.bookmakers||[]).filter(b=>Number.isFinite(b.overDecimal)&&Number.isFinite(b.line));
- const movements=market.changes.filter(c=>c.marketMove===true&&c.scoreChanged===false&&Number.isFinite(c.lineDelta)&&c.lineDelta>0);
- const independent=new Set(movements.map(c=>c.bookmakerId));
- const latest=quotes.sort((a,b)=>b.observedAt-a.observedAt)[0];
- const overOdds=latest?.overDecimal??null;
- // Two independently observed upward OU line moves are a distinct stronger signal.
- if(independent.size>=2)return {level:'BIG BET',reason:`${independent.size} nhà cái độc lập nâng mốc Tài, không do đổi tỷ số`,overOdds};
- if(independent.size>=1&&overOdds!==null&&overOdds>=1.5)return {level:'BET NHẸ TAY',reason:'Biến động tăng mốc Tài được quan sát trực tiếp',overOdds};
+ const empty={level:null,reason:'Chưa đủ biến động kèo Tài LIVE BET365',overOdds:null};
+ if(!market)return empty;
+ const quote=(market.bookmakers||[]).find(b=>String(b.bookmakerId)==='2');
+ const overOdds=quote?.overDecimal??null;
+ const changes=(market.changes||[]).filter(c=>String(c.bookmakerId)==='2'&&c.marketMove&&!c.scoreChanged&&Number.isFinite(c.lineDelta)&&c.lineDelta>0);
+ if(!changes.length)return {...empty,overOdds};
+ const recent=changes.filter(c=>Date.now()-c.observedAt<=300000);
+ if(recent.length>=2&&overOdds!==null&&overOdds>1.50)return {level:'BIG BET',reason:'BET365 nâng mốc Tài nhiều lần trong 5 phút',overOdds};
+ if(recent.length>=1&&(overOdds===null||overOdds>=1.50))return {level:'BET NHẸ TAY',reason:'BET365 tăng mốc Tài LIVE',overOdds};
  return {...empty,overOdds};
 }
 module.exports={decideLiveRung};

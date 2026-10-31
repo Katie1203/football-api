@@ -1,40 +1,35 @@
 'use strict';
-// Bongdalu-only, event-driven market observation. No old provider dependencies.
-const {parseResponse, malayToDecimal} = require('./bongdalu_type4');
-class LiveRungMarket {
-  constructor(){this.matches=new Map();}
-  observe(matchId, payload, observedAt=Date.now()){
-    const id=String(matchId), bookmakers=parseResponse(payload).filter(b=>b.matchId===id);
-    const state=this.matches.get(id)||{id,books:new Map(),changes:[],lastObservedAt:null};
-    const updates=[];
-    for(const book of bookmakers){
-      // Last complete second OU quote in latest event. Missing/closed prices are not inferred.
-      const latest=[...book.changes].reverse().find(c=>c.ouSecond);
-      if(!latest)continue;
-      const quote=latest.ouSecond;
-      const next={bookmakerId:book.bookmakerId,bookmaker:book.bookmaker,minute:latest.minute,
-        homeScore:latest.homeScore,awayScore:latest.awayScore,
-        overRaw:quote.overRaw,underRaw:quote.underRaw,line:quote.line,
-        overDecimal:malayToDecimal(quote.overRaw),underDecimal:malayToDecimal(quote.underRaw),
-        observedAt};
-      const previous=state.books.get(book.bookmakerId);
-      if(previous && previous.minute===next.minute && previous.homeScore===next.homeScore && previous.awayScore===next.awayScore && previous.line===next.line && previous.overRaw===next.overRaw && previous.underRaw===next.underRaw)continue;
-      const scoreChanged=!!previous&&(previous.homeScore!==next.homeScore||previous.awayScore!==next.awayScore);
-      const change={...next,previous:previous?{line:previous.line,overRaw:previous.overRaw,underRaw:previous.underRaw}:null,
-        scoreChanged,marketMove:!!previous&&!scoreChanged,
-        lineDelta:previous&&!scoreChanged?next.line-previous.line:null,
-        overPriceDelta:previous&&!scoreChanged&&next.line===previous.line?next.overRaw-previous.overRaw:null};
-      state.books.set(book.bookmakerId,next);state.changes.push(change);updates.push(change);
-    }
-    state.lastObservedAt=observedAt;
-    // Bound in-memory history without fixed minute windows.
-    if(state.changes.length>1000)state.changes.splice(0,state.changes.length-1000);
-    this.matches.set(id,state);
-    return {matchId:id,bookmakers:[...state.books.values()],updates,historySize:state.changes.length,
-      status:bookmakers.length?'OBSERVED':'NO_MARKET_DATA'};
-  }
-  get(matchId){const s=this.matches.get(String(matchId));return s?{matchId:s.id,bookmakers:[...s.books.values()],changes:[...s.changes],lastObservedAt:s.lastObservedAt}:null;}
-  // This collector intentionally does NOT manufacture a high-probability BIG BET verdict.
-  // Such a classifier must be trained and verified against settled historical matches.
+// BET365-only Bongdalu live odds snapshot collector. No synthetic odds.
+function oddsDecimal(v){
+ const n=Number(v);if(!Number.isFinite(n)||n===0)return null;
+ // Bongdalu commonly supplies Malay odds; convert positive and negative prices.
+ return n>=0?Number((1+n).toFixed(4)):Number((1+1/Math.abs(n)).toFixed(4));
 }
-module.exports={LiveRungMarket};
+class LiveRungMarket{
+ constructor(){this.matches=new Map();}
+ observe(matchId,rows,observedAt=Date.now()){
+  const id=String(matchId),state=this.matches.get(id)||{id,books:new Map(),changes:[],lastObservedAt:null};
+  const updates=[];
+  for(const r of Array.isArray(rows)?rows:[]){
+   if(String(r.match_id)!==id||Number(r.company_id)!==2||String(r.market).toUpperCase()!=='OU')continue;
+   const line=Number(r.line),overRaw=Number(r.v1),underRaw=Number(r.v2),provider=Number(r.provider_time)*1000;
+   if(!Number.isFinite(line)||!Number.isFinite(overRaw)||!Number.isFinite(underRaw)||!Number.isFinite(provider)||provider<=0||Math.abs(observedAt-provider)>120000)continue;
+   const [homeScore,awayScore]=String(r.score||'').split('-').map(Number);
+   if(!Number.isFinite(homeScore)||!Number.isFinite(awayScore))continue;
+   const bookmakerId='2';
+   const next={bookmakerId,bookmaker:'BET365',minute:Number(r.time_of_the_match)||null,homeScore,awayScore,overRaw,underRaw,line,overDecimal:oddsDecimal(overRaw),underDecimal:oddsDecimal(underRaw),observedAt,providerTime:provider};
+   const prev=state.books.get(bookmakerId);
+   if(prev&&provider<prev.providerTime)continue;
+   if(prev&&prev.line===line&&prev.overRaw===overRaw&&prev.underRaw===underRaw&&prev.homeScore===homeScore&&prev.awayScore===awayScore)continue;
+   const scoreChanged=!!prev&&(prev.homeScore!==homeScore||prev.awayScore!==awayScore);
+   const change={...next,previous:prev?{line:prev.line,overRaw:prev.overRaw,underRaw:prev.underRaw}:null,scoreChanged,marketMove:!!prev&&!scoreChanged,lineDelta:prev&&!scoreChanged?line-prev.line:null,overPriceDelta:prev&&!scoreChanged&&line===prev.line?overRaw-prev.overRaw:null};
+   state.books.set(bookmakerId,next);state.changes.push(change);updates.push(change);
+  }
+  state.lastObservedAt=observedAt;
+  if(state.changes.length>1000)state.changes.splice(0,state.changes.length-1000);
+  this.matches.set(id,state);
+  return {matchId:id,bookmakers:[...state.books.values()],updates,historySize:state.changes.length,status:updates.length?'OBSERVED':(Array.isArray(rows)&&rows.length?'UNCHANGED':'NO_MARKET_DATA')};
+ }
+ get(matchId){const s=this.matches.get(String(matchId));return s?{matchId:s.id,bookmakers:[...s.books.values()],changes:[...s.changes],lastObservedAt:s.lastObservedAt}:null;}
+}
+module.exports={LiveRungMarket,oddsDecimal};

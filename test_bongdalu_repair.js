@@ -1,0 +1,17 @@
+'use strict';
+const assert=require('assert');
+const {LiveRungMarket}=require('./ai_live_rung_market');
+const {decideLiveRung}=require('./live_rung_decision');
+const now=Date.now(),id='fixture123';
+const r=(line,price,at=now)=>({match_id:id,company_id:2,market:'OU',match_status:4,score:'1-1',line:String(line),v1:String(price),v2:'0.8',time_of_the_match:'68',provider_time:String(Math.floor(at/1000))});
+const m=new LiveRungMarket();
+assert.equal(m.observe(id,[r(2.5,.55)],now).status,'OBSERVED');
+assert.equal(m.observe(id,[r(2.75,.55)],now+1000).status,'OBSERVED');
+assert.equal(decideLiveRung({},m.get(id)).level,'BET NHẸ TAY');
+assert.equal(m.observe(id,[r(3,.55)],now+2000).status,'OBSERVED');
+assert.equal(decideLiveRung({},m.get(id)).level,'BIG BET');
+assert.equal(m.observe(id,[],now+3000).status,'NO_MARKET_DATA');
+const old=new LiveRungMarket();assert.equal(old.observe(id,[r(2.5,.55,now-600000)],now).status,'UNCHANGED');
+assert.equal(decideLiveRung({},old.get(id)).level,null);
+assert.equal(decideLiveRung({}, {bookmakers:[{bookmakerId:'2',overDecimal:1.49}],changes:[{bookmakerId:'2',marketMove:true,scoreChanged:false,lineDelta:0.25,observedAt:now}]}).level,null);
+console.log('PASS: BET365 one-bookmaker market, price gating, stale and missing odds');
