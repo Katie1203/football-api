@@ -5842,6 +5842,15 @@ async function fetchBongdaluLiveOdds(matchIds) {
   }
   const now=Date.now();
   const anySuccess=results.some(r=>r.ok);
+  // A bookmaker response can include fixtures that are not in the diary LIVE set.
+  // Inspect actual market timestamps/status, not opaque ID similarity.
+  if(anySuccess && grouped.size) {
+    const examples=[...grouped.entries()].slice(0,3).map(([id,items])=>({
+      id,markets:items.slice(0,3).map(r=>({status:r.match_status,minute:r.time_of_the_match,
+        score:r.score,line:r.line,over:r.v1,under:r.v2,providerTime:r.provider_time}))
+    }));
+    console.log(`[BONGDALU ODDS MATCH DETAIL] ${JSON.stringify(examples)}`);
+  }
   // A failed request is NOT an empty market; preserve historical samples as stale.
   for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[],now,anySuccess));
   if(anySuccess)bongdaluOddsPollLastSuccessAt=now;
@@ -5941,8 +5950,15 @@ async function fetchBongdaluLiveMatches() {
   console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | deltaMinute=${deltaMinutes} | oddsMinute=${oddsMinutes} | unknownMinute=${missingMinute} | native IDs only`);
   if(missingMinute) {
     const unknown=matches.filter(m=>!Number.isFinite(Number(m.minute))||Number(m.minute)<=0).slice(0,4);
-    const diagnostics=unknown.map(m=>{const d=verifiedDeltaById.get(String(m.id));const o=grouped.get(String(m.id))||[];return {id:m.id,state:m.raw.MatchState,deltaPresent:!!d,deltaState:d?.MatchState??null,deltaMatchTime:d?.matchTime??null,deltaMatchTime2:d?.matchTime2??null,oddsRows:o.length,oddsTime:o[0]?.time_of_the_match??null,oddsStatus:o[0]?.match_status??null,oddsScore:o[0]?.score??null};});
+    const diagnostics=unknown.map(m=>{const d=verifiedDeltaById.get(String(m.id));const o=grouped.get(String(m.id))||[];
+      const ts=Number(d?.matchTime),ageMinutes=Number.isFinite(ts)&&ts>1e9?Math.round((Date.now()-ts*1000)/60000):null;
+      return {id:m.id,state:m.raw.MatchState,deltaPresent:!!d,deltaState:d?.MatchState??null,
+        deltaMatchTime:d?.matchTime??null,deltaMatchTime2:d?.matchTime2??null,
+        deltaClockAgeMinutes:ageMinutes,deltaClockValid:ageMinutes!==null&&ageMinutes>=0&&ageMinutes<=70,
+        oddsRows:o.length,oddsTime:o[0]?.time_of_the_match??null,oddsStatus:o[0]?.match_status??null,oddsScore:o[0]?.score??null};});
     console.warn(`[BONGDALU MINUTE UNVERIFIED] count=${missingMinute} | no synthetic minute from diary kickoff | sample=${JSON.stringify(diagnostics)}`);
+    const oldClocks=diagnostics.filter(x=>x.deltaClockAgeMinutes!==null && x.deltaClockAgeMinutes>70);
+    if(oldClocks.length)console.warn(`[BONGDALU DELTA CLOCK STALE] sampled=${oldClocks.length} | examples=${JSON.stringify(oldClocks.map(x=>({id:x.id,ageMinutes:x.deltaClockAgeMinutes}))) } | refusing to derive a fabricated live minute`);
   }
   return matches;
 }
