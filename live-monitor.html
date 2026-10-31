@@ -250,7 +250,7 @@ function oddsInfo(x){
 // Front-end interpolation applies only to ordinary snapshots; priority minutes are verified by API.
 // Prefer a newer AI observation's minute when available. Mark interpolated values as estimates.
 function liveMinute(x){
- const raw=x.minute;
+ const raw=x.minute??x.lastVerifiedMinute;
  const m=String(raw??'').trim().match(/^(?:LIVE\s*)?(\d+)/i);
  if(!m)return {value:null,estimated:false};
  const base=Number(m[1]);
@@ -262,7 +262,7 @@ function liveMinute(x){
  const increment=Math.floor(Math.min(age,300000)/60000);
  return {value:base+increment,estimated:increment>0,stale:age>300000};
 }
-function visibleLive(x){const m=liveMinute(x);return m.value===null||m.value<85;}
+function visibleLive(x){const m=liveMinute(x);return m.value!==null&&m.value>=60&&m.value<85&&x.htGoals>=1&&!x.sentTelegram;}
 
 function marketSideBySide(x){
  const a=x&&x.aiLiveEnhanced;
@@ -343,9 +343,9 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  // Both card display and tab counters share this filtered list.
  rows=rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent);
  const s=d.summary||{};
- const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (trước 85′)',rows.filter(visibleLive).length],['Đã phân tích',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length],['AI LIVE RUNG',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length]];
+ const stats=[['TỔNG TRẬN ĐANG LIVE',d.totalLive??0],['LIVE 60–84 (HT ≥ 1)',d.watching??rows.length],['Đã phân tích',d.analyzed??0],['AI LIVE RUNG',d.alerts??0]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
- $('time').textContent='Dữ liệu quét máy chủ: '+(d.last?.at?new Date(d.last.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Trang cập nhật mỗi 15 giây; trận ưu tiên dùng phút API xác minh mỗi vòng 30 giây, trận thường có thể ước tính.';draw();
+ $('time').textContent='Dữ liệu quét máy chủ: '+(d.lastScan?.at?new Date(d.lastScan.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Máy chủ quét mỗi 5 giây; chỉ dùng phút đã xác minh để phát tín hiệu.';draw();
  }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message;}}
-$('q').addEventListener('input',draw);load();setInterval(load,15000);
+$('q').addEventListener('input',draw);load();setInterval(load,5000);
 </script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>

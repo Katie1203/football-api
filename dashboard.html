@@ -1101,7 +1101,7 @@ function nsRenderHistory(){
     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(latest)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
     '<div class="match-status-inline"><span class="ai-status ai-bet tt-alert-pulse '+((x.earlyGoal||/BIGGG|BIG BET/i.test(String(x.alertLabel||x.alertType||'')))?'tt-big':'')+'">'+esc(x.alertLabel||(x.earlyGoal||x.alertType==='BIGGG BET'?'BIGGG BET':(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')))+'</span> '+pill(status)+'</div>'+
     '<div class="match-metrics" style="margin:10px 0">'+
-     '<div class="match-metric"><small>AI LIVE RUNG</small><strong>'+pct+'</strong></div>'+
+     '<div class="match-metric"><small>Độ tin cậy tín hiệu RUNG</small><strong>'+pct+'</strong><small>'+esc(x.signalConfidence?.sampleSize?'Mẫu FT: '+x.signalConfidence.sampleSize:'Chưa đủ mẫu FT tương đồng')+'</small></div>'+
      ''+
      '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+marketAlertCard(x)+
      '<div class="match-metric match-ft-metric"><small>FT · AI LIVE RUNG</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
