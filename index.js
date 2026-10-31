@@ -5675,6 +5675,7 @@ let bongdaluOddsPollBusy = false;
 let bongdaluOddsPollLastAt = 0;
 let bongdaluOddsPollLastResult = new Map();
 let bongdaluOddsPollLastSuccessAt = 0;
+let bongdaluOddsPollLastRequestOk = false;
 let bongdaluOddsActiveIds = [];
 
 // Metadata learned only from full Bongdalu match records, never guessed from odds.
@@ -5683,7 +5684,9 @@ const bongdaluMatchMetadata = new Map();
 // The current LIVE feed remains authoritative for state/score; new IDs require
 // fresh metadata from the configured Bongdalu catalog endpoint.
 try {
-  const bootstrap = require('./bongdalu_fixture_metadata_20261030.json');
+  const fs = require('fs');
+  const metadataPath = require('path').join(__dirname, 'bongdalu_fixture_metadata_20261030.json');
+  const bootstrap = fs.existsSync(metadataPath) ? require(metadataPath) : {}; // Optional legacy snapshot; LIVE never depends on it.
   for (const [id, info] of Object.entries(bootstrap)) {
     if (info && info.home && info.away) bongdaluMatchMetadata.set(id, {...info, at: 0});
   }
@@ -5853,6 +5856,7 @@ async function fetchBongdaluLiveOdds(matchIds) {
   }
   // A failed request is NOT an empty market; preserve historical samples as stale.
   for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[],now,anySuccess));
+  bongdaluOddsPollLastRequestOk=anySuccess;
   if(anySuccess)bongdaluOddsPollLastSuccessAt=now;
   console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size} | bookmakers=${companiesWithOU.size} | configured=${BONGDALU_COMPANIES.join(',')} | failedSources=${results.filter(r=>!r.ok).length} | oddsUniqueIds=${allOuIds.size} | unmatchedOddsIds=${unmatchedIds.size}`);
   if(unmatchedIds.size) console.log(`[BONGDALU ODDS ID AUDIT] activeSample=${JSON.stringify([...wanted].slice(0,5))} | oddsSample=${JSON.stringify([...unmatchedIds.keys()].slice(0,5))} | matchedSample=${JSON.stringify([...grouped.keys()].slice(0,5))} | note=unmatched-odds-may-be-other-fixtures`);
@@ -5922,15 +5926,29 @@ async function fetchBongdaluLiveMatches() {
   const invalid=rows.length-normalized.length;
   console.log(`[BONGDALU MATCH RESPONSE] rows=${rows.length} | normalized=${normalized.length} | invalid=${invalid} | states=${JSON.stringify(states)} | sample=${JSON.stringify(sample).slice(0,1600)}`);
   if(rows.length && !normalized.length)console.warn(`[BONGDALU LIVE SKIP] ${rows.length} delta rows without team metadata; inspect [BONGDALU MATCH RESPONSE] sample`);
-  const matches=normalized.filter(m=>m.raw.status.type==='live' || m.raw.status.type==='HT');
+  // Reject provably stale 'LIVE' states. Bongdalu diary/delta may retain a
+  // state=1/3 for hours; a stale current-half clock is NOT a live fixture.
+  // Unknown clocks remain visible but cannot pass the minute/alert gate.
+  const staleIds = new Set();
+  for (const m of normalized) {
+    const d=verifiedDeltaById.get(String(m.id));
+    const state=Number(d?.MatchState);
+    const ts=Number(d?.matchTime);
+    if (![1,3].includes(state) || !Number.isFinite(ts) || ts<1e9) continue;
+    const age=(Date.now()-ts*1000)/60000;
+    const maxAge=state===1?55:75;
+    if (age>maxAge || age < -2) staleIds.add(String(m.id));
+  }
+  const matches=normalized.filter(m=>(m.raw.status.type==='live'||m.raw.status.type==='HT')&&!staleIds.has(String(m.id)));
+  if(staleIds.size)console.warn(`[BONGDALU STALE LIVE REJECTED] count=${staleIds.size} | examples=${JSON.stringify([...staleIds].slice(0,8))} | reason=current-half clock inconsistent with live state`);
   console.log(`[BONGDALU MATCH FILTER] normalized=${normalized.length} | live=${matches.length}`);
   bongdaluOddsActiveIds = matches.map(m=>String(m.id));
   // Reuse the latest independent odds poll. Never block fixture discovery on a slow bookmaker.
   // The independent poll updates per-match history every 5 seconds when upstream responds.
   const oddsAge=bongdaluOddsPollLastSuccessAt ? Date.now()-bongdaluOddsPollLastSuccessAt : null;
   // A failed poll must not make the last successful market snapshot look fresh.
-  const grouped=oddsAge!==null&&oddsAge<=15000 ? bongdaluOddsPollLastResult : new Map();
-  if(oddsAge===null||oddsAge>15000)console.warn(`[BONGDALU ODDS STALE] lastSuccessAgeMs=${oddsAge??'NEVER'} | waiting for independent 5s odds poll`);
+  const grouped=bongdaluOddsPollLastRequestOk&&oddsAge!==null&&oddsAge<=15000 ? bongdaluOddsPollLastResult : new Map();
+  if(!bongdaluOddsPollLastRequestOk||oddsAge===null||oddsAge>15000)console.warn(`[BONGDALU ODDS STALE] lastSuccessAgeMs=${oddsAge??'NEVER'} | waiting for independent 5s odds poll`);
   let verifiedMinute=0, missingMinute=0, deltaMinutes=0, oddsMinutes=0;
   for(const m of matches){
     const snap=bongdaluOddsByMatch.get(String(m.id));
@@ -6615,7 +6633,7 @@ function persistNoStatsAlertAudit(){
  }).catch(e=>console.error('[AI NO-STATS PERSIST]',e.message));
  return noStatsAlertWriteQueue;
 }
-ensureNoStatsAlertReady().catch(()=>{});
+// Retired AI observation bootstrap disabled.
 // Track score progression after the original AI NO-STATS Telegram alert.
 // A LIVE win is provisional; only the FT audit settles WIN/LOSS.
 function updateNoStatsAlertLiveScore(record) {
@@ -6852,7 +6870,7 @@ async function restoreNoStatsObservations(){
   if(candidate.ready)noStatsHistoryModel=candidate;
  }catch(e){console.warn('[NO-STATS OBS RESTORE]',e.message);}
 }
-restoreNoStatsObservations();
+// Retired AI observation restoration disabled.
 function recordNoStatsObservation(record){
  const key=`${record.fixtureId||record.key}:${record.minute}:${record.score}`;
  if(noStatsObservations.some(x=>x.key===key))return;
@@ -7150,25 +7168,96 @@ async function auditNoStatsFt() {
     }
   } finally {noStatsFtAuditBusy=false;}
 }
-setInterval(()=>auditNoStatsFt().catch(e=>console.warn('[NO-STATS FT]',e.message)),5*60*1000);
-setTimeout(()=>auditNoStatsFt().catch(e=>console.warn('[NO-STATS FT]',e.message)),60*1000);
+// Retired NO-STATS FT timer disabled: AI LIVE RUNG owns new predictions.
+// Retired NO-STATS startup audit disabled.
 // ==========================================================
 // 47. SCAN ONE MATCH
 // ==========================================================
 
+// Unified AI LIVE RUNG: only verified Bongdalu fixture + fresh company 22 OU.
+// The implied probability is a market estimate, NOT an independently calibrated AI probability.
+const aiLiveRungRecords=new Map();
+const aiLiveRungSending=new Set();
+const aiLiveRungAlertFile=process.env.AI_LIVE_RUNG_ALERT_STORE||'./ai_live_rung_alert_sent.json';
+const aiLiveRungSent=new Set(readShadowFile(aiLiveRungAlertFile).filter(x=>typeof x==='string'));
+function liveRungOddsDecimal(value){
+  const n=Number(value);
+  // Bongdalu company 22 provides Hong Kong odds in the observed feed.
+  return Number.isFinite(n)&&n>0&&n<20 ? n+1 : null;
+}
+function liveRungEvaluate(match,minute){
+  const id=String(match.id);
+  const snap=bongdaluOddsByMatch.get(id);
+  if(!snap||snap.stale||!snap.lastReceivedAt||Date.now()-snap.lastReceivedAt>15000)
+    return {status:'NO_FRESH_ODDS'};
+  const total=Number(match.homeScore)+Number(match.awayScore);
+  if(!Number.isFinite(total))return {status:'NO_VERIFIED_SCORE'};
+  const target=total+0.5;
+  const rows=(snap.rows||[]).filter(r=>String(r.match_id)===id&&String(r.market).toUpperCase()==='OU'&&
+    Number(r.match_status)===4&&String(r.score||'')===`${match.homeScore}-${match.awayScore}`&&
+    Math.abs(Number(r.line)-target)<0.001);
+  if(!rows.length)return {status:'NO_NEXT_GOAL_LINE',target};
+  const r=rows[rows.length-1];
+  const over=liveRungOddsDecimal(r.v1),under=liveRungOddsDecimal(r.v2);
+  if(!over||!under)return {status:'INVALID_ODDS'};
+  const invO=1/over,invU=1/under;
+  const probability=100*invO/(invO+invU);
+  if(!Number.isFinite(probability))return {status:'INVALID_PROBABILITY'};
+  const history=snap.history||{};
+  const trends={};
+  for(const key of ['1m','3m','5m','10m']){
+    const samples=(history[key]||[]).map(x=>(x.rows||[]).find(v=>String(v.match_id)===id&&
+      Number(v.line)===target&&String(v.score||'')===`${match.homeScore}-${match.awayScore}`)).filter(Boolean);
+    const first=samples[0],last=samples[samples.length-1];
+    trends[key]=first&&last&&samples.length>=2?Number((Number(last.v1)-Number(first.v1)).toFixed(3)):null;
+  }
+  return {status:'VERIFIED',probability:Number(probability.toFixed(2)),overOdds:over,underOdds:under,
+    target,score:`${match.homeScore}-${match.awayScore}`,trends,marketAt:snap.lastReceivedAt,
+    // A trend is evidence for review, not an arbitrary multiplier on probability.
+    evidence:'COMPANY_22_FRESH_NEXT_GOAL_OU'};
+}
+async function liveRungSendAlert(match,minute,signal){
+  const id=String(match.id);
+  if(aiLiveRungSent.has(id)||aiLiveRungSending.has(id)||scanControl.isPaused())return false;
+  if(!TELEGRAM_BOT_TOKEN||!TELEGRAM_CHAT_ID)return false;
+  // The existing configured probability gates are retained, not invented anew.
+  const bigThreshold=Number(process.env.BIG_BET_THRESHOLD||75);
+  const lightThreshold=Number(process.env.TELEGRAM_ALERT_THRESHOLD||65);
+  if(signal.probability<lightThreshold)return false;
+  const big=signal.probability>=bigThreshold;
+  if(!big&&!scanControl.isLowLambdaAlertsEnabled())return false;
+  aiLiveRungSending.add(id);
+  try{
+    const label=big?'BIG BET':'BET NHẸ TAY';
+    const message=[`💰 THẦN TÀI ĐẾN – ${label}`,`🏆 ${match.league||'Không rõ giải'}`,
+      `⚽ ${match.homeName} ${signal.score} ${match.awayName} | ${minute}'`,
+      `📊 Tài ${signal.target} | Odds ${signal.overOdds.toFixed(2)} (thập phân)`,
+      `🎯 Xác suất thị trường: ${signal.probability.toFixed(1)}%`,
+      `📈 Biến động odds 1/3/5/10 phút: ${Object.values(signal.trends).map(v=>v===null?'N/A':v).join(' / ')}`].join('\n');
+    const response=await axios.post(`https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
+      {chat_id:TELEGRAM_CHAT_ID,text:message,disable_web_page_preview:true},{timeout:10000});
+    if(!response?.data?.ok)return false;
+    aiLiveRungSent.add(id);
+    writeShadowFile(aiLiveRungAlertFile,[...aiLiveRungSent]);
+    console.log(`[AI LIVE RUNG ALERT] ${label} | id=${id} | minute=${minute} | probability=${signal.probability}`);
+    return true;
+  }catch(e){console.warn(`[AI LIVE RUNG TELEGRAM] ${id}: ${e.message}`);return false;}
+  finally{aiLiveRungSending.delete(id);}
+}
 async function analyzeOneMatch(match, allOdds) {
-  const rawMinute = match.minute ?? calculateExactMinute(match.raw);
-  if (rawMinute === 'HT') return null;
-  const minute = Number.parseInt(rawMinute,10);
-  if (!Number.isFinite(minute) || minute < 46 || minute > 88) return null;
-  if (isFilteredLeague(match.league,match.homeName,match.awayName)) return null;
-  const stats = await fetchMatchDetailStats(match);
-  try { await observeNoStats(match,minute,stats); }
-  catch(e) { console.warn(`[AI NO-STATS] ${match.homeName} vs ${match.awayName}: ${e.message}`); }
-  const record=[...noStatsRecords.values()].find(r=>r.source===match.source&&String(r.sourceId)===String(match.id)&&Number(r.minute)===minute);
-  const telegramSent=Boolean(record&&noStatsSentKeys.has(noStatsAlertKey(record)));
-  console.log(`[AI THU NGHIEM] ${match.homeName} vs ${match.awayName} | ${minute}' | lambda=${record?.expectedRemainingGoals??'N/A'} | P>=1=${record?.probability??'N/A'}% | telegram=${telegramSent?'SENT':'NOT_SENT'}`);
-  return {...match,minute,stats,telegramSent,aiNoStats:record?{lambda:record.expectedRemainingGoals,probability:record.probability}:null};
+  const rawMinute=match.minute??calculateExactMinute(match.raw);
+  if(rawMinute==='HT')return null;
+  const minute=Number(rawMinute);
+  if(!Number.isFinite(minute)||minute<60||minute>88||isFilteredLeague(match.league,match.homeName,match.awayName))return null;
+  // Never derive a minute from a stale kickoff or bookmaker timestamp.
+  const signal=liveRungEvaluate(match,minute);
+  const record={id:String(match.id),home:match.homeName,away:match.awayName,league:match.league,
+    minute,score:`${match.homeScore}-${match.awayScore}`,...signal,updatedAt:new Date().toISOString()};
+  aiLiveRungRecords.set(record.id,record);
+  if(aiLiveRungRecords.size>300)aiLiveRungRecords.delete(aiLiveRungRecords.keys().next().value);
+  console.log(`[AI LIVE RUNG] ${record.home} vs ${record.away} | ${minute}' | ${signal.status} | P=${signal.probability??'N/A'}%`);
+  const telegramSent=signal.status==='VERIFIED'&&minute>=65 ? await liveRungSendAlert(match,minute,signal):false;
+  return {...match,minute,telegramSent,aiLiveRung:signal};
 }
 
 // Priority refresh does not change the ordinary 5-minute discovery schedule.
@@ -7434,13 +7523,13 @@ async function scanLiveMatches() {
     // SORT LOG
     // ====================================================
 
-    console.log('--------------- AI NO-STATS ---------------');
+    console.log('--------------- AI LIVE RUNG ---------------');
     console.log(`[API DEDUP SUMMARY] eligible=${eligibleMatches.length} | uniqueAnalyzed=${processedFixtures.length} | duplicateSkipped=${scanDuplicateCount} | detailAttemptsLifetime=${providerStatsCounters.network} | reusedLifetime=${providerStatsCounters.reused} | emptyReusedLifetime=${providerStatsCounters.skippedUnavailable}`);
     console.log(`[API REQUEST METRICS] networkCalls=${httpMetrics.networkCalls} | cacheHits=${httpMetrics.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls} | failedCalls=${httpMetrics.failedCalls} | scope=PROCESS_LIFETIME | bySource=${JSON.stringify(httpMetrics.bySource)}`);
     console.log(`[API REQUEST THIS SCAN] networkCalls=${httpMetrics.networkCalls-scanHttpStart.networkCalls} | cacheHits=${httpMetrics.cacheHits-scanHttpStart.cacheHits} | fallbackCalls=${httpMetrics.fallbackCalls-scanHttpStart.fallbackCalls} | failedCalls=${httpMetrics.failedCalls-scanHttpStart.failedCalls}`);
 
 
-    for(const item of results.slice(0,10)) console.log(`${item.minute}' | AI NO-STATS λ=${item.aiNoStats?.lambda??'N/A'} | P>=1=${item.aiNoStats?.probability??'N/A'}% | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName} | Telegram=${item.telegramSent?'SENT':'NOT_SENT'}`);
+    for(const item of results.slice(0,10)) console.log(`${item.minute}' | AI LIVE RUNG P=${item.aiLiveRung?.probability??'N/A'}% | ${item.homeName} ${item.homeScore}-${item.awayScore} ${item.awayName} | Telegram=${item.telegramSent?'SENT':'NOT_SENT'}`);
 
     const duration =
       (
@@ -7497,25 +7586,15 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
 
 
 // Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
-app.get('/api/ai-no-stats', (req, res) => {
-  const now = Date.now();
-  const records = [...noStatsRecords.values()].filter(x => now - Date.parse(x.updatedAt) < 2 * 60 * 60 * 1000)
-    .sort((a,b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  res.json({ok:true, mode:'SHADOW_ONLY', calibrated:Boolean(noStatsHistoryModel.ready), historyModel:noStatsHistoryModel, count:records.length, settled:noStatsSamples.filter(x=>x.outcome!==null).length,
-    pending:noStatsSamples.filter(x=>x.outcome===null).length,
-    history:noStatsSamples.slice(-200).reverse(), records,
-    observationTotal:noStatsObservations.length,
-    observations:noStatsObservations.slice(-Math.min(200,Math.max(1,Number(req.query.limit)||50))).reverse()});
-});
-
-// Issue #1/#2: complete paginated observation history, not just the latest 200 rows.
-app.get('/api/no-stats-observations', (req,res)=>{
- const page=Math.max(1,Math.floor(Number(req.query.page)||1));
- const limit=Math.min(100,Math.max(1,Math.floor(Number(req.query.limit)||20)));
- const all=[...noStatsObservations].reverse();
+app.get('/api/ai-live-rung',(req,res)=>{
  res.set('Cache-Control','no-store');
- res.json({ok:true,total:all.length,page,limit,records:all.slice((page-1)*limit,page*limit)});
+ const records=[...aiLiveRungRecords.values()].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+ res.json({ok:true,engine:'AI LIVE RUNG',companyId:'22',count:records.length,
+  sent:aiLiveRungSent.size,records});
 });
+// Deprecated endpoints return a clear migration response, not stale predictions.
+app.get('/api/ai-no-stats',(req,res)=>res.status(410).json({ok:false,retired:true,replacement:'/api/ai-live-rung'}));
+app.get('/api/no-stats-observations',(req,res)=>res.status(410).json({ok:false,retired:true,replacement:'/api/ai-live-rung'}));
 
 // ==========================================================
 // 49. EXPRESS ROUTES
@@ -7662,23 +7741,12 @@ app.get(
 app.locals.scanControl=scanControl;
 scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
 scanObserver.init().catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
-app.locals.noStatsAlertView=noStatsAlertView;
-app.locals.deleteNoStatsDashboardAlerts=deleteNoStatsDashboardAlerts;
-app.locals.ensureNoStatsAlertReady=ensureNoStatsAlertReady;
-app.locals.noStatsLiveView=noStatsLiveView;
-// Read-only Dashboard view: AI signals waiting for a qualifying LIVE Over price.
-// No extra Odds API calls and no change to Telegram decisions.
-app.locals.noStatsOddsWaitingView=()=>[...noStatsRecords.values()]
- .filter(r=>r.oddsGateState==='WAIT_ODDS' && Number(r.minute)>=65 && Number(r.minute)<=88
-   && Date.now()-Date.parse(r.updatedAt||0)<15*60*1000
-   && !noStatsSentKeys.has(noStatsAlertKey(r)))
- .map(r=>({fixtureId:r.fixtureId,home:r.home,away:r.away,league:r.league,
-   minute:r.minute,score:r.score,probability:r.probability,
-   expectedRemainingGoals:r.expectedRemainingGoals,
-   overOdds:r.bigggOddsValid===true?r.bigggOverOdds:null,
-   oddsStatus:r.oddsStatus||'UNAVAILABLE',updatedAt:r.updatedAt,
-   reason:'Chưa đạt điều kiện Odds gửi Telegram'}))
- .sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
+// Legacy dashboard bridge: expose only current AI LIVE RUNG signals.
+app.locals.noStatsAlertView=()=>[...aiLiveRungRecords.values()].filter(x=>aiLiveRungSent.has(x.id));
+app.locals.noStatsLiveView=()=>[...aiLiveRungRecords.values()];
+app.locals.noStatsOddsWaitingView=()=>[...aiLiveRungRecords.values()].filter(x=>x.status!=='VERIFIED');
+app.locals.deleteNoStatsDashboardAlerts=async()=>({deleted:0,reason:'Retired endpoint'});
+app.locals.ensureNoStatsAlertReady=async()=>true;
 
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
@@ -7734,8 +7802,7 @@ app.listen(
 
 
    // Sau đó 5 phút / lần
-setInterval(()=>scanNoStatsPriority().catch(e=>console.warn('[AI PRIORITY 30S]',e.message)),
-  NO_STATS_PRIORITY_INTERVAL_MS);
+// Retired NO-STATS priority loop disabled; 5-second odds sampler remains active.
 
 // Market sampling is independent of the heavier fixture/AI scan.
 // No concurrent odds requests: late responses cannot overwrite newer snapshots.
@@ -7747,7 +7814,8 @@ async function pollBongdaluOddsEvery5s() {
     const requestedIds=[...bongdaluOddsActiveIds];
     const result=await fetchBongdaluLiveOdds(requestedIds);
     // Only publish a current result when the upstream request succeeded.
-    if(bongdaluOddsPollLastSuccessAt>=started)bongdaluOddsPollLastResult=result;
+    if(bongdaluOddsPollLastRequestOk && bongdaluOddsPollLastSuccessAt>=started)bongdaluOddsPollLastResult=result;
+    else bongdaluOddsPollLastResult=new Map();
     bongdaluOddsPollLastAt=Date.now();
     console.log(`[BONGDALU ODDS 5S] company=22 | active=${bongdaluOddsActiveIds.length} | matched=${result.size} | requestMs=${Date.now()-started} | lastSuccessAgeMs=${bongdaluOddsPollLastSuccessAt?Date.now()-bongdaluOddsPollLastSuccessAt:'NEVER'} | sampledAt=${new Date(bongdaluOddsPollLastAt).toISOString()}`);
   } catch(e) {console.warn(`[BONGDALU ODDS 5S] ${e.message}`);}
