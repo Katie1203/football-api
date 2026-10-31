@@ -5795,6 +5795,7 @@ function rememberBongdaluOdds(matchId,rows,now=Date.now(),fetchSucceeded=true) {
   while(previous.length&&now-previous[0].at>10*60*1000)previous.shift();
   if(previous.length)bongdaluOddsHistory.set(key,previous);
   else bongdaluOddsHistory.delete(key);
+  if(fetchSucceeded && fresh.length)liveRungTrackMarketChange(key,fresh,now);
   const latest=previous[previous.length-1];
   // stale=true means display/history only: NEVER use old odds as a new signal.
   return {rows:latest?.rows||[],stale:!fetchSucceeded||!fresh.length,
@@ -6440,6 +6441,29 @@ setInterval(()=>auditAiGoalOddsFt().catch(e=>console.warn('[ODDS SHADOW FT]',e.m
 // Unified AI LIVE RUNG: only verified Bongdalu fixture + fresh company 22 OU.
 // The implied probability is a market estimate, NOT an independently calibrated AI probability.
 const aiLiveRungRecords=new Map();
+// Event-driven market changes, independent of fixed 1/3/5/10-minute windows.
+// Keep only real quote changes; do not interpret identical 5s polls as movement.
+const aiLiveRungMarketEvents=new Map();
+const aiLiveRungLastEvaluatedEvent=new Map();
+function liveRungTrackMarketChange(id, freshRows, now) {
+  const key=String(id);
+  const relevant=(freshRows||[]).filter(r=>String(r.market).toUpperCase()==='OU' &&
+    Number(r.match_status)===4 && Number.isFinite(Number(r.line)) &&
+    Number.isFinite(Number(r.v1)) && Number.isFinite(Number(r.v2)));
+  if(!relevant.length)return;
+  // The feed can contain multiple lines: compare a stable, canonical market book.
+  const quotes=relevant.map(r=>({line:Number(r.line),over:Number(r.v1),under:Number(r.v2),
+    score:String(r.score||''),providerTime:Number(r.provider_time)||0})).sort((a,b)=>a.line-b.line||a.score.localeCompare(b.score));
+  const signature=JSON.stringify(quotes.map(q=>[q.line,q.over,q.under,q.score]));
+  const state=aiLiveRungMarketEvents.get(key)||{events:[],lastSignature:null};
+  if(state.lastSignature===signature)return;
+  state.lastSignature=signature;
+  state.events.push({at:now,quotes,signature});
+  if(state.events.length>120)state.events.splice(0,state.events.length-120);
+  aiLiveRungMarketEvents.set(key,state);
+  if(state.events.length>1)console.log(`[AI LIVE RUNG CHANGE] id=${key} | changes=${state.events.length-1} | quotes=${JSON.stringify(quotes).slice(0,450)}`);
+}
+
 const aiLiveRungSending=new Set();
 const aiLiveRungAlertFile=process.env.AI_LIVE_RUNG_ALERT_STORE||'./ai_live_rung_alert_sent.json';
 const aiLiveRungSent=new Set(readShadowFile(aiLiveRungAlertFile).filter(x=>typeof x==='string'));
@@ -6471,18 +6495,31 @@ function liveRungEvaluate(match,minute){
   const invO=1/over,invU=1/under;
   const probability=100*invO/(invO+invU);
   if(!Number.isFinite(probability))return {status:'INVALID_PROBABILITY'};
-  const history=snap.history||{};
-  const trends={};
-  for(const key of ['1m','3m','5m','10m']){
-    const samples=(history[key]||[]).map(x=>(x.rows||[]).find(v=>String(v.match_id)===id&&
-      Number(v.line)===target&&String(v.score||'')===`${match.homeScore}-${match.awayScore}`)).filter(Boolean);
-    const first=samples[0],last=samples[samples.length-1];
-    trends[key]=first&&last&&samples.length>=2?Number((Number(last.v1)-Number(first.v1)).toFixed(3)):null;
+  const eventState=aiLiveRungMarketEvents.get(id);
+  const events=(eventState?.events||[]).filter(e=>e.quotes.some(q=>q.score===`${match.homeScore}-${match.awayScore}` && Math.abs(q.line-target)<0.001));
+  const changes=[];
+  for(let i=1;i<events.length;i++){
+    const a=events[i-1].quotes.find(q=>q.score===`${match.homeScore}-${match.awayScore}`&&Math.abs(q.line-target)<0.001);
+    const b=events[i].quotes.find(q=>q.score===`${match.homeScore}-${match.awayScore}`&&Math.abs(q.line-target)<0.001);
+    if(!a||!b)continue;
+    const overDelta=Number((b.over-a.over).toFixed(4));
+    const underDelta=Number((b.under-a.under).toFixed(4));
+    if(overDelta!==0||underDelta!==0)changes.push({at:events[i].at,overDelta,underDelta});
   }
+  // Market probability alone is not a RUNG signal. Require at least two
+  // consecutive genuine price moves favoring Over, with no intervening reversal.
+  // This is a directional evidence gate, not a claim of calibrated win probability.
+  const lastTwo=changes.slice(-2);
+  const directionalConfirmed=lastTwo.length===2&&lastTwo.every(x=>x.overDelta<0&&x.underDelta>0);
+  const lastChange=changes[changes.length-1]||null;
+  const lastEventAt=events.length?events[events.length-1].at:null;
+  const hasNewEvent=!!lastChange&&lastChange.at> (aiLiveRungLastEvaluatedEvent.get(id)||0);
   return {status:'VERIFIED',probability:Number(probability.toFixed(2)),overOdds:over,underOdds:under,
-    target,score:`${match.homeScore}-${match.awayScore}`,trends,marketAt:snap.lastReceivedAt,
-    // A trend is evidence for review, not an arbitrary multiplier on probability.
-    evidence:'COMPANY_22_FRESH_NEXT_GOAL_OU'};
+    target,score:`${match.homeScore}-${match.awayScore}`,marketAt:snap.lastReceivedAt,
+    marketChanges:changes.length,lastChangeAt:lastChange?.at??null,
+    lastChangeOver:lastChange?.overDelta??null,lastChangeUnder:lastChange?.underDelta??null,
+    directionalConfirmed,hasNewEvent,lastEventAt,
+    evidence:directionalConfirmed?'COMPANY_22_TWO_CONFIRMED_OVER_MOVES':'COMPANY_22_WAITING_FOR_DIRECTIONAL_CHANGE'};
 }
 async function liveRungSendAlert(match,minute,signal){
   const id=String(match.id);
@@ -6491,6 +6528,7 @@ async function liveRungSendAlert(match,minute,signal){
   // The existing configured probability gates are retained, not invented anew.
   const bigThreshold=Number(process.env.BIG_BET_THRESHOLD||75);
   const lightThreshold=Number(process.env.TELEGRAM_ALERT_THRESHOLD||65);
+  if(!signal.directionalConfirmed||!signal.hasNewEvent)return false;
   if(signal.probability<lightThreshold)return false;
   const big=signal.probability>=bigThreshold;
   if(!big&&!scanControl.isLowLambdaAlertsEnabled())return false;
@@ -6501,11 +6539,12 @@ async function liveRungSendAlert(match,minute,signal){
       `⚽ ${match.homeName} ${signal.score} ${match.awayName} | ${minute}'`,
       `📊 Tài ${signal.target} | Odds ${signal.overOdds.toFixed(2)} (thập phân)`,
       `🎯 Xác suất thị trường: ${signal.probability.toFixed(1)}%`,
-      `📈 Biến động odds 1/3/5/10 phút: ${Object.values(signal.trends).map(v=>v===null?'N/A':v).join(' / ')}`].join('\n');
+      `📈 Biến động kèo thực: ${signal.marketChanges} lần | Tài ${signal.lastChangeOver??'N/A'} | Xỉu ${signal.lastChangeUnder??'N/A'}`].join('\n');
     const response=await axios.post(`https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
       {chat_id:TELEGRAM_CHAT_ID,text:message,disable_web_page_preview:true},{timeout:10000});
     if(!response?.data?.ok)return false;
     aiLiveRungSent.add(id);
+    aiLiveRungLastEvaluatedEvent.set(id,signal.lastChangeAt||Date.now());
     writeShadowFile(aiLiveRungAlertFile,[...aiLiveRungSent]);
     console.log(`[AI LIVE RUNG ALERT] ${label} | id=${id} | minute=${minute} | probability=${signal.probability}`);
     return true;
@@ -6523,7 +6562,7 @@ async function analyzeOneMatch(match, allOdds) {
     minute,score:`${match.homeScore}-${match.awayScore}`,...signal,updatedAt:new Date().toISOString()};
   aiLiveRungRecords.set(record.id,record);
   if(aiLiveRungRecords.size>300)aiLiveRungRecords.delete(aiLiveRungRecords.keys().next().value);
-  console.log(`[AI LIVE RUNG] ${record.home} vs ${record.away} | ${minute}' | ${signal.status} | P=${signal.probability??'N/A'}%`);
+  console.log(`[AI LIVE RUNG] ${record.home} vs ${record.away} | ${minute}' | ${signal.status} | changes=${signal.marketChanges??0} | confirmed=${signal.directionalConfirmed??false} | newEvent=${signal.hasNewEvent??false} | P=${signal.probability??'N/A'}%`);
   const telegramSent=signal.status==='VERIFIED'&&minute>=65 ? await liveRungSendAlert(match,minute,signal):false;
   return {...match,minute,telegramSent,aiLiveRung:signal};
 }
