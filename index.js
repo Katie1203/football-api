@@ -5668,8 +5668,14 @@ function cleanTelegramText(
 // BONGDALU PRIMARY LIVE ADAPTER (based on user's Network captures)
 // ==========================================================
 const BONGDALU_BASE = (process.env.BONGDALU_BASE_URL || 'https://g4mlw.net').replace(/\/+$/,'');
-const BONGDALU_COMPANIES = [...new Set(String(process.env.BONGDALU_COMPANY_IDS || '2,22').split(',').map(x=>x.trim()).filter(x=>/^\d+$/.test(x)))].slice(0,8);
+const BONGDALU_COMPANIES = ['22']; // Single bookmaker explicitly approved: Bongdalu company 22
 const bongdaluOddsByMatch = new Map();
+// Independent 5-second odds clock. Match discovery can be slower without blocking odds snapshots.
+let bongdaluOddsPollBusy = false;
+let bongdaluOddsPollLastAt = 0;
+let bongdaluOddsPollLastResult = new Map();
+let bongdaluOddsActiveIds = [];
+
 // Metadata learned only from full Bongdalu match records, never guessed from odds.
 const bongdaluMatchMetadata = new Map();
 // Captured Bongdalu fixture metadata is a bootstrap snapshot, not a LIVE source.
@@ -5807,12 +5813,11 @@ function bongdaluVerifiedOddsMinute(match, rows) {
 async function fetchBongdaluLiveOdds(matchIds) {
   const wanted=new Set((matchIds||[]).map(String));
   if(!wanted.size)return new Map();
-  const all=[];
   const results=await Promise.all(BONGDALU_COMPANIES.map(async companyId=>{
     try {
       // Cache-bust proxy/CDN; odds LIVE must not be a cached snapshot.
       const payload=await bongdaluGet('/v1/football/odds/live',
-        `companyid=${encodeURIComponent(companyId)}&locale=vi`,{cacheBust:true,timeoutMs:6500});
+        `companyid=${encodeURIComponent(companyId)}&locale=vi`,{cacheBust:true,timeoutMs:4500});
       const rows=bongdaluUnwrap(payload);
       const ou=rows.filter(x=>String(x?.market).toUpperCase()==='OU');
       console.log(`[BONGDALU ODDS LIVE] company=${companyId} | rows=${rows.length} | OU=${ou.length} | code=${payload?.code} | count=${payload?.count??'N/A'}`);
@@ -5903,7 +5908,12 @@ async function fetchBongdaluLiveMatches() {
   if(rows.length && !normalized.length)console.warn(`[BONGDALU LIVE SKIP] ${rows.length} delta rows without team metadata; inspect [BONGDALU MATCH RESPONSE] sample`);
   const matches=normalized.filter(m=>m.raw.status.type==='live' || m.raw.status.type==='HT');
   console.log(`[BONGDALU MATCH FILTER] normalized=${normalized.length} | live=${matches.length}`);
-  const grouped=await fetchBongdaluLiveOdds(matches.map(m=>m.id));
+  bongdaluOddsActiveIds = matches.map(m=>String(m.id));
+  // Reuse the latest independent odds poll. Never block fixture discovery on a slow bookmaker.
+  // The independent poll updates per-match history every 5 seconds when upstream responds.
+  const oddsAge=Date.now()-bongdaluOddsPollLastAt;
+  const grouped=oddsAge<=15000 ? bongdaluOddsPollLastResult : new Map();
+  if(oddsAge>15000)console.warn(`[BONGDALU ODDS STALE] lastPollAgeMs=${oddsAge} | waiting for independent 5s odds poll`);
   let verifiedMinute=0, missingMinute=0, deltaMinutes=0, oddsMinutes=0;
   for(const m of matches){
     const snap=bongdaluOddsByMatch.get(String(m.id));
@@ -7698,6 +7708,21 @@ app.listen(
    // Sau đó 5 phút / lần
 setInterval(()=>scanNoStatsPriority().catch(e=>console.warn('[AI PRIORITY 30S]',e.message)),
   NO_STATS_PRIORITY_INTERVAL_MS);
+
+// Market sampling is independent of the heavier fixture/AI scan.
+// No concurrent odds requests: late responses cannot overwrite newer snapshots.
+async function pollBongdaluOddsEvery5s() {
+  if(bongdaluOddsPollBusy || !bongdaluOddsActiveIds.length || scanControl.isPaused())return;
+  bongdaluOddsPollBusy=true;
+  try {
+    const result=await fetchBongdaluLiveOdds(bongdaluOddsActiveIds);
+    bongdaluOddsPollLastResult=result;
+    bongdaluOddsPollLastAt=Date.now();
+    console.log(`[BONGDALU ODDS 5S] company=22 | active=${bongdaluOddsActiveIds.length} | matched=${result.size} | sampledAt=${new Date(bongdaluOddsPollLastAt).toISOString()}`);
+  } catch(e) {console.warn(`[BONGDALU ODDS 5S] ${e.message}`);}
+  finally {bongdaluOddsPollBusy=false;}
+}
+setInterval(()=>pollBongdaluOddsEvery5s().catch(e=>console.warn('[BONGDALU ODDS POLL]',e.message)),5000);
 
 setInterval(
   () => {
