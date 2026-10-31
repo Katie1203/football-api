@@ -5674,6 +5674,7 @@ const bongdaluOddsByMatch = new Map();
 let bongdaluOddsPollBusy = false;
 let bongdaluOddsPollLastAt = 0;
 let bongdaluOddsPollLastResult = new Map();
+let bongdaluOddsPollLastSuccessAt = 0;
 let bongdaluOddsActiveIds = [];
 
 // Metadata learned only from full Bongdalu match records, never guessed from odds.
@@ -5783,8 +5784,10 @@ function rememberBongdaluOdds(matchId,rows,now=Date.now(),fetchSucceeded=true) {
   // overwrite the latest valid odds with an artificial zero-odds snapshot.
   if(fetchSucceeded && valid.length) {
     const signature=JSON.stringify(valid.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score,x.provider_time]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
-    if(!previous.length||previous[previous.length-1].signature!==signature)
-      previous.push({at:now,signature,rows:valid});
+    // Record EVERY successful 5-second sample, including unchanged prices.
+    // A trend window needs a real sampling clock, not only change events.
+    const changed=!previous.length||previous[previous.length-1].signature!==signature;
+    previous.push({at:now,signature,rows:valid,changed});
   }
   while(previous.length&&now-previous[0].at>10*60*1000)previous.shift();
   if(previous.length)bongdaluOddsHistory.set(key,previous);
@@ -5839,9 +5842,13 @@ async function fetchBongdaluLiveOdds(matchIds) {
   }
   const now=Date.now();
   const anySuccess=results.some(r=>r.ok);
+  // A failed request is NOT an empty market; preserve historical samples as stale.
   for(const id of wanted)bongdaluOddsByMatch.set(id,rememberBongdaluOdds(id,grouped.get(id)||[],now,anySuccess));
+  if(anySuccess)bongdaluOddsPollLastSuccessAt=now;
   console.log(`[BONGDALU ODDS JOIN] requested=${wanted.size} | matched=${grouped.size} | bookmakers=${companiesWithOU.size} | configured=${BONGDALU_COMPANIES.join(',')} | failedSources=${results.filter(r=>!r.ok).length} | oddsUniqueIds=${allOuIds.size} | unmatchedOddsIds=${unmatchedIds.size}`);
-  if(unmatchedIds.size) console.log(`[BONGDALU ODDS ID AUDIT] activeSample=${JSON.stringify([...wanted].slice(0,5))} | oddsSample=${JSON.stringify([...unmatchedIds.keys()].slice(0,5))} | matchedSample=${JSON.stringify([...grouped.keys()].slice(0,5))}`);
+  if(unmatchedIds.size) console.log(`[BONGDALU ODDS ID AUDIT] activeSample=${JSON.stringify([...wanted].slice(0,5))} | oddsSample=${JSON.stringify([...unmatchedIds.keys()].slice(0,5))} | matchedSample=${JSON.stringify([...grouped.keys()].slice(0,5))} | note=unmatched-odds-may-be-other-fixtures`);
+  // Never guess a fixture from near-matching opaque IDs; report actual coverage.
+  if(anySuccess) console.log(`[BONGDALU ODDS COVERAGE] liveFixtures=${wanted.size} | bookmakerOUFixtures=${allOuIds.size} | liveWithOU=${grouped.size} | liveWithoutOU=${wanted.size-grouped.size}`);
   if(!grouped.size)console.warn('[BONGDALU ODDS UNAVAILABLE] No LIVE OU rows matched active native fixture IDs; AI LIVE RUNG must not infer market signals from missing odds.');
   return grouped;
 }
@@ -5911,9 +5918,10 @@ async function fetchBongdaluLiveMatches() {
   bongdaluOddsActiveIds = matches.map(m=>String(m.id));
   // Reuse the latest independent odds poll. Never block fixture discovery on a slow bookmaker.
   // The independent poll updates per-match history every 5 seconds when upstream responds.
-  const oddsAge=Date.now()-bongdaluOddsPollLastAt;
-  const grouped=oddsAge<=15000 ? bongdaluOddsPollLastResult : new Map();
-  if(oddsAge>15000)console.warn(`[BONGDALU ODDS STALE] lastPollAgeMs=${oddsAge} | waiting for independent 5s odds poll`);
+  const oddsAge=bongdaluOddsPollLastSuccessAt ? Date.now()-bongdaluOddsPollLastSuccessAt : null;
+  // A failed poll must not make the last successful market snapshot look fresh.
+  const grouped=oddsAge!==null&&oddsAge<=15000 ? bongdaluOddsPollLastResult : new Map();
+  if(oddsAge===null||oddsAge>15000)console.warn(`[BONGDALU ODDS STALE] lastSuccessAgeMs=${oddsAge??'NEVER'} | waiting for independent 5s odds poll`);
   let verifiedMinute=0, missingMinute=0, deltaMinutes=0, oddsMinutes=0;
   for(const m of matches){
     const snap=bongdaluOddsByMatch.get(String(m.id));
@@ -5931,7 +5939,11 @@ async function fetchBongdaluLiveMatches() {
   const verifiedInWindow=matches.filter(m=>{const n=calculateExactMinute(m.raw);return typeof n==='number'&&n>=60&&n<=88;}).length;
   console.log(`[BONGDALU MINUTE AUDIT] verified=${verifiedMinute} | in60to88=${verifiedInWindow} | sample=${JSON.stringify(minuteSample)}`);
   console.log(`[Bongdalu LIVE] fixtures=${matches.length} | verifiedMinute=${verifiedMinute} | deltaMinute=${deltaMinutes} | oddsMinute=${oddsMinutes} | unknownMinute=${missingMinute} | native IDs only`);
-  if(missingMinute) console.warn(`[BONGDALU MINUTE UNVERIFIED] count=${missingMinute} | no synthetic minute from diary kickoff; inspect delta.matchTime and odds.time_of_the_match for the same ScheduleID`);
+  if(missingMinute) {
+    const unknown=matches.filter(m=>!Number.isFinite(Number(m.minute))||Number(m.minute)<=0).slice(0,4);
+    const diagnostics=unknown.map(m=>{const d=verifiedDeltaById.get(String(m.id));const o=grouped.get(String(m.id))||[];return {id:m.id,state:m.raw.MatchState,deltaPresent:!!d,deltaState:d?.MatchState??null,deltaMatchTime:d?.matchTime??null,deltaMatchTime2:d?.matchTime2??null,oddsRows:o.length,oddsTime:o[0]?.time_of_the_match??null,oddsStatus:o[0]?.match_status??null,oddsScore:o[0]?.score??null};});
+    console.warn(`[BONGDALU MINUTE UNVERIFIED] count=${missingMinute} | no synthetic minute from diary kickoff | sample=${JSON.stringify(diagnostics)}`);
+  }
   return matches;
 }
 
@@ -7715,10 +7727,13 @@ async function pollBongdaluOddsEvery5s() {
   if(bongdaluOddsPollBusy || !bongdaluOddsActiveIds.length || scanControl.isPaused())return;
   bongdaluOddsPollBusy=true;
   try {
-    const result=await fetchBongdaluLiveOdds(bongdaluOddsActiveIds);
-    bongdaluOddsPollLastResult=result;
+    const started=Date.now();
+    const requestedIds=[...bongdaluOddsActiveIds];
+    const result=await fetchBongdaluLiveOdds(requestedIds);
+    // Only publish a current result when the upstream request succeeded.
+    if(bongdaluOddsPollLastSuccessAt>=started)bongdaluOddsPollLastResult=result;
     bongdaluOddsPollLastAt=Date.now();
-    console.log(`[BONGDALU ODDS 5S] company=22 | active=${bongdaluOddsActiveIds.length} | matched=${result.size} | sampledAt=${new Date(bongdaluOddsPollLastAt).toISOString()}`);
+    console.log(`[BONGDALU ODDS 5S] company=22 | active=${bongdaluOddsActiveIds.length} | matched=${result.size} | requestMs=${Date.now()-started} | lastSuccessAgeMs=${bongdaluOddsPollLastSuccessAt?Date.now()-bongdaluOddsPollLastSuccessAt:'NEVER'} | sampledAt=${new Date(bongdaluOddsPollLastAt).toISOString()}`);
   } catch(e) {console.warn(`[BONGDALU ODDS 5S] ${e.message}`);}
   finally {bongdaluOddsPollBusy=false;}
 }
