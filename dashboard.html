@@ -556,7 +556,7 @@ nav a,.nav a{border-color:var(--tt-border)!important}
 
 </style>
 <style>
-/* AI NO-STATS alert cards: compact 3-column desktop layout, V4 typography. */
+/* AI LIVE RUNG alert cards: compact 3-column desktop layout, V4 typography. */
 #noStatsAlertRows{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:8px!important}
 #noStatsAlertRows .match-card{padding:9px!important;min-width:0;overflow:hidden}
 #noStatsAlertRows .match-head-left{gap:5px;margin-bottom:3px}
@@ -606,7 +606,7 @@ nav a,.nav a{border-color:var(--tt-border)!important}
 
 </style>
 <style>
-/* AI NO-STATS Telegram audit cards only: isolate from V4's complex card grid.
+/* AI LIVE RUNG Telegram audit cards only: isolate from V4's complex card grid.
    Keep three cards per row without squeezing each card's content into vertical columns. */
 #noStatsAlertRows {display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;align-items:start!important;gap:10px!important}
 #noStatsAlertRows > article.match-card {
@@ -954,7 +954,7 @@ body,.tt-unified{color:var(--tt-ui-text)!important;background:#07130f!important}
 button,select{box-shadow:none!important}button:focus-visible,summary:focus-visible{outline:2px solid #e5c16a;outline-offset:2px}
 
 
-/* AI THỬ NGHIỆM: align three metric tiles with V4, restrained gold + white typography. */
+/* AI LIVE RUNG: align three metric tiles with V4, restrained gold + white typography. */
 #noStatsAlertRows>.match-card{background:#0c1916!important;border:1px solid #8f793f!important;box-shadow:none!important;color:#f4f5f2!important}
 #noStatsAlertRows .match-league,#noStatsAlertRows .match-name,#noStatsAlertRows .match-live-score,#noStatsAlertRows .hint,#noStatsAlertRows .match-metric small{color:#f4f5f2!important}
 #noStatsAlertRows .match-score{color:#fff!important;font-size:clamp(18px,1.65vw,24px)!important}
@@ -1018,104 +1018,6 @@ body #audit-list .match-teams .match-score,
 body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-shadow:0 1px 4px rgba(0,0,0,.3)!important}
 </style><style>/* Compact comparison cards */
 .match-card{padding:9px!important}.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:6px 0!important}.match-card .match-metric{padding:7px!important;min-height:56px!important}.match-card .match-metric strong{font-size:18px!important}.match-card .match-teams{margin:5px 0!important}.market-side{margin:5px 0!important;padding:7px!important}.market-explain{font-size:11px;margin-top:4px}.market-explain summary{cursor:pointer;color:#f1d17a;font-weight:700}.market-explain[open] summary{margin-bottom:4px}@media(max-width:550px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-</style><style id="tt-compact-card-v2">
-/* Compact card layout: five comparison figures in one line on desktop */
-.match-card{padding:8px!important;gap:4px!important}
-.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:4px!important;margin:5px 0!important;align-items:stretch!important}
-.match-card .match-metric{min-width:0!important;min-height:0!important;padding:6px 5px!important;margin:0!important;border-radius:7px!important}
-.match-card .match-metric small{font-size:9px!important;line-height:1.25!important;display:block!important;overflow-wrap:anywhere}
-.match-card .match-metric strong{font-size:16px!important;line-height:1.15!important;display:block!important;margin:2px 0!important}
-.match-card .match-metric .match-result{padding:3px!important;font-size:14px!important}
-.match-card .match-teams{margin:3px 0!important;line-height:1.2!important}
-.match-card .match-live-score{margin:3px 0!important;line-height:1.3!important}
-.match-card .market-explain{grid-column:1/-1!important;margin:0!important;padding:0!important;font-size:10px!important;line-height:1.3!important}
-.match-card .market-explain summary{padding:3px 6px!important;line-height:1.2!important;font-size:10px!important}
-.match-card .market-explain:not([open]){height:auto!important}
-.match-card .market-explain[open]>div{padding:5px!important}
-.match-card .market-side{margin:3px 0!important;padding:5px!important}
-@media(max-width:650px){.match-card .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}.match-card .match-metric{padding:5px!important}}
-@media(max-width:380px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-</style><style id="tt-ultra-compact-cards-20261030">
-/* Final override: the real audit alert cards, not a decorative wrapper. */
-#noStatsAlertRows .match-card, #audit-list .match-card, .audit-scroll .match-card{
- display:flex!important;flex-direction:column!important;gap:3px!important;
- padding:7px 9px!important;min-height:0!important;margin:0!important;
- border-radius:8px!important;line-height:1.2!important;
-}
-#noStatsAlertRows .match-card>*,#audit-list .match-card>*{margin-top:0!important;margin-bottom:0!important;min-height:0!important}
-#noStatsAlertRows .ns-select-label,#audit-list .ns-select-label{
- display:inline-flex!important;align-self:flex-start!important;width:auto!important;
- padding:2px 5px!important;margin:0!important;gap:4px!important;
- font-size:10px!important;line-height:1!important;border-radius:4px!important;
-}
-#noStatsAlertRows .ns-select-label input,#audit-list .ns-select-label input{width:12px!important;height:12px!important;margin:0!important}
-#noStatsAlertRows .match-head-left,#audit-list .match-head-left{gap:4px!important;font-size:10px!important;line-height:1.1!important}
-#noStatsAlertRows .match-minute,#audit-list .match-minute{padding:2px 4px!important;font-size:10px!important}
-#noStatsAlertRows .match-teams,#audit-list .match-teams{
- display:flex!important;justify-content:center!important;align-items:center!important;
- min-height:0!important;padding:2px 0!important;margin:0!important;gap:4px!important;
-}
-#noStatsAlertRows .match-name,#audit-list .match-name{font-size:12px!important;line-height:1.15!important}
-#noStatsAlertRows .match-score,#audit-list .match-score{font-size:17px!important;line-height:1!important}
-#noStatsAlertRows .match-status-inline,#audit-list .match-status-inline{margin:1px 0!important;font-size:10px!important;line-height:1.1!important}
-#noStatsAlertRows .ai-status,#audit-list .ai-status{padding:3px 5px!important;font-size:10px!important}
-#noStatsAlertRows .match-metrics,#audit-list .match-metrics{
- display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
- gap:3px!important;margin:3px 0!important;align-items:stretch!important;
-}
-#noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{
- grid-area:auto!important;grid-column:auto!important;min-width:0!important;min-height:0!important;
- padding:4px 3px!important;margin:0!important;border-radius:5px!important;
- display:flex!important;flex-direction:column!important;justify-content:center!important;
-}
-#noStatsAlertRows .match-metric small,#audit-list .match-metric small{
- font-size:8px!important;line-height:1.12!important;overflow-wrap:anywhere!important;
-}
-#noStatsAlertRows .match-metric strong,#audit-list .match-metric strong{
- font-size:14px!important;line-height:1.1!important;margin:2px 0!important;
-}
-#noStatsAlertRows .match-metric .match-result,#audit-list .match-metric .match-result{
- padding:2px!important;font-size:12px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain,#audit-list .market-explain{
- grid-column:1/-1!important;grid-area:auto!important;margin:0!important;padding:0!important;
- font-size:9px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain summary,#audit-list .market-explain summary{
- display:inline-block!important;width:auto!important;padding:2px 4px!important;
- font-size:9px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain:not([open])>div,#audit-list .market-explain:not([open])>div{display:none!important}
-#noStatsAlertRows .match-live-score,#audit-list .match-live-score{
- font-size:9px!important;line-height:1.15!important;margin:1px 0!important;text-align:left!important;
-}
-#noStatsAlertRows .hint,#audit-list .hint{font-size:9px!important;line-height:1.15!important;margin:1px 0!important}
-@media(max-width:600px){
- #noStatsAlertRows .match-metrics,#audit-list .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}
- #noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{grid-column:auto!important}
- #noStatsAlertRows .market-explain,#audit-list .market-explain{grid-column:1/-1!important}
-}
-/* Other two views: compact their existing cards without changing data. */
-body .matches .match-card{padding:7px!important;gap:3px!important;min-height:0!important}
-body .matches .match-main{gap:4px!important;margin:4px 0!important}
-body .matches .metric{padding:4px!important;min-height:0!important}
-body .matches .metric strong{font-size:14px!important}
-body .matches .metric small{font-size:9px!important}
-body .matches .teams{padding:2px!important}
-body .matches .match-bottom{padding-top:4px!important;font-size:10px!important}
-body .matches details summary{font-size:10px!important}
-</style><style>
-/* Compact comparison: five actual metrics, explanation beneath */
-#noStatsAlertRows .match-metrics{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:4px!important;margin:5px 0 3px!important;align-items:stretch!important}
-#noStatsAlertRows .match-metrics>.match-metric{grid-column:auto!important;grid-row:auto!important;min-width:0!important;padding:4px!important}
-#noStatsAlertRows .match-card{padding:7px!important;min-height:0!important}
-#noStatsAlertRows .ns-select-label{min-height:0!important;padding:3px 5px!important;margin:0 0 3px!important}
-#noStatsAlertRows .compact-explanation{display:block!important;width:auto!important;max-width:100%!important;grid-column:auto!important;border:0!important;background:transparent!important;margin:2px 0!important;padding:0!important}
-#noStatsAlertRows .compact-explanation summary{display:inline-block!important;width:auto!important;border:0!important;padding:2px 0!important;color:#e8c477!important;font-size:9px!important;cursor:pointer}
-#noStatsAlertRows .compact-explanation div{font-size:9px!important;padding:3px 0!important}
-#noStatsAlertRows .match-teams{margin:3px 0!important}
-#noStatsAlertRows .match-status-inline{margin:3px 0!important}
-@media(max-width:650px){#noStatsAlertRows .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1123,12 +1025,12 @@ body .matches details summary{font-size:10px!important}
     
     
     <button type="button" onclick="document.body.classList.toggle('show-audit-stats')">Thống kê</button>
-  <a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav>
+  <a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav>
   <span class="promax-running" id="tt-scan-status">● Đang tải</span><button type="button" class="tt-pause" id="tt-pause" onclick="ttToggleScan()" disabled>Đang tải…</button>
   <button class="promax-refresh" type="button" onclick="window.location.reload()" title="Tải lại trang Dashboard" aria-label="Tải lại trang Dashboard">↻</button>
-<div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI THỬ NGHIỆM</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI NO-STATS.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI THỬ NGHIỆM · BET NHẸ TAY</strong><div class="hint">λ dưới 1,50 · TẮT chỉ ngừng gửi Telegram nhóm này; vẫn phân tích và lưu lịch sử. λ từ 1,50: BET BANH NÓC, không bị ảnh hưởng.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI THỬ NGHIỆM</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI THỬ NGHIỆM</h3><p class="hint">AI THỬ NGHIỆM: gửi phút 65–88 khi bàn còn kỳ vọng ≥ 0.90 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI THỬ NGHIỆM duy nhất</span></div>
-<section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI THỬ NGHIỆM</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div><div class="stat"><small>Win rate AI LIVE + MARKET</small><strong id="nsMarketRate">N/A</strong><small id="nsMarketDetail">Chưa có dự đoán MARKET đã chốt FT</small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI THỬ NGHIỆM</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI THỬ NGHIỆM</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Chỉ chốt FT khi API-Sports hoặc FlashScore xác nhận kết quả chính thức.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI THỬ NGHIỆM...</div>
-<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI THỬ NGHIỆM"></div></section></main><script>
+<div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI LIVE RUNG</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI LIVE RUNG.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI LIVE RUNG · BET NHẸ TAY</strong><div class="hint">BET NHẸ TAY cần odds Tài LIVE ≥ 1.50; BIG BET không bị chặn bởi odds 1.50.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI LIVE RUNG</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI LIVE RUNG</h3><p class="hint">AI LIVE RUNG: phân tích từ phút 60, cảnh báo phút 65–88 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI LIVE RUNG duy nhất</span></div>
+<section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI LIVE RUNG</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI LIVE RUNG</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI LIVE RUNG</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Chỉ chốt FT khi API-Sports hoặc FlashScore xác nhận kết quả chính thức.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI LIVE RUNG...</div>
+<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI LIVE RUNG"></div></section></main><script>
 const el=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pill=x=>'<span class="ai-status">'+esc(x)+'</span>';
@@ -1174,7 +1076,7 @@ function nsRenderHistory(){
      '<div class="match-head-left"><span class="match-league">'+esc(x.league||'—')+'</span><span class="match-minute">'+esc(x.minute??'—')+'′</span></div>'+
      '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(x.score||'—')+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
      '<div class="match-status-inline"><span class="ai-status">CHƯA ĐẠT ODD</span></div>'+
-     '<div class="match-metrics"><div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+esc(x.probability==null?'—':x.probability+'%')+'</strong></div>'+
+     '<div class="match-metrics"><div class="match-metric"><small>AI LIVE RUNG</small><strong>'+esc(x.probability==null?'—':x.probability+'%')+'</strong></div>'+
      '<div class="match-metric"><small>λ</small><strong>'+esc(x.expectedRemainingGoals??'—')+'</strong></div>'+
      '<div class="match-metric"><small>Over LIVE</small><strong>'+esc(x.overOdds??'Chưa có')+'</strong></div></div>'+
      '<div class="hint">'+esc(x.reason||'Chờ Odds')+' · '+esc(x.updatedAt||'')+'</div></article>';
@@ -1199,11 +1101,10 @@ function nsRenderHistory(){
     '<div class="match-teams"><span class="match-name team-home">'+esc(x.home)+'</span><span class="match-score">'+esc(latest)+'</span><span class="match-name team-away">'+esc(x.away)+'</span></div>'+
     '<div class="match-status-inline"><span class="ai-status ai-bet tt-alert-pulse '+((x.earlyGoal||/BIGGG|BIG BET/i.test(String(x.alertLabel||x.alertType||'')))?'tt-big':'')+'">'+esc(x.alertLabel||(x.earlyGoal||x.alertType==='BIGGG BET'?'BIGGG BET':(Number(x.expectedRemainingGoals)<1.5?'BET NHẸ TAY':'BET BANH NÓC')))+'</span> '+pill(status)+'</div>'+
     '<div class="match-metrics" style="margin:10px 0">'+
-     '<div class="match-metric"><small>AI THỬ NGHIỆM</small><strong>'+pct+'</strong></div>'+
+     '<div class="match-metric"><small>AI LIVE RUNG</small><strong>'+pct+'</strong></div>'+
      ''+
      '<div class="match-metric"><small>Bàn kỳ vọng</small><strong>'+lambda+'</strong></div>'+marketAlertCard(x)+
-     '<div class="match-metric match-ft-metric"><small>FT · AI THỬ NGHIỆM</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+ 
-    marketExplanation(x)+
+     '<div class="match-metric match-ft-metric"><small>FT · AI LIVE RUNG</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
     '<div class="match-live-score" style="margin-bottom:5px"><b>Odds lúc cảnh báo:</b> <span style="font-weight:800;color:'+(oddsKnown?'#55e8ad':oddsState==='CHUA_LAY_DUOC_ODDS'?'#f0c768':'#aebdc4')+'">'+oddsLabel+'</span>'+oddsDetail+'</div>'+
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
@@ -1223,13 +1124,8 @@ function marketAlertCard(x){
  const ftOutcome=String(x.marketFtEvaluation||x.aiMarketEvaluation||'').toUpperCase();
  const grade=saved&&['WIN','LOSS','VOID'].includes(ftOutcome)?ftOutcome:'N/A';
  return '<div class="match-metric"><small>AI LIVE + MARKET</small><strong>'+prob+'</strong><small>λ: '+lambda+'</small></div>'+
- '<div class="match-metric"><small>FT · AI MARKET</small><strong>'+grade+'</strong><small>'+(grade==='N/A'?'Chưa có dự đoán lưu để đối chiếu':'Đã đối chiếu')+'</small></div>'+ 
- '';
-}
-function marketExplanation(x){
- const a=x.marketSnapshotAtAlert||x.aiLiveEnhancedAtAlert||x.aiLiveEnhanced;
- const valid=a?.marketStatus==='VALID';
- return '<details class="market-explain compact-explanation"><summary>▸ Diễn giải AI MARKET</summary><div>'+(valid?'Odds LIVE hợp lệ':'Chưa xác minh Odds LIVE')+' · Chỉ đối chiếu FT khi có dự đoán đã lưu tại thời điểm cảnh báo.</div></details>';
+ '<div class="match-metric"><small>FT · AI MARKET</small><strong>'+grade+'</strong><small>'+(grade==='N/A'?'Chưa có dự đoán lưu để đối chiếu':'Đã đối chiếu')+'</small></div>'+
+ '<details class="market-explain" style="grid-column:1/-1"><summary>Ẩn/Hiện diễn giải AI MARKET</summary><div>λ MARKET: '+lambda+' · Xác suất: '+prob+' · '+(a?.marketStatus==='VALID'?'Odds LIVE hợp lệ':'Chưa xác minh Odds LIVE')+'. Kết quả FT chỉ đối chiếu khi có dự đoán MARKET đã lưu tại thời điểm cảnh báo.</div></details>';
 }
 async function loadNoStatsAlerts(){
  try{
@@ -1243,17 +1139,13 @@ async function loadNoStatsAlerts(){
   el('nsOverRate').textContent=over.rate==null?'—':over.rate+'%';
   el('nsOverDetail').textContent=(over.wins??0)+' WIN / '+(over.losses??0)+' LOSS · '+(over.noLine??0)+' NO LINE';
   el('nsGroups').textContent='Cảnh báo #1 — Còn bàn: '+(s.winRate==null?'—':s.winRate+'%')+' · Over: '+(over.rate==null?'—':over.rate+'%')+' · '+(s.sent??0)+' tín hiệu';
-  el('noStatsAlertSummary').textContent='AI THỬ NGHIỆM · '+(s.settled??0)+' đã chốt · '+(s.pending??0)+' PENDING · '+(s.voids??0)+' VOID · Win rate '+(s.winRate==null?'—':s.winRate+'%')+' (chỉ WIN/LOSS đã chốt)';
-  const graded=rows.filter(x=>(x.marketSnapshotAtAlert||x.aiLiveEnhancedAtAlert)&&['WIN','LOSS'].includes(String(x.marketFtEvaluation||x.aiMarketEvaluation||'').toUpperCase()));
-  const marketWins=graded.filter(x=>String(x.marketFtEvaluation||x.aiMarketEvaluation).toUpperCase()==='WIN').length;
-  el('nsMarketRate').textContent=graded.length?(100*marketWins/graded.length).toFixed(1)+'%':'N/A';
-  el('nsMarketDetail').textContent=graded.length?`${marketWins} WIN / ${graded.length-marketWins} LOSS · ${graded.length} trận chốt FT`:'Chưa có dự đoán MARKET đã chốt FT';
+  el('noStatsAlertSummary').textContent='AI LIVE RUNG · '+(s.settled??0)+' đã chốt · '+(s.pending??0)+' PENDING · '+(s.voids??0)+' VOID · Win rate '+(s.winRate==null?'—':s.winRate+'%')+' (chỉ WIN/LOSS đã chốt)';
   nsHistory=rows;
   try{const wr=await fetch('/api/no-stats-odds-waiting',{cache:'no-store'});
     nsOddsWaiting=wr.ok?(await wr.json()).records||[]:[];
   }catch(e){nsOddsWaiting=[];}
   nsRenderHistory();
- }catch(e){el('noStatsAlertSummary').textContent='Không tải được Audit Telegram AI NO-STATS: '+e.message;}
+ }catch(e){el('noStatsAlertSummary').textContent='Không tải được Audit Telegram AI LIVE RUNG: '+e.message;}
 }
 
 

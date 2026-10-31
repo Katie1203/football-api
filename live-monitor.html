@@ -199,93 +199,16 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 @media(prefers-reduced-motion:reduce){.card.tt-signal-ready,.card.tt-signal-odds-wait{animation:none!important;filter:none!important}}
 </style><style>/* Compact comparison cards */
 .match-card{padding:9px!important}.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:6px 0!important}.match-card .match-metric{padding:7px!important;min-height:56px!important}.match-card .match-metric strong{font-size:18px!important}.match-card .match-teams{margin:5px 0!important}.market-side{margin:5px 0!important;padding:7px!important}.market-explain{font-size:11px;margin-top:4px}.market-explain summary{cursor:pointer;color:#f1d17a;font-weight:700}.market-explain[open] summary{margin-bottom:4px}@media(max-width:550px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-</style><style id="tt-compact-card-v2">
-/* Compact card layout: five comparison figures in one line on desktop */
-.match-card{padding:8px!important;gap:4px!important}
-.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;gap:4px!important;margin:5px 0!important;align-items:stretch!important}
-.match-card .match-metric{min-width:0!important;min-height:0!important;padding:6px 5px!important;margin:0!important;border-radius:7px!important}
-.match-card .match-metric small{font-size:9px!important;line-height:1.25!important;display:block!important;overflow-wrap:anywhere}
-.match-card .match-metric strong{font-size:16px!important;line-height:1.15!important;display:block!important;margin:2px 0!important}
-.match-card .match-metric .match-result{padding:3px!important;font-size:14px!important}
-.match-card .match-teams{margin:3px 0!important;line-height:1.2!important}
-.match-card .match-live-score{margin:3px 0!important;line-height:1.3!important}
-.match-card .market-explain{grid-column:1/-1!important;margin:0!important;padding:0!important;font-size:10px!important;line-height:1.3!important}
-.match-card .market-explain summary{padding:3px 6px!important;line-height:1.2!important;font-size:10px!important}
-.match-card .market-explain:not([open]){height:auto!important}
-.match-card .market-explain[open]>div{padding:5px!important}
-.match-card .market-side{margin:3px 0!important;padding:5px!important}
-@media(max-width:650px){.match-card .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}.match-card .match-metric{padding:5px!important}}
-@media(max-width:380px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-</style><style id="tt-ultra-compact-cards-20261030">
-/* Final override: the real audit alert cards, not a decorative wrapper. */
-#noStatsAlertRows .match-card, #audit-list .match-card, .audit-scroll .match-card{
- display:flex!important;flex-direction:column!important;gap:3px!important;
- padding:7px 9px!important;min-height:0!important;margin:0!important;
- border-radius:8px!important;line-height:1.2!important;
-}
-#noStatsAlertRows .match-card>*,#audit-list .match-card>*{margin-top:0!important;margin-bottom:0!important;min-height:0!important}
-#noStatsAlertRows .ns-select-label,#audit-list .ns-select-label{
- display:inline-flex!important;align-self:flex-start!important;width:auto!important;
- padding:2px 5px!important;margin:0!important;gap:4px!important;
- font-size:10px!important;line-height:1!important;border-radius:4px!important;
-}
-#noStatsAlertRows .ns-select-label input,#audit-list .ns-select-label input{width:12px!important;height:12px!important;margin:0!important}
-#noStatsAlertRows .match-head-left,#audit-list .match-head-left{gap:4px!important;font-size:10px!important;line-height:1.1!important}
-#noStatsAlertRows .match-minute,#audit-list .match-minute{padding:2px 4px!important;font-size:10px!important}
-#noStatsAlertRows .match-teams,#audit-list .match-teams{
- display:flex!important;justify-content:center!important;align-items:center!important;
- min-height:0!important;padding:2px 0!important;margin:0!important;gap:4px!important;
-}
-#noStatsAlertRows .match-name,#audit-list .match-name{font-size:12px!important;line-height:1.15!important}
-#noStatsAlertRows .match-score,#audit-list .match-score{font-size:17px!important;line-height:1!important}
-#noStatsAlertRows .match-status-inline,#audit-list .match-status-inline{margin:1px 0!important;font-size:10px!important;line-height:1.1!important}
-#noStatsAlertRows .ai-status,#audit-list .ai-status{padding:3px 5px!important;font-size:10px!important}
-#noStatsAlertRows .match-metrics,#audit-list .match-metrics{
- display:grid!important;grid-template-columns:repeat(5,minmax(0,1fr))!important;
- gap:3px!important;margin:3px 0!important;align-items:stretch!important;
-}
-#noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{
- grid-area:auto!important;grid-column:auto!important;min-width:0!important;min-height:0!important;
- padding:4px 3px!important;margin:0!important;border-radius:5px!important;
- display:flex!important;flex-direction:column!important;justify-content:center!important;
-}
-#noStatsAlertRows .match-metric small,#audit-list .match-metric small{
- font-size:8px!important;line-height:1.12!important;overflow-wrap:anywhere!important;
-}
-#noStatsAlertRows .match-metric strong,#audit-list .match-metric strong{
- font-size:14px!important;line-height:1.1!important;margin:2px 0!important;
-}
-#noStatsAlertRows .match-metric .match-result,#audit-list .match-metric .match-result{
- padding:2px!important;font-size:12px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain,#audit-list .market-explain{
- grid-column:1/-1!important;grid-area:auto!important;margin:0!important;padding:0!important;
- font-size:9px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain summary,#audit-list .market-explain summary{
- display:inline-block!important;width:auto!important;padding:2px 4px!important;
- font-size:9px!important;line-height:1.1!important;
-}
-#noStatsAlertRows .market-explain:not([open])>div,#audit-list .market-explain:not([open])>div{display:none!important}
-#noStatsAlertRows .match-live-score,#audit-list .match-live-score{
- font-size:9px!important;line-height:1.15!important;margin:1px 0!important;text-align:left!important;
-}
-#noStatsAlertRows .hint,#audit-list .hint{font-size:9px!important;line-height:1.15!important;margin:1px 0!important}
-@media(max-width:600px){
- #noStatsAlertRows .match-metrics,#audit-list .match-metrics{grid-template-columns:repeat(3,minmax(0,1fr))!important}
- #noStatsAlertRows .match-metrics>.match-metric,#audit-list .match-metrics>.match-metric{grid-column:auto!important}
- #noStatsAlertRows .market-explain,#audit-list .market-explain{grid-column:1/-1!important}
-}
-/* Other two views: compact their existing cards without changing data. */
-body .matches .match-card{padding:7px!important;gap:3px!important;min-height:0!important}
-body .matches .match-main{gap:4px!important;margin:4px 0!important}
-body .matches .metric{padding:4px!important;min-height:0!important}
-body .matches .metric strong{font-size:14px!important}
-body .matches .metric small{font-size:9px!important}
-body .matches .teams{padding:2px!important}
-body .matches .match-bottom{padding-top:4px!important;font-size:10px!important}
-body .matches details summary{font-size:10px!important}
-</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI THỬ NGHIỆM duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI THỬ NGHIỆM; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang kiểm tra dữ liệu mỗi 15 giây.</p></main><script>
+/* Thu gọn thẻ LIVE, giữ nguyên màu sắc và DOM gốc */
+.grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:9px!important}
+.grid .card{padding:10px!important;min-width:0!important;border-radius:10px!important}
+.grid .card .teams{font-size:13px!important;min-height:0!important;line-height:1.35!important}
+.grid .card .score{font-size:19px!important;margin:5px 0!important}
+.grid .card .line{padding:4px 0!important;font-size:11px!important}
+.grid .card .meta{font-size:10px!important;margin-bottom:5px!important}
+@media(max-width:1150px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:620px){.grid{grid-template-columns:1fr!important}}
+</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let rows=[],group='all';
@@ -357,15 +280,15 @@ function marketSideBySide(x){
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI THỬ NGHIỆM</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Bàn thắng kỳ vọng</span><span class="value">'+lambdaText(x.expectedRemainingGoals)+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI LIVE RUNG</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Tín hiệu AI LIVE RUNG</span><span class="value">'+(x.decision?.level||'ĐANG THEO DÕI')+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
-async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows:[];const noStats=Array.isArray(d.noStats)?d.noStats:[];
+async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows.map(x=>({...x,noStatsProbability:x.probability??x.aiProbability??null,expectedRemainingGoals:null,sentAlertLabel:x.alertLabel||null,overOdds:x.decision?.overOdds??null,overLine:x.decision?.line??null,oddsValid:x.decision?.overOdds!=null,oddsStatus:x.decision?.overOdds!=null?'BONGDALU':'CHƯA XÁC MINH',aiLiveEnhanced:x.aiLiveEnhanced||null})):[];const noStats=[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
  // Do not infer BIG BET/RUNG from lambda or from a changing live score.
  const [alertResponse,waitingResponse,fullResponse]=await Promise.allSettled([
   fetch('/api/no-stats-alerts',{cache:'no-store'}),
   fetch('/api/no-stats-odds-waiting',{cache:'no-store'}),
-  fetch('/api/ai-no-stats',{cache:'no-store'})
+  fetch('/api/ai-live-market',{cache:'no-store'})
  ]);
  async function recordsFrom(result){
   if(result.status!=='fulfilled'||!result.value.ok)return [];
@@ -420,7 +343,7 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  // Both card display and tab counters share this filtered list.
  rows=rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent);
  const s=d.summary||{};
- const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (trước 85′)',rows.filter(visibleLive).length],['Đã phân tích',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length],['AI THỬ NGHIỆM',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length]];
+ const stats=[['TỔNG TRẬN ĐANG LIVE',d.last?.totalLive??0],['LIVE hiệp 2 (trước 85′)',rows.filter(visibleLive).length],['Đã phân tích',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length],['AI LIVE RUNG',rows.filter(x=>visibleLive(x)&&hasExperimental(x)).length]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
  $('time').textContent='Dữ liệu quét máy chủ: '+(d.last?.at?new Date(d.last.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Trang cập nhật mỗi 15 giây; trận ưu tiên dùng phút API xác minh mỗi vòng 30 giây, trận thường có thể ước tính.';draw();
  }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message;}}

@@ -177,10 +177,47 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 #noStatsAlerts .ai-metric small,#noStatsAlerts .stat small,#noStatsAlerts .hint{color:#d2d9dc!important}
 #noStatsAlertRows .match-card,#noStatsAlertRows article{background:#2c3c44!important;background-image:none!important}
 </style><style id="tt-telegram-signal-pulse">
-@keyframes ttSignalPulse{0%,100%{opacity:1;filter:brightness(1)}50%{opacity:.65;filter:brightness(1.4)}}
-.bottom .rung.tt-alert-pulse{animation:ttSignalPulse 1.25s ease-in-out infinite!important;font-weight:800!important}
-.bottom .rung.tt-biggg{background:#66501e!important;color:#ffe08b!important;border:1px solid #dcb857!important}
-@media(prefers-reduced-motion:reduce){.bottom .rung.tt-alert-pulse{animation:none!important}}
-</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard#audit-list">Trận live</a><a href="/dashboard#audit-list">Lịch sử</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet" class="tt-current">RUNG BET</a><a href="/ai-no-stats">AI THỬ NGHIỆM</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><h1>Trận đã gửi cảnh báo · Đang LIVE</h1><p class="sub">Chỉ hiển thị trận đã gửi Telegram và chưa xác nhận FT. Tự cập nhật mỗi 20 giây.</p><div class="summary-strip" aria-label="Thống kê cảnh báo LIVE"><div class="summary-cell sent"><small>♧ ĐÃ GỬI CẢNH BÁO</small><strong id="sentCount">—</strong></div><div class="summary-cell"><small>TRẬN ĐANG LIVE</small><strong id="liveCount">—</strong></div><div class="summary-cell"><small>CẬP NHẬT</small><strong id="updateTime">—</strong></div></div><div id="status">Đang tải…</div><div id="grid" class="grid"></div></main><script>
-const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));async function load(){try{const r=await fetch('/api/rung-bet',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();const matches=Array.isArray(d.records)?d.records:[];document.getElementById('sentCount').textContent=matches.length;document.getElementById('liveCount').textContent=matches.length;document.getElementById('updateTime').textContent=new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});document.getElementById('status').textContent='Đang theo dõi '+matches.length+' trận · '+new Date().toLocaleTimeString('vi-VN');document.getElementById('grid').innerHTML=matches.map(x=>`<article class="card"><div class="top"><span class="league">${esc(x.league)}</span><span class="minute">${esc(x.minute)}′</span></div><div class="teams">${esc(x.home)}<div class="score">${esc(x.score)}</div><div class="sent-score">Lúc gửi: ${esc(x.scoreAtAlert||x.score)} · LIVE: ${esc(x.score)}</div>${esc(x.away)}</div><div class="bottom"><span>CÒN BÀN THẮNG</span><span class="rung tt-alert-pulse ${esc(x.alertLabel||'RUNG BET')==='BIGGG BET'?'tt-biggg':''}">${esc(x.alertLabel||'RUNG BET')}</span></div></article>`).join('')||'<div class="empty">Hiện chưa có trận đã gửi cảnh báo đang LIVE.</div>';}catch(e){document.getElementById('status').textContent='Không tải được dữ liệu: '+e.message;}}load();setInterval(load,20000);
+/* High-contrast RUNG BET signals. Presentation only; no change to alert logic. */
+@keyframes ttBetFlash {
+  0%,100% {background:#12b94b;box-shadow:0 0 0 2px #8affb3,0 0 12px 3px #12b94b,0 0 24px #12b94b88;transform:scale(1)}
+  50% {background:#5cff86;box-shadow:0 0 0 3px #d9ffe6,0 0 24px 7px #20ed65,0 0 38px #20ed65b0;transform:scale(1.035)}
+}
+@keyframes ttBigFlash {
+  0%,100% {background:#e80035;box-shadow:0 0 0 2px #ff8293,0 0 14px 4px #ff1744,0 0 26px #ff174488;transform:scale(1)}
+  50% {background:#ff3657;box-shadow:0 0 0 3px #ffe1e5,0 0 26px 8px #ff1744,0 0 42px #ff1744b0;transform:scale(1.035)}
+}
+@keyframes ttBetCardGlow {
+  0%,100% {border-color:#16cb58;box-shadow:0 0 0 1px #16cb58,0 0 10px #16cb5870}
+  50% {border-color:#8affb3;box-shadow:0 0 0 2px #8affb3,0 0 24px #16cb58b8}
+}
+@keyframes ttBigCardGlow {
+  0%,100% {border-color:#ff335a;box-shadow:0 0 0 1px #ff335a,0 0 12px #ff174477}
+  50% {border-color:#ff8ea1;box-shadow:0 0 0 2px #ff8ea1,0 0 26px #ff1744c9}
+}
+body.tt-unified .bottom .rung.tt-alert-pulse {
+  display:flex!important;align-items:center!important;justify-content:center!important;
+  background:#12b94b!important;color:#071d10!important;border:2px solid #c4ffdb!important;
+  border-radius:7px!important;font-size:clamp(12px,1.05vw,15px)!important;
+  font-weight:1000!important;letter-spacing:.35px!important;min-height:43px!important;
+  text-shadow:none!important;opacity:1!important;filter:none!important;
+  animation:ttBetFlash .85s ease-in-out infinite!important;isolation:isolate;
+}
+body.tt-unified .bottom .rung.tt-alert-pulse.tt-biggg {
+  background:#ed0038!important;color:#fff!important;border-color:#ffe0e5!important;
+  text-shadow:0 1px 2px #760017!important;
+  animation:ttBigFlash .75s ease-in-out infinite!important;
+}
+body.tt-unified .card.tt-bet-card {animation:ttBetCardGlow 1.25s ease-in-out infinite!important}
+body.tt-unified .card.tt-biggg-card {animation:ttBigCardGlow 1.1s ease-in-out infinite!important}
+body.tt-unified .card.tt-bet-card,body.tt-unified .card.tt-biggg-card {border-width:2px!important;overflow:visible!important}
+@media(prefers-reduced-motion:reduce){
+  body.tt-unified .bottom .rung.tt-alert-pulse,body.tt-unified .card.tt-bet-card,body.tt-unified .card.tt-biggg-card{animation:none!important}
+  body.tt-unified .card.tt-bet-card{border-color:#16cb58!important}
+  body.tt-unified .card.tt-biggg-card{border-color:#ff1744!important}
+}
+</style><style id="tt-rung-team-names-gold-20261028">
+body.tt-unified .card .teams .tt-team-name{color:#FFD54A!important;font-weight:900!important;text-shadow:0 1px 6px rgba(255,213,74,.3)!important;display:block;overflow-wrap:anywhere}
+body.tt-unified .card .teams .score{color:#FFFFFF!important;font-weight:900!important}
+</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet" class="tt-current">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><h1>Trận đã gửi cảnh báo · Đang LIVE</h1><p class="sub">Chỉ hiển thị trận đã gửi Telegram và chưa xác nhận FT. Tự cập nhật mỗi 20 giây.</p><div class="summary-strip" aria-label="Thống kê cảnh báo LIVE"><div class="summary-cell sent"><small>♧ ĐÃ GỬI CẢNH BÁO</small><strong id="sentCount">—</strong></div><div class="summary-cell"><small>TRẬN ĐANG LIVE</small><strong id="liveCount">—</strong></div><div class="summary-cell"><small>CẬP NHẬT</small><strong id="updateTime">—</strong></div></div><div id="status">Đang tải…</div><div id="grid" class="grid"></div></main><script>
+const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));async function load(){try{const r=await fetch('/api/rung-bet',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();const matches=Array.isArray(d.records)?d.records:[];document.getElementById('sentCount').textContent=matches.length;document.getElementById('liveCount').textContent=matches.length;document.getElementById('updateTime').textContent=new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit'});document.getElementById('status').textContent='Đang theo dõi '+matches.length+' trận · '+new Date().toLocaleTimeString('vi-VN');document.getElementById('grid').innerHTML=matches.map(x=>`<article class="card ${String(x.alertLabel||'RUNG BET')==='BIGGG BET'?'tt-biggg-card':'tt-bet-card'}"><div class="top"><span class="league">${esc(x.league)}</span><span class="minute">${esc(x.minute)}′</span></div><div class="teams"><span class="tt-team-name">${esc(x.home)}</span><div class="score">${esc(x.score)}</div><div class="sent-score">Lúc gửi: ${esc(x.scoreAtAlert||x.score)} · LIVE: ${esc(x.score)}</div><span class="tt-team-name">${esc(x.away)}</span></div><div class="bottom"><span>CÒN BÀN THẮNG</span><span class="rung tt-alert-pulse ${esc(x.alertLabel||'RUNG BET')==='BIGGG BET'?'tt-biggg':''}">${esc(x.alertLabel||'RUNG BET')}</span></div></article>`).join('')||'<div class="empty">Hiện chưa có trận đã gửi cảnh báo đang LIVE.</div>';}catch(e){document.getElementById('status').textContent='Không tải được dữ liệu: '+e.message;}}load();setInterval(load,20000);
 </script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>
