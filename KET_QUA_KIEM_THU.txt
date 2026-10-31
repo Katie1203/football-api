@@ -1,0 +1,24 @@
+THAN TAI MAY MAN - BONGDALU - KET QUA KIEM THU OFFLINE
+Ngay 31/10/2026
+Nguon: THAN_TAI_FIX_ODDS_22_5S_AUDIT_PHUT_20261031(1).zip
+KHONG gop API/logic Nguon 2; live-monitor.html duoc doi chieu bo cuc.
+
+DA DAT:
+- node --check index.js
+- node test_bongdalu_patch.js
+- node test_regression_extended.js
+- node --check live-monitor_script_check.js (script tach tu HTML)
+- Phut 1H/2H, HT, du lieu thoi gian khong hop le
+- Odds minute phai khop ti so, trang thai LIVE va timestamp moi
+- Snapshot 5 giay: loi upstream khong xoa odds cu, danh dau stale
+- Chi truy van companyid=2; log dung ma nha cai
+- LIVE monitor 4 cot tren man hinh rong
+
+CHUA XAC MINH:
+- Ma companyid=2 thuc te la BET365 tren server upstream
+- HTTP live proxy khi chay tren Render, quyen truy cap, data freshness
+- Luong dau-cuoi AI LIVE RUNG -> Telegram -> FT/PostgreSQL
+- Cac trang dashboard/rung-bet/scan-history dong bo end-to-end
+- Build/startup voi cac thu vien va bien moi truong production
+
+HUONG DAN: Khong ghi de production neu chua test staging. ZIP nay chi chua index.js, live-monitor.html, tests va bao cao; khong phai toan bo du an.
