@@ -2,8 +2,6 @@
 const express = require('express');
 const axios = require('axios');
 const audit = require('./audit');
-const aiNoStats = require('./ai_no_stats');
-const aiNoStatsHistoryTrainer = require('./ai_no_stats_history_trainer');
 const scanObserver = require('./scan_observer');
 const scanControl = require('./scan_control');
 const aiGoalOddsShadow = require('./ai_goal_odds_shadow');
@@ -5685,8 +5683,8 @@ const bongdaluMatchMetadata = new Map();
 // fresh metadata from the configured Bongdalu catalog endpoint.
 try {
   const fs = require('fs');
-  const metadataPath = require('path').join(__dirname, 'bongdalu_fixture_metadata_20261030.json');
-  const bootstrap = fs.existsSync(metadataPath) ? require(metadataPath) : {}; // Optional legacy snapshot; LIVE never depends on it.
+  // Never bootstrap today's LIVE from a dated fixture snapshot.
+  const bootstrap = {};
   for (const [id, info] of Object.entries(bootstrap)) {
     if (info && info.home && info.away) bongdaluMatchMetadata.set(id, {...info, at: 0});
   }
@@ -5737,7 +5735,7 @@ function bdText(v) {
   return '';
 }
 function bdStatus(raw) {
-  // Bongdalu match-list schema: MatchState 0=NS, 1=1H, 2=2H, 3=FT.
+  // Observed Bongdalu diary schema: 0=NS, 1=first half, 2=half-time, 3=second half, -1=FT.
   // Do not interpret odds.match_status as match-list MatchState.
   const state = raw?.MatchState;
   if (state !== undefined && state !== null && state !== '') {
@@ -5785,19 +5783,21 @@ function rememberBongdaluOdds(matchId,rows,now=Date.now(),fetchSucceeded=true) {
   const previous=bongdaluOddsHistory.get(key)||[];
   // A failed/empty upstream response is not a real market movement. Do not
   // overwrite the latest valid odds with an artificial zero-odds snapshot.
-  if(fetchSucceeded && valid.length) {
-    const signature=JSON.stringify(valid.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score,x.provider_time]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
+  // Never extend a stale bookmaker quote into a new 5-second market sample.
+  const fresh=valid.filter(x=>{const t=Number(x.provider_time);return Number.isFinite(t)&&t>=1e9&&Math.abs(now-t*1000)<=120000;});
+  if(fetchSucceeded && fresh.length) {
+    const signature=JSON.stringify(fresh.map(x=>[x.company_id,x.market,x.time_of_the_match,x.v1,x.line,x.v2,x.match_status,x.score,x.provider_time]).sort((a,b)=>String(a[0]).localeCompare(String(b[0]))));
     // Record EVERY successful 5-second sample, including unchanged prices.
     // A trend window needs a real sampling clock, not only change events.
     const changed=!previous.length||previous[previous.length-1].signature!==signature;
-    previous.push({at:now,signature,rows:valid,changed});
+    previous.push({at:now,signature,rows:fresh,changed});
   }
   while(previous.length&&now-previous[0].at>10*60*1000)previous.shift();
   if(previous.length)bongdaluOddsHistory.set(key,previous);
   else bongdaluOddsHistory.delete(key);
   const latest=previous[previous.length-1];
   // stale=true means display/history only: NEVER use old odds as a new signal.
-  return {rows:latest?.rows||[],stale:!fetchSucceeded||!valid.length,
+  return {rows:latest?.rows||[],stale:!fetchSucceeded||!fresh.length,
     lastReceivedAt:latest?.at||null,history:Object.fromEntries(BONGDALU_ODDS_HISTORY_WINDOWS.map(min=>
       [`${min}m`,previous.filter(x=>now-x.at<=min*60000).map(x=>({at:x.at,rows:x.rows}))]))};
 }
@@ -5845,6 +5845,9 @@ async function fetchBongdaluLiveOdds(matchIds) {
   }
   const now=Date.now();
   const anySuccess=results.some(r=>r.ok);
+  const freshMarketIds=new Set();
+  for(const [id, items] of grouped)if(items.some(r=>{const t=Number(r.provider_time);return Number.isFinite(t)&&t>=1e9&&Math.abs(now-t*1000)<=120000;}))freshMarketIds.add(id);
+  console.log(`[BONGDALU ODDS FRESHNESS] matched=${grouped.size} | freshProviderMarket=${freshMarketIds.size} | staleOrMissingProviderTime=${grouped.size-freshMarketIds.size}`);
   // A bookmaker response can include fixtures that are not in the diary LIVE set.
   // Inspect actual market timestamps/status, not opaque ID similarity.
   if(anySuccess && grouped.size) {
@@ -5862,7 +5865,7 @@ async function fetchBongdaluLiveOdds(matchIds) {
   if(unmatchedIds.size) console.log(`[BONGDALU ODDS ID AUDIT] activeSample=${JSON.stringify([...wanted].slice(0,5))} | oddsSample=${JSON.stringify([...unmatchedIds.keys()].slice(0,5))} | matchedSample=${JSON.stringify([...grouped.keys()].slice(0,5))} | note=unmatched-odds-may-be-other-fixtures`);
   // Never guess a fixture from near-matching opaque IDs; report actual coverage.
   if(anySuccess) console.log(`[BONGDALU ODDS COVERAGE] liveFixtures=${wanted.size} | bookmakerOUFixtures=${allOuIds.size} | liveWithOU=${grouped.size} | liveWithoutOU=${wanted.size-grouped.size}`);
-  if(!grouped.size)console.warn('[BONGDALU ODDS UNAVAILABLE] No LIVE OU rows matched active native fixture IDs; AI LIVE RUNG must not infer market signals from missing odds.');
+  if(!grouped.size)console.warn(anySuccess ? '[BONGDALU ODDS UNAVAILABLE] No LIVE OU rows matched active native fixture IDs; AI LIVE RUNG must not infer market signals from missing odds.' : '[BONGDALU ODDS FETCH FAILED] Bookmaker 22 unavailable; previous odds marked stale, no market signals.');
   return grouped;
 }
 function bongdaluMatchPayloadDiagnostic(payload) {
@@ -6252,7 +6255,7 @@ oddsShadowSamples=readShadowFile(oddsShadowStore);
 try { oddsShadowModel=aiGoalOddsShadow.train(oddsShadowSamples); }
 catch(e) {console.warn('[ODDS SHADOW TRAIN]',e.message);}
 
-// Shared Odds fetch queue: prioritized AI NO-STATS fixtures are never excluded by
+// Shared Odds fetch queue: eligible fixtures are never excluded by
 // a fixed per-scan selection. Bound API requests over a rolling minute instead.
 const ODDS_CACHE_MS = 120000;
 const ODDS_REQUESTS_PER_MINUTE = Math.max(1, Math.min(120, Number(process.env.ODDS_REQUESTS_PER_MINUTE) || 30));
@@ -6279,9 +6282,7 @@ function resolveOddsFixture(match) {
 }
 function oddsHighPriority(match) {
   const sources=[match,...(match.crossSourceMatches||[])];
-  return [...noStatsPriorityMatches.values()].some(state=>
-    sources.some(c=>c.source===state.match.source && String(c.id)===String(state.match.id)) &&
-    Number(state.match.minute??calculateExactMinute(state.match.raw))>=65);
+  return false; // Retired legacy priority queue; LIVE RUNG samples company 22 independently.
 }
 function planOddsScan(matches) {
   // The worker is shared by the ordinary scan and the 30-second priority scan.
@@ -6411,7 +6412,6 @@ async function auditAiGoalOddsFt() {
           row.outcome=total>row.observedGoals?1:0;
           row.evaluation=row.outcome===1?'WIN':'LOSS';
           row.ftScore=`${flash.h}-${flash.a}`;row.settledAt=new Date().toISOString();changed=true;
-          noStatsSettledByFixture.set(String(row.fixtureId),row);
           continue;
         }
         if(!['FT','AET','PEN'].includes(status))continue;
@@ -6433,743 +6433,6 @@ async function auditAiGoalOddsFt() {
   } finally {oddsFtAuditBusy=false;}
 }
 setInterval(()=>auditAiGoalOddsFt().catch(e=>console.warn('[ODDS SHADOW FT]',e.message)),10*60*1000);
-// AI NO-STATS: separate observation-only pipeline, never used by Rule/AI Goal/Telegram.
-const noStatsRecords = new Map();
-const noStatsStore=process.env.NO_STATS_SHADOW_STORE || './ai_no_stats_ft_samples.json';
-const noStatsSamples=readShadowFile(noStatsStore);
-const noStatsSettledByFixture=new Map(noStatsSamples.filter(x=>x.outcome!==null).map(x=>[String(x.fixtureId),x]));
-function persistNoStatsShadow(){writeShadowFile(noStatsStore,noStatsSamples);}
-let noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
-
-const noStatsEventCache = new Map();
-const noStatsHistoryCache = new Map();
-const NO_STATS_EVENT_TTL = 3 * 60 * 1000;
-const NO_STATS_HISTORY_TTL = 6 * 60 * 60 * 1000;
-let noStatsScanBudget = {events: 0, history: 0};
-async function noStatsEvents(match) {
-  const candidates = [match, ...(match.crossSourceMatches || [])];
-  for (const candidate of candidates) {
-    const events = aiNoStats.collectEvents(candidate.raw);
-    if (events.length) return {events, source: candidate.source + ':live'};
-  }
-  if (match.source==='flashscore' && apiSportsQuotaExhausted()) {
-    const key='flash:'+match.id,cached=noStatsEventCache.get(key);
-    if(cached && Date.now()-cached.at<NO_STATS_EVENT_TTL)return cached.value;
-    if(noStatsScanBudget.events>=5)return {events:[],source:null};
-    noStatsScanBudget.events++;
-    try {
-      const payload=await flashGet('/api/flashscore/v2/matches/match/summary',{match_id:match.id});
-      const groups=Array.isArray(payload)?payload:(payload?.summary||payload?.events||[]);
-      const events=[];
-      for(const group of groups){
-        if(/penalt(?:y|ies) shootout/i.test(String(group?.name||group?.description||'')))continue;
-        const entries=Array.isArray(group?.events)?group.events:Array.isArray(group?.incidents)?group.incidents:[group];
-        for(const item of entries){
-          const minute=parseInt(String(item?.minutes??item?.minute??''),10);
-          const labels=[item?.description,item?.type,...(item?.players||[]).map(p=>p?.type)].join(' ');
-          const kind=/red.?card|second yellow/i.test(labels)?'red_card':/\bvar\b/i.test(labels)?'var':/goal|own goal/i.test(labels)?'goal':null;
-          if(kind&&Number.isInteger(minute)&&minute>=0&&minute<=90)events.push({minute,kind});
-        }
-      }
-      const value={events,source:'flashscore:summary'};
-      noStatsEventCache.set(key,{at:Date.now(),value});return value;
-    }catch(e){console.warn('[FLASH SUMMARY]',match.id,e.message);return {events:[],source:null};}
-  }
-  const fixture = candidates.find(c => c.source === 'apisports' && c.id);
-  if (!fixture || !APISPORTS_KEY) return {events: [], source: null};
-  const key = String(fixture.id), cached = noStatsEventCache.get(key);
-  if (cached && Date.now() - cached.at < NO_STATS_EVENT_TTL) return cached.value;
-  if (noStatsScanBudget.events >= 5) return {events: [], source: null};
-  noStatsScanBudget.events++;
-  try {
-    const payload = await apiSportsGet('/fixtures/events', {fixture: key});
-    const value = {events: aiNoStats.collectEvents(payload), source: 'apisports:events'};
-    noStatsEventCache.set(key, {at: Date.now(), value});
-    return value;
-  } catch (e) {
-    console.warn(`[AI NO-STATS EVENTS] ${key} | ${e.message}`);
-    noStatsEventCache.set(key, {at: Date.now(), value: {events: [], source: null}});
-    return {events: [], source: null};
-  }
-}
-// FlashScore team/results returns tournament groups containing matches[], not a flat fixture list.
-// This provider's results endpoint may omit match_status entirely for completed games.
-const FLASH_HISTORY_SCAN_LIMIT = 80;
-function flashHistoryRows(payload) {
-  const root = Array.isArray(payload) ? payload : (payload?.matches || payload?.results || payload?.items || payload?.data || []);
-  if (!Array.isArray(root)) return [];
-  return root.flatMap(group => Array.isArray(group?.matches) ? group.matches : [group]);
-}
-function normalizeFlashHistory(payload, teamId, nowSeconds = Date.now() / 1000) {
-  const seen = new Set();
-  const fixtures = [];
-  for (const r of flashHistoryRows(payload)) {
-    const homeId = r?.home_team?.team_id, awayId = r?.away_team?.team_id;
-    const h = r?.scores?.home ?? r?.home_score, a = r?.scores?.away ?? r?.away_score;
-    const ts = Number(r?.timestamp ?? r?.match_status?.timestamp);
-    const status = r?.match_status || {};
-    const stage = String(status.stage ?? r?.status ?? '').toUpperCase();
-    // A known unfinished game must never enter the recent-results sample.
-    if (status.is_finished === false || status.is_in_progress === true ||
-        /^(LIVE|HT|1ST_HALF|2ND_HALF|SCHEDULED|NOT_STARTED|POSTPONED|CANCELLED)$/.test(stage)) continue;
-    // If status is omitted, only accept a past fixture from the *results* endpoint.
-    if (status.is_finished !== true && !/^(FT|AET|PEN|FINISHED|AFTER_EXTRA_TIME)$/.test(stage) &&
-        !(Number.isFinite(ts) && ts > 0 && ts < nowSeconds - 2 * 3600)) continue;
-    if (homeId == null || awayId == null ||
-        (String(homeId) !== String(teamId) && String(awayId) !== String(teamId)) ||
-        h == null || a == null || !Number.isInteger(Number(h)) || !Number.isInteger(Number(a)) ||
-        Number(h) < 0 || Number(a) < 0) continue;
-    const id = String(r?.match_id || `${homeId}:${awayId}:${ts}`);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    fixtures.push({timestamp:ts || 0,fixture:{status:{short:'FT'}},
-      teams:{home:{id:homeId},away:{id:awayId}},goals:{home:Number(h),away:Number(a)}});
-  }
-  return fixtures.sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
-}
-async function flashTeamHistory(teamId) {
-  if (!teamId) return null;
-  const key='flash:'+teamId, cached=noStatsHistoryCache.get(key);
-  if(cached && Date.now()-cached.at<NO_STATS_HISTORY_TTL)return cached.value;
-  if(noStatsScanBudget.history>=FLASH_HISTORY_SCAN_LIMIT) {
-    console.warn(`[FLASH HISTORY BUDGET] limit=${FLASH_HISTORY_SCAN_LIMIT} team=${teamId}`);
-    return null;
-  }
-  noStatsScanBudget.history++;
-  try {
-    const data=await flashGet('/api/flashscore/v2/teams/results',{team_id:teamId,page:1});
-    const rows=flashHistoryRows(data);
-    const fixtures=normalizeFlashHistory(data,teamId);
-    const value=aiNoStats.historyFromFixtures(fixtures,teamId);
-    console.log(`[FLASH TEAM HISTORY] team=${teamId} rows=${rows.length} valid=${fixtures.length} sample=${value?.sample||0}`);
-    // Do not cache an incomplete sample for six hours; allow recovery on a later scan.
-    if(value?.sample>=3)noStatsHistoryCache.set(key,{at:Date.now(),value});
-    return value;
-  }catch(e){console.warn('[FLASH TEAM RESULTS]',teamId,e.message);return null;}
-}
-async function noStatsHistory(teamId) {
-  if (!teamId || !APISPORTS_KEY) return null;
-  const key = String(teamId), cached = noStatsHistoryCache.get(key);
-  if (cached && Date.now() - cached.at < NO_STATS_HISTORY_TTL) return cached.value;
-  if (noStatsScanBudget.history >= 4) return null;
-  noStatsScanBudget.history++;
-  try {
-    const data = await apiSportsGet('/fixtures', {team: key, last: 5});
-    const value = aiNoStats.historyFromFixtures(data?.response, key);
-    noStatsHistoryCache.set(key, {at: Date.now(), value});
-    return value;
-  } catch (e) {
-    console.warn(`[AI NO-STATS HISTORY] team=${key} | ${e.message}`);
-    noStatsHistoryCache.set(key, {at: Date.now(), value: null});
-    return null;
-  }
-}
-// Independent AI NO-STATS Telegram alerts. Do not reuse or mutate V4 alertState.
-const NO_STATS_ALERT_MINUTE_MIN = 65;
-const NO_STATS_ALERT_MINUTE_MAX = 88;
-const NO_STATS_ALERT_EXPECTED_GOALS = 0.90;
-// AI NO-STATS EARLY GOAL (confirmed goal event).
-const EARLY_GOAL_BASE_MIN = 60;
-const EARLY_GOAL_BASE_MAX = 64;
-const EARLY_GOAL_GOAL_MAX = 70;
-// Priority observation only: activate once after minute 60 when lambda > 0.90.
-// Never reset on a subsequent lambda decrease; expiry is 88' or FT.
-const NO_STATS_PRIORITY_INTERVAL_MS = 30 * 1000;
-const noStatsPriorityMatches = new Map();
-let noStatsPriorityRunning = false;
-function noStatsPriorityKey(match) {
-  return `${match.source}:${match.id}`;
-}
-function trackNoStatsPriority(match, record) {
-  const minute=Number(record.minute), lambda=Number(record.expectedRemainingGoals);
-  if (!Number.isFinite(minute) || minute < 60 || minute > 88) return;
-  const key=noStatsPriorityKey(match);
-  if (noStatsPriorityMatches.has(key)) {
-    noStatsPriorityMatches.get(key).match=match;
-  } else {
-    // Restore a previously recorded qualifying signal after a server restart,
-    // even if the current lambda has fallen below 0.90.
-    const prior=noStatsObservations.find(x=>Number(x.minute)>=60 && Number(x.minute)<65 &&
-      Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS &&
-      ((record.fixtureId && String(x.fixtureId||'')===String(record.fixtureId)) ||
-       (!record.fixtureId && x.key && x.key.startsWith(`${record.key}:`))));
-    if (!prior && !(Number.isFinite(lambda) && lambda > NO_STATS_ALERT_EXPECTED_GOALS)) return;
-    noStatsPriorityMatches.set(key, {match, activatedAt:prior?.observedAt||new Date().toISOString(),
-      baselineMinute:prior?.minute??minute, baselineLambda:prior?.expectedRemainingGoals??lambda,
-      baselineScore:prior?.score??record.score});
-    console.log(`[AI PRIORITY 30S] ACTIVATE ${record.home} vs ${record.away} | ${minute}' | baseline=${prior?.expectedRemainingGoals??lambda}`);
-  }
-}
-const noStatsAlertStore = process.env.NO_STATS_ALERT_STORE || './ai_no_stats_alert_sent.json';
-const noStatsSentKeys = new Set(readShadowFile(noStatsAlertStore).filter(x => typeof x === 'string'));
-const noStatsSendingKeys = new Set();
-// Persist only successfully sent AI NO-STATS alerts, separately from shadow observations.
-const noStatsAlertAuditStore=process.env.NO_STATS_ALERT_AUDIT_STORE || './ai_no_stats_alert_audit.json';
-const noStatsAlertAudit=readShadowFile(noStatsAlertAuditStore).filter(x=>x&&x.key);
-let noStatsAlertReady=null;
-async function ensureNoStatsAlertReady(){
- if(noStatsAlertReady)return noStatsAlertReady;
- noStatsAlertReady=(async()=>{
-   const remote=await audit.loadNoStatsAlertRecords();
-   const merged=new Map(remote.filter(x=>x?.key).map(x=>[x.key,x]));
-   for(const row of noStatsAlertAudit)if(!merged.has(row.key)){
-     merged.set(row.key,row);
-     await audit.saveNoStatsAlertRecord(row); // migrate existing local alerts to PostgreSQL
-   }
-   noStatsAlertAudit.splice(0,noStatsAlertAudit.length,...merged.values());
-   for(const row of noStatsAlertAudit)noStatsSentKeys.add(row.key);
-   writeShadowFile(noStatsAlertStore,[...noStatsSentKeys]);
-   writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
-   console.log(`[AI NO-STATS STORAGE] restored ${noStatsAlertAudit.length} alerts`);
- })().catch(e=>{noStatsAlertReady=null;console.error('[AI NO-STATS STORAGE]',e.message);throw e;});
- return noStatsAlertReady;
-}
-let noStatsAlertWriteQueue=Promise.resolve();
-function persistNoStatsAlertAudit(){
- writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
- const snapshot=noStatsAlertAudit.map(x=>({...x}));
- noStatsAlertWriteQueue=noStatsAlertWriteQueue.then(async()=>{
-   for(const row of snapshot)await audit.saveNoStatsAlertRecord(row);
- }).catch(e=>console.error('[AI NO-STATS PERSIST]',e.message));
- return noStatsAlertWriteQueue;
-}
-// Retired AI observation bootstrap disabled.
-// Track score progression after the original AI NO-STATS Telegram alert.
-// A LIVE win is provisional; only the FT audit settles WIN/LOSS.
-function updateNoStatsAlertLiveScore(record) {
-  const key=noStatsAlertKey(record);
-  const row=noStatsAlertAudit.find(x=>x.key===key);
-  if(!row || row.evaluation!=='PENDING_FT') return;
-  if(row.fixtureId && record.fixtureId && String(row.fixtureId)!==String(record.fixtureId)) return;
-  const match=String(record.score||'').trim().match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-  if(!match) return;
-  const goals=Number(match[1])+Number(match[2]);
-  const previous=String(row.liveScore||row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-  const previousGoals=previous?Number(previous[1])+Number(previous[2]):-1;
-  if(goals<previousGoals) return; // Ignore stale cross-source snapshots.
-  const next=`${match[1]}-${match[2]}`;
-  if(row.liveScore===next && row.liveMinute===record.minute) return;
-  row.liveScore=next;
-  row.liveMinute=record.minute;
-  row.liveUpdatedAt=new Date().toISOString();
-  row.liveGoalsAfterAlert=Number.isFinite(row.observedGoals)?Math.max(0,goals-row.observedGoals):null;
-  row.liveResult=row.liveGoalsAfterAlert==null?'PENDING_LIVE':row.liveGoalsAfterAlert>0?'LIVE_WIN':'LIVE_WAIT';
-  persistNoStatsAlertAudit();
-}
-// Explicit Dashboard deletion: remove audit/statistical records, retain sent-key anti-duplicate guard.
-async function deleteNoStatsDashboardAlerts(keys){
- await ensureNoStatsAlertReady();
- const selected=new Set(keys);
- const found=noStatsAlertAudit.filter(r=>selected.has(r.key));
- if(!found.length)return 0;
- // Wait for in-flight FT audit writes before deleting persistent records.
- await noStatsAlertWriteQueue;
- await audit.deleteNoStatsAlertRecords(found.map(r=>r.key));
- for(const row of found){const i=noStatsAlertAudit.findIndex(r=>r.key===row.key);if(i>=0)noStatsAlertAudit.splice(i,1);}
- writeShadowFile(noStatsAlertAuditStore,noStatsAlertAudit);
- return found.length;
-}
-function noStatsAlertView(){
- const records=noStatsAlertAudit.slice().reverse();
- const wins=records.filter(x=>x.evaluation==='WIN').length;
- const losses=records.filter(x=>x.evaluation==='LOSS').length;
- const pending=records.filter(x=>x.evaluation==='PENDING_FT').length;
- const voids=records.filter(x=>x.evaluation==='VOID').length;
- const overDecided=records.filter(x=>x.overResult==='WIN'||x.overResult==='LOSS');
- const overWins=overDecided.filter(x=>x.overResult==='WIN').length;
- const over={wins:overWins,losses:overDecided.length-overWins,
-  push:records.filter(x=>x.overResult==='PUSH').length,
-  noLine:records.filter(x=>x.overLine==null).length,
-  rate:overDecided.length?+(100*overWins/overDecided.length).toFixed(1):null};
- const goalRate=wins+losses?+(100*wins/(wins+losses)).toFixed(1):null;
- return {ok:true,source:'AI NO-STATS',summary:{sent:records.length,wins,losses,pending,voids,
-   settled:wins+losses,winRate:goalRate,over},
-   byAlert:[{number:1,sent:records.length,settled:wins+losses,goal:{wins,losses,rate:goalRate},over}],records};
-}
-function noStatsLiveView(){return [...noStatsRecords.values()].filter(x=>{
- const m=Number(x.minute);return Number.isFinite(m)&&m>=46&&m<=88&&Date.now()-Date.parse(x.updatedAt)<15*60*1000;
- }).map(x=>({fixtureId:x.fixtureId,home:x.home,away:x.away,league:x.league,
-  minute:x.minute,probability:x.probability,expectedRemainingGoals:x.expectedRemainingGoals,
-  at:x.updatedAt,alertSent:noStatsAlertAudit.some(a=>a.key===noStatsAlertKey(x))}));}
-
-function noStatsAlertKey(record) {
-  // Team identity is stable across provider IDs; date avoids collisions on future fixtures.
-  const day = String(record.updatedAt || '').slice(0, 10);
-  return `${day}:${createMatchKey(record.home, record.away)}`;
-}
-function earlyGoalCandidate(record) {
-  const minute=Number(record.minute);
-  if(!Number.isFinite(minute)||minute<65||minute>EARLY_GOAL_GOAL_MAX||!record.fixtureId)return null;
-  const goalsNow=String(record.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-  if(!goalsNow)return null;
-  const totalNow=Number(goalsNow[1])+Number(goalsNow[2]);
-  const baselines=noStatsObservations.filter(x=>String(x.fixtureId||'')===String(record.fixtureId)&&
-    Number(x.minute)>=EARLY_GOAL_BASE_MIN&&Number(x.minute)<=EARLY_GOAL_BASE_MAX&&
-    Number(x.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS&&x.observedAt);
-  for(const baseline of baselines.sort((a,b)=>Number(b.minute)-Number(a.minute))){
-    const old=String(baseline.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-    if(!old||totalNow<=Number(old[1])+Number(old[2]))continue;
-    // Goal time must be verified from source events, not guessed from score alone.
-    const goals=(record.earlyGoalEvents||[]).filter(e=>e.kind==='goal'&&
-      Number(e.minute)>Number(baseline.minute)&&Number(e.minute)<=EARLY_GOAL_GOAL_MAX&&
-      Number(e.minute)<=minute);
-    if(!goals.length)continue;
-    const goalMinute=Math.max(...goals.map(e=>Number(e.minute)));
-    // BIGGG BET requires a verified LIVE Over price strictly greater than 1.50.
-    // Pre-goal lambda is historical evidence only, not the current forecast.
-    const overOdds=record.bigggOddsValid===true ? Number(record.bigggOverOdds) : NaN;
-    if(!Number.isFinite(overOdds)||overOdds<=1.50)continue;
-    return {baselineMinute:Number(baseline.minute),baselineLambda:Number(baseline.expectedRemainingGoals),
-      baselineScore:baseline.score,goalMinute,
-      overOdds,overLine:record.bigggOverLine};
-  }
-  return null;
-}
-async function maybeSendNoStatsAlert(record) {
-  // AI THỬ NGHIỆM remains comparison-only; AI LIVE exclusively owns Telegram.
-  return false;
-  if(scanControl.isPaused())return false;
-  // Storage errors must never block a qualifying Telegram alert.
-  try { await ensureNoStatsAlertReady(); } catch(e) { console.warn('[AI NO-STATS STORAGE] Telegram continues:',e.message); }
-  const minute = Number(record.minute);
-  const lambda = Number(record.expectedRemainingGoals);
-  const earlyGoal=earlyGoalCandidate(record); // Independent of post-goal lambda.
-  if (!Number.isFinite(minute) || minute < NO_STATS_ALERT_MINUTE_MIN ||
-      minute > NO_STATS_ALERT_MINUTE_MAX || !Number.isFinite(lambda) ||
-      (lambda < NO_STATS_ALERT_EXPECTED_GOALS && !earlyGoal)) return false;
-  // Ordinary alerts at 65–88 require current lambda strictly > 0.95,
-  // regardless of LIVE Odds. Early GOAL keeps its independent exception.
-  if (!earlyGoal && minute >= 65 && minute <= 88 && lambda <= 0.95) return false;
-  // Odds gate affects SENDING only. Each scan still records fresh AI evidence,
-  // including scores/goals while odds are below threshold; never reuse a stale
-  // pre-goal probability as the current probability after a goal.
-  const liveOverOdds = record.bigggOddsValid === true ? Number(record.bigggOverOdds) : NaN;
-  const hasLiveOverOdds = Number.isFinite(liveOverOdds) && liveOverOdds > 1;
-  const isLowLambda = !earlyGoal && lambda < 1.5;
-  // BIGGG BET: strictly >1.50, verified. BET NHE TAY: >=1.50 if available,
-  // or allow unavailable odds. Other alerts retain the existing >=1.50 gate.
-  // Additional gate ONLY for qualifying AI signals from minute 65 onward.
-  // All other alert types and existing odds rules remain unchanged.
-  const qualifyingFrom65 = minute >= 65 && lambda > 0.95;
-  // From minute 65: missing/unavailable Odds is NOT a WAIT_ODDS condition.
-  // Only a retrieved, verified Over price below 1.50 blocks the ordinary alert.
-  // Early GOAL / BIGGG BET continues to require a verified price > 1.50.
-  const oddsAllowed = earlyGoal ? (hasLiveOverOdds && liveOverOdds > 1.50)
-    : qualifyingFrom65 ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
-    : isLowLambda ? (!hasLiveOverOdds || liveOverOdds >= 1.50)
-    : (hasLiveOverOdds && liveOverOdds >= 1.50);
-  if (!oddsAllowed) {
-    record.oddsGateState='WAIT_ODDS';
-    console.log(`[AI NO-STATS ODDS WAIT] ${record.home} vs ${record.away} | ${minute}' | Over=${hasLiveOverOdds ? liveOverOdds : 'UNAVAILABLE'} | lambda=${lambda} | fresh AI will be rechecked next scan`);
-    return false;
-  }
-  record.oddsGateState='ELIGIBLE';
-  // Operator-only Telegram gate: original AI NO-STATS probability and lambda remain untouched.
-  if (!earlyGoal && lambda < 1.5 && !scanControl.isLowLambdaAlertsEnabled()) return false;
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) return false;
-  const key = noStatsAlertKey(record);
-  if (noStatsSentKeys.has(key) || noStatsSendingKeys.has(key)) return false;
-  if ([...alertState.values()].some(x=>Number(x.alertCount)>0&&Date.now()-Number(x.updatedAt||0)<ALERT_STATE_TTL&&
-    resolverTeamScore(x.homeName,record.home)>=.90&&resolverTeamScore(x.awayName,record.away)>=.90))return false;
-  noStatsSendingKeys.add(key);
-  try {
-    const message = [
-      `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${earlyGoal ? 'BIGGGG BET' : (lambda < 1.5 ? 'BET NHẸ TAY' : 'BET BANH NÓC')}`,
-      `🏆 ${record.league || 'Không rõ giải'}`,
-      `⚽️ ${record.home} ${record.score} ${record.away} ⏱️ Phút ${minute}`,
-      `⚽️ Diễn biến tỷ số: ${record.goalTimeline || 'Chưa có dữ liệu xác thực'}`,
-      `📈 Bàn còn kỳ vọng: ${lambda.toFixed(2)}`,
-      `🎯 Xác suất: ${record.probability == null ? 'N/A' : Number(record.probability).toFixed(1) + '%'}`
-    ].join('\n');
-    const response = await axios.post(
-      `https://api.telegram.org/bot${String(TELEGRAM_BOT_TOKEN).trim()}/sendMessage`,
-      {chat_id: TELEGRAM_CHAT_ID, text: message, disable_web_page_preview: true},
-      {timeout: 10000}
-    );
-    if (!response?.data?.ok) return false;
-    noStatsSentKeys.add(key);
-    const observation=noStatsObservations.find(x=>x.fixtureId&&String(x.fixtureId)===String(record.fixtureId)&&x.minute===minute&&x.score===record.score);
-    if(observation){observation.telegramSent=true;persistNoStatsObservations([observation]);}
-    writeShadowFile(noStatsAlertStore, [...noStatsSentKeys]);
-    if(!noStatsAlertAudit.some(x=>x.key===key)){
-      const [h,a]=String(record.score||'').split(/\s*[-–:]\s*/).map(Number);
-      noStatsAlertAudit.push({key,source:'AI NO-STATS',fixtureId:record.fixtureId||null,
-        league:record.league,home:record.home,away:record.away,minute,
-        alertType:earlyGoal?'BIGGG BET':'AI NO-STATS',alertLabel:earlyGoal?'BIGGG BET':(lambda<1.5?'BET NHẸ TAY':'BET BANH NÓC'),earlyGoal:earlyGoal||null,
-        score:record.score,observedGoals:Number.isFinite(h)&&Number.isFinite(a)?h+a:null,
-        expectedRemainingGoals:lambda,probability:record.probability,
-        sentAt:new Date().toISOString(),evaluation:'PENDING_FT',ftScore:null,
-        liveScore:record.score,liveMinute:minute,liveGoalsAfterAlert:0,liveResult:'LIVE_WAIT',
-        alertNumber:1,telegramMessageId:response.data.result?.message_id||null,
-        overLine:earlyGoal?earlyGoal.overLine:(record.oddsLive?.found===true&&Number.isFinite(Number(record.oddsLive?.line))?Number(record.oddsLive.line):null),
-        // Snapshot Odds at the exact Telegram alert; do not infer it later from FT/live data.
-        oddsAtAlertStatus:hasLiveOverOdds?'DAT_ODDS':'CHUA_LAY_DUOC_ODDS',
-        overOddsAtAlert:hasLiveOverOdds?liveOverOdds:null,
-        overLineAtAlert:hasLiveOverOdds&&Number.isFinite(Number(record.bigggOverLine))?Number(record.bigggOverLine):null,
-        overResult:'NO_LINE',
-        marketSnapshotAtAlert:record.aiLiveEnhanced?.marketStatus==='VALID' && Number.isFinite(record.aiLiveEnhanced?.marketLambda)
-          ? {...record.aiLiveEnhanced, snapshotAt:new Date().toISOString(), scoreAtAlert:record.score} : null,
-        marketFtEvaluation:'PENDING_FT'});
-      await persistNoStatsAlertAudit();
-    }
-    console.log(`[AI NO-STATS ALERT SENT] ${record.home} vs ${record.away} | ${minute}' | lambda=${lambda}`);
-    return true;
-  } catch (error) {
-    console.warn(`[AI NO-STATS ALERT ERROR] ${record.home} vs ${record.away} | ${error.message}`);
-    return false;
-  } finally {
-    noStatsSendingKeys.delete(key);
-  }
-}
-function verifiedHalfTimeGoals(match) {
-  const sources=[match.raw,...(match.crossSourceMatches||[]).map(x=>x.raw)];
-  for(const raw of sources){
-   const ht=raw?.score?.halftime||raw?.scores?.halfTime||raw?.scores?.halftime||(raw?.scores?.home_1st_half!=null&&raw?.scores?.away_1st_half!=null?{home:raw.scores.home_1st_half,away:raw.scores.away_1st_half}:null);
-   if(!ht)continue;
-   const h=ht.home??ht.homeScore?.current??ht.homeScore;
-   const a=ht.away??ht.awayScore?.current??ht.awayScore;
-   if(h===null||h===undefined||a===null||a===undefined)continue;
-   if(Number.isInteger(Number(h))&&Number.isInteger(Number(a))&&Number(h)>=0&&Number(a)>=0)
-    return {home:Number(h),away:Number(a),total:Number(h)+Number(a),source:'PROVIDER_VERIFIED'};
-  }
-  return null;
-}
-async function flashNativeFT(fixtureId) {
-  if(!apiSportsQuotaExhausted() || !fixtureId || /^\d+$/.test(String(fixtureId)))return null;
-  try {
-    const detail=await flashMatchDetails(fixtureId);
-    if(String(detail?.match_id)!==String(fixtureId) || detail?.match_status?.is_finished!==true)return null;
-    const h=Number(detail?.scores?.home),a=Number(detail?.scores?.away);
-    return Number.isInteger(h)&&Number.isInteger(a)&&h>=0&&a>=0?{h,a}:null;
-  }catch(e){console.warn('[FLASH FT DETAILS]',fixtureId,e.message);return null;}
-}
-// Historical research snapshots are not Telegram alerts and never change production V4.
-const noStatsObservationStore=process.env.NO_STATS_OBSERVATION_STORE||'./ai_no_stats_observations.json';
-const noStatsObservations=readShadowFile(noStatsObservationStore).filter(x=>x&&x.key);
-let noStatsObsWriteQueue=Promise.resolve();
-function persistNoStatsObservations(rows=noStatsObservations){
- writeShadowFile(noStatsObservationStore,noStatsObservations);
- const snapshot=rows.map(x=>({...x}));
- noStatsObsWriteQueue=noStatsObsWriteQueue.then(async()=>{
-  for(const row of snapshot)await audit.saveNoStatsObservation(row);
- }).catch(e=>console.warn('[NO-STATS OBS PERSIST]',e.message));
- return noStatsObsWriteQueue;
-}
-async function restoreNoStatsObservations(){
- try{
-  const remote=await audit.loadNoStatsObservations();
-  const merged=new Map([...noStatsObservations,...remote].filter(x=>x?.key).map(x=>[x.key,x]));
-  noStatsObservations.splice(0,noStatsObservations.length,...[...merged.values()].slice(-15000));
-  for(const row of noStatsObservations.filter(x=>!remote.some(r=>r.key===x.key)))await audit.saveNoStatsObservation(row);
-  writeShadowFile(noStatsObservationStore,noStatsObservations);
-  const firstByFixture=new Map();
-  for(const row of [...noStatsObservations].sort((a,b)=>Date.parse(a.observedAt)-Date.parse(b.observedAt))){
-   if(row.fixtureId&&[0,1].includes(row.outcome)&&!firstByFixture.has(String(row.fixtureId)))firstByFixture.set(String(row.fixtureId),row);
-  }
-  const candidate=aiNoStatsHistoryTrainer.train([...firstByFixture.values()].map(r=>({fixtureId:r.fixtureId,observedAt:r.observedAt,probability:r.baselineProbability??r.probability,outcome:r.outcome})));
-  if(candidate.ready)noStatsHistoryModel=candidate;
- }catch(e){console.warn('[NO-STATS OBS RESTORE]',e.message);}
-}
-// Retired AI observation restoration disabled.
-function recordNoStatsObservation(record){
- const key=`${record.fixtureId||record.key}:${record.minute}:${record.score}`;
- if(noStatsObservations.some(x=>x.key===key))return;
- noStatsObservations.push({key,fixtureId:record.fixtureId||null,home:record.home,away:record.away,league:record.league,
-  minute:record.minute,score:record.score,expectedRemainingGoals:record.expectedRemainingGoals,
-  probability:record.probability,baselineProbability:record.baselineProbability,model:record.probabilityModel,htGoals:record.htGoals,
-  observedAt:record.updatedAt,telegramSent:false,outcome:null,
-  aiLiveEnhanced:record.aiLiveEnhanced||null,liveStatsEvidence:record.liveStatsEvidence||null});
- if(noStatsObservations.length>15000)noStatsObservations.splice(0,noStatsObservations.length-15000);
- persistNoStatsObservations([noStatsObservations[noStatsObservations.length-1]]);
-}
-// Unified AI LIVE + MARKET research only. Never modifies production lambda or Telegram.
-// Market odds are used only when API-Sports explicitly validates a fresh LIVE quote.
-const liveMarketPrevious = new Map();
-function computeLiveMarketResearch(record, match, odds, liveStats) {
-  const baseline=Number(record.expectedRemainingGoals);
-  const stats=record.liveStatsEvidence||null;
-  const result={status:'BASELINE_ONLY',lambda:Number.isFinite(baseline)?baseline:null,
-    probability:Number.isFinite(baseline)?Number((100*(1-Math.exp(-baseline))).toFixed(2)):null,
-    liveCoverage:stats?.coverage??'UNAVAILABLE',marketStatus:record.oddsStatus||'NO_ODDS',
-    marketLambda:null,marketProbability:null,marketLine:null,overOdds:null,underOdds:null,
-    combinedLambda:Number.isFinite(baseline)?baseline:null,
-    combinedProbability:Number.isFinite(baseline)?Number((100*(1-Math.exp(-baseline))).toFixed(2)):null,
-    calculationSource:Number.isFinite(baseline)?'NO_STATS_FALLBACK':'NO_BASELINE',
-    oddsMovement:null,updatedAt:new Date().toISOString(),mode:'LIVE_MARKET_ACTIVE'};
-  // Do not treat missing LIVE stats as zero; no hand-picked multiplier.
-  if(record.oddsStatus!=='VALID'||!Array.isArray(odds?.payload?.response))return result;
-  const total=Number(match.homeScore)+Number(match.awayScore);
-  if(!Number.isFinite(total))return result;
-  // FULL_TIME Match Goals O/U at current total + 0.5 prices the next goal.
-  const line=total+0.5;
-  const markets=odds.payload.response[0]?.odds||[];
-  const market=markets.find(m=>Number(m.id)===25);
-  const values=market?.values||[];
-  const eligible=v=>v&&v.suspended===false&&Number(v.odd)>1&&Number(v.handicap)===line;
-  const over=values.find(v=>v.value==='Over'&&eligible(v));
-  const under=values.find(v=>v.value==='Under'&&eligible(v));
-  if(!over||!under)return result;
-  const overOdds=Number(over.odd),underOdds=Number(under.odd);
-  const pOver=(1/overOdds)/((1/overOdds)+(1/underOdds)); // remove two-way margin
-  if(!(pOver>0&&pOver<1))return result;
-  const marketLambda=-Math.log(1-pOver);
-  const id=String(record.fixtureId||record.key||match.id);
-  const previous=liveMarketPrevious.get(id);
-  const current={line,overOdds,underOdds,at:Date.now(),total};
-  liveMarketPrevious.set(id,current);
-  if(liveMarketPrevious.size>500)liveMarketPrevious.delete(liveMarketPrevious.keys().next().value);
-  const comparable=previous&&previous.total===total&&previous.line===line&&current.at-previous.at<=20*60*1000;
-  return {...result,status:'MARKET_OBSERVED',marketStatus:'VALID',marketLambda:Number(marketLambda.toFixed(4)),
-    marketProbability:Number((pOver*100).toFixed(2)),marketLine:line,overOdds,underOdds,
-    combinedLambda:Number(marketLambda.toFixed(4)),combinedProbability:Number((pOver*100).toFixed(2)),
-    calculationSource:'LIVE_MARKET_ODDS',
-    oddsMovement:comparable?{overOddsDelta:Number((overOdds-previous.overOdds).toFixed(3)),
-      underOddsDelta:Number((underOdds-previous.underOdds).toFixed(3)),seconds:Math.round((current.at-previous.at)/1000)}:null};
-}
-async function observeNoStats(match, minute, liveStats=null) {
-  if (match.source==='flashscore' && apiSportsQuotaExhausted()) {
-    try {
-      const detail=await flashMatchDetails(match.id);
-      if(detail?.match_id && String(detail.match_id)===String(match.id)) match.raw={...match.raw,...detail};
-    } catch(e) { console.warn('[FLASH DETAILS]',match.id,e.message); }
-  }
-  const ht=verifiedHalfTimeGoals(match);
-  if(!ht){console.log(`[AI NO-STATS HT] UNVERIFIED ${match.homeName} vs ${match.awayName}`);return;}
-  if(ht.total<1){console.log(`[AI NO-STATS HT] HT_0_0_SKIP ${match.homeName} vs ${match.awayName}`);return;}
-  const candidates = [match, ...(match.crossSourceMatches || [])];
-  const api = candidates.find(c => c.source === 'apisports' && c.raw?.teams?.home?.id && c.raw?.teams?.away?.id);
-  const eventResult = await noStatsEvents(match);
-  const homeId = api?.raw?.teams?.home?.id, awayId = api?.raw?.teams?.away?.id;
-  const flashIds=match.source==='flashscore' && apiSportsQuotaExhausted()
-    ? {home:match.raw?.home_team?.team_id,away:match.raw?.away_team?.team_id} : null;
-  const homeHistory = flashIds ? await flashTeamHistory(flashIds.home) : await noStatsHistory(homeId);
-  const awayHistory = flashIds ? await flashTeamHistory(flashIds.away) : await noStatsHistory(awayId);
-  if(flashIds)console.log(`[FLASH AI INPUT] ${match.homeName} vs ${match.awayName} | HT=${ht.total} | home=${homeHistory?.sample||0} away=${awayHistory?.sample||0} | events=${eventResult.events.length}`);
-  const record = aiNoStats.evaluate({match, minute, events: eventResult.events,
-    eventSource: eventResult.source, homeHistory, awayHistory});
-  // Early Goal uses verified goal events; ordinary AI NO-STATS never uses these to change lambda.
-  record.earlyGoalEvents=eventResult.events;
-  // Sync LIVE Odds with each 30-second AI refresh for qualifying fixtures
-  // from minute 65. All other fixtures keep their original Odds cache policy.
-  const priorityOdds=Number(minute)>=65 && Number(minute)<=88 &&
-    (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS ||
-     noStatsPriorityMatches.has(noStatsPriorityKey(match))) &&
-    !noStatsSentKeys.has(noStatsAlertKey(record));
-  // Only qualifying AI fixtures need Odds. Preserve early-goal watchlist eligibility.
-  const needsOdds = Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS ||
-    noStatsPriorityMatches.has(noStatsPriorityKey(match));
-  const odds = needsOdds && !noStatsSentKeys.has(noStatsAlertKey(record))
-    ? await getOddsForMatch(match,{priorityFresh:priorityOdds})
-    : {status:'NOT_REQUIRED',fixtureId:null,payload:null};
-  const totalGoals=Number(match.homeScore)+Number(match.awayScore);
-  const assessment=odds.payload && Number.isFinite(totalGoals)
-    ? aiGoalOddsShadow.evaluate(odds.payload,totalGoals,null):null;
-  record.oddsStatus=assessment?classifyOdds(assessment,odds.payload):odds.status;
-  record.oddsFixtureId=odds.fixtureId;
-  if(assessment && record.oddsStatus==='VALID') {
-    record.oddsLive={market:assessment.marketLabel,marketImpliedPercent:assessment.marketImpliedPercent,
-      updatedAt:assessment.oddsUpdate,blocked:assessment.blocked};
-  }
-  // AI NO-STATS predictions must use exactly the original estimator output.
-  // FT history is retained for offline audit only; never overwrite P or lambda.
-  record.baselineProbability=record.probability;
-  record.baselineExpectedRemainingGoals=record.expectedRemainingGoals;
-  record.calibrated=false;
-  record.historyLearningStatus=noStatsHistoryModel.reason;
-  record.htGoals=ht.total;record.htScore=`${ht.home}-${ht.away}`;
-  // Only attach goal-by-goal score history when verified against the current home/away score.
-  // The resolver rejects incomplete and reversed source histories.
-  record.goalTimeline=await resolveVerifiedGoalHistory(match);
-  // LIVE stats are evidence for review only until calibrated against independent FT outcomes.
-  // Never add arbitrary points or multiply Poisson lambda by unvalidated stats.
-  if(liveStats){record.liveStatsEvidence={coverage:getCoreStatsCoverage(liveStats),
-   homeShots:liveStats.homeTotalShots??null,awayShots:liveStats.awayTotalShots??null,
-   homeSOT:liveStats.homeShotsOnTarget??null,awaySOT:liveStats.awayShotsOnTarget??null,
-   homeCorners:liveStats.homeCorners??null,awayCorners:liveStats.awayCorners??null};}
-  // Combined LIVE+MARKET shadow: market-derived lambda is displayed/stored separately.
-  // A learned LIVE correction is NOT enabled until out-of-sample calibration exists.
-  record.aiLiveEnhanced=computeLiveMarketResearch(record,match,odds,liveStats);
-  // Shadow estimate: use de-vigged in-play market probability when verified, otherwise NO-STATS.
-  // Live SH/SOT remain diagnostic until statistically fitted; never invent coefficients.
-  // Bind an unambiguous API-Sports fixture for FT reconciliation; never infer by score.
-  const resolved=resolveOddsFixture(match);
-  record.fixtureId=resolved.fixture?String(resolved.fixture.id):(match.source==='flashscore'&&apiSportsQuotaExhausted()?String(match.id):null);
-  record.auditStatus=record.fixtureId?'PENDING_FT':resolved.status;
-  const settled=record.fixtureId && noStatsSettledByFixture.get(record.fixtureId);
-  if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
-  else if(record.fixtureId && !noStatsSamples.some(x=>String(x.fixtureId)===record.fixtureId)) {
-    const observedGoals=Number(match.homeScore)+Number(match.awayScore);
-    if(Number.isFinite(observedGoals)) {
-      noStatsSamples.push({fixtureId:record.fixtureId,home:record.home,away:record.away,
-        observedAt:record.updatedAt,observedGoals,score:record.score,minute:record.minute,
-        probability:record.baselineProbability,outcome:null,evaluation:'PENDING_FT'});
-      if(noStatsSamples.length>5000)noStatsSamples.splice(0,noStatsSamples.length-5000);
-      persistNoStatsShadow();
-    }
-  }
-  if((minute>=65&&minute<=88)||(minute>=EARLY_GOAL_BASE_MIN&&minute<=EARLY_GOAL_BASE_MAX&&
-      Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS))recordNoStatsObservation(record);
-  // Reuse the EXISTING odds response; no extra API calls or production score changes.
-  // Match Goals O/U (current goals + 0.5) is the same event as "one more goal".
-  // Never confuse an odds PRICE with the Over goal LINE or market-implied probability.
-  if(odds.payload && record.oddsStatus==='VALID'){
-    const line=(Number(match.homeScore)+Number(match.awayScore)+0.5).toFixed(1);
-    const markets=odds.payload.response?.[0]?.odds||[];
-    const market=markets.find(m=>Number(m.id)===25);
-    const over=market?.values?.find(v=>v.value==='Over'&&String(v.handicap)===line&&v.suspended===false&&Number(v.odd)>1);
-    const under=market?.values?.find(v=>v.value==='Under'&&String(v.handicap)===line&&v.suspended===false&&Number(v.odd)>1);
-    if(over&&under){record.bigggOverOdds=Number(over.odd);record.bigggOverLine=Number(line);
-      record.bigggOddsMarket='Match Goals O/U';record.bigggOddsUpdatedAt=assessment?.oddsUpdate||null;record.bigggOddsValid=true;}
-  }
-  noStatsRecords.set(record.key, record);
-  trackNoStatsPriority(match, record);
-  if(Number(record.minute)>=65 && (Number(record.expectedRemainingGoals)>NO_STATS_ALERT_EXPECTED_GOALS || noStatsPriorityMatches.has(noStatsPriorityKey(match)))) {
-    const oddsFixture=resolveOddsFixture(match).fixture;
-    if(oddsFixture && !priorityOdds){enqueueOdds(String(oddsFixture.id),true);pumpOddsQueue();}
-  }
-  try { scanObserver.attachNoStats(record); } catch(e) { console.warn('[SCAN NO-STATS SYNC]',e.message); }
-  await maybeSendNoStatsAlert(record);
-  updateNoStatsAlertLiveScore(record);
-  // Bounded memory; no writes to Audit and no Telegram alerts.
-  if (noStatsRecords.size > 300) noStatsRecords.delete(noStatsRecords.keys().next().value);
-  console.log(`[AI LIVE+MARKET SHADOW] ${record.home} vs ${record.away} | ${minute}' | LIVE=${record.aiLiveEnhanced?.liveCoverage} | MARKET=${record.aiLiveEnhanced?.marketStatus} | marketLambda=${record.aiLiveEnhanced?.marketLambda??'N/A'} | baselineLambda=${record.expectedRemainingGoals??'N/A'} | combinedLambda=${record.aiLiveEnhanced?.combinedLambda??'N/A'} | source=${record.aiLiveEnhanced?.calculationSource}`);
-  console.log(`[AI THU NGHIEM] ${record.home} vs ${record.away} | ${minute}' | HT=${record.htGoals} | lambda=${record.expectedRemainingGoals??'N/A'} | P>=1=${record.probability??'N/A'}% | LIVE=${record.liveStatsEvidence?.coverage??'N/A'} | telegram=${noStatsSentKeys.has(noStatsAlertKey(record))?'SENT':'NOT_SENT'} | evidence=${record.evidence}`);
-}
-
-// FT reconciliation for independent NO-STATS shadow predictions.
-// Use final API-Sports score, never the current LIVE score or the production alert audit.
-let noStatsFtAuditBusy=false;
-async function auditNoStatsFt() {
-  if(noStatsFtAuditBusy||!APISPORTS_KEY)return;
-  try{await ensureNoStatsAlertReady();}catch(e){console.warn('[AI NO-STATS STORAGE FT]',e.message);}
-  noStatsFtAuditBusy=true;
-  try {
-    const pending=noStatsSamples.filter(x=>x.outcome===null && x.fixtureId &&
-      Date.now()-Date.parse(x.observedAt)>20*60*1000).slice(0,6);
-    let changed=false;
-    for(const row of pending) {
-      try {
-        const response=/^\d+$/.test(String(row.fixtureId)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id:row.fixtureId}) : null;
-        const f=response?.response?.[0];
-        if(String(f?.fixture?.id)!==String(row.fixtureId))continue;
-        const status=String(f?.fixture?.status?.short||'').toUpperCase();
-        if(['CANC','ABD','PST','SUSP'].includes(status)) {
-          row.outcome='VOID';row.evaluation='VOID';row.settledAt=new Date().toISOString();changed=true;continue;
-        }
-        if(!['FT','AET','PEN'].includes(status))continue;
-        if(f?.goals?.home==null||f?.goals?.away==null)continue;
-        const goals=Number(f.goals.home)+Number(f.goals.away);
-        if(!Number.isFinite(goals))continue;
-        row.outcome=goals>row.observedGoals?1:0;
-        row.evaluation=row.outcome===1?'WIN':'LOSS';
-        row.ftScore=`${f.goals.home}-${f.goals.away}`;
-        row.settledAt=new Date().toISOString();changed=true;
-        noStatsSettledByFixture.set(String(row.fixtureId),row);
-      } catch(e) {console.warn('[NO-STATS FT]',row.fixtureId,e.message);}
-    }
-    // Settle AI NO-STATS Telegram alerts independently at the original alert score.
-    let alertChanged=false;
-    for(const row of noStatsAlertAudit.filter(x=>x.evaluation==='PENDING_FT'&&x.fixtureId&&
-      Date.now()-Date.parse(x.sentAt)>20*60*1000).slice(0,6)){
-      try{
-        const response=/^\d+$/.test(String(row.fixtureId)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id:row.fixtureId}) : null;
-        const f=response?.response?.[0];
-        const fixtureMatches=String(f?.fixture?.id)===String(row.fixtureId);
-        if(fixtureMatches&&f?.goals?.home!=null&&f?.goals?.away!=null){
-          const h=Number(f.goals.home),a=Number(f.goals.away);
-          const prev=String(row.liveScore||row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-          if(Number.isInteger(h)&&Number.isInteger(a)&&(!prev||h+a>=Number(prev[1])+Number(prev[2]))&&row.liveScore!==`${h}-${a}`){
-            row.liveScore=`${h}-${a}`;row.liveUpdatedAt=new Date().toISOString();
-            row.liveGoalsAfterAlert=Math.max(0,h+a-Number(row.observedGoals));alertChanged=true;
-          }
-        }
-        const status=fixtureMatches?String(f?.fixture?.status?.short||'').toUpperCase():'';
-        if(['CANC','ABD','PST','SUSP'].includes(status)){
-          row.evaluation='VOID';row.marketFtEvaluation='VOID';row.settledAt=new Date().toISOString();alertChanged=true;continue;
-        }
-        let finalScore=null;
-        if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
-          finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
-        if(!finalScore)finalScore=await flashNativeFT(row.fixtureId);
-        if(!finalScore && apiSportsQuotaExhausted())finalScore=await audit.flashNoStatsFT(row);
-        if(!finalScore)continue;
-        const total=Number(finalScore.h)+Number(finalScore.a);
-        if(!Number.isFinite(total)||!Number.isFinite(row.observedGoals)||total<row.observedGoals)continue;
-        row.evaluation=total>row.observedGoals?'WIN':'LOSS';
-        row.marketFtEvaluation=row.marketSnapshotAtAlert?.marketStatus==='VALID' && Number.isFinite(Number(row.marketSnapshotAtAlert?.marketLambda))
-          ? (total>row.observedGoals?'WIN':'LOSS') : 'N/A';
-        row.ftScore=`${finalScore.h}-${finalScore.a}`;
-        row.overResult=row.overLine==null?'NO_LINE':total>row.overLine?'WIN':total<row.overLine?'LOSS':'PUSH';
-        row.liveScore=row.ftScore;
-        row.liveGoalsAfterAlert=Math.max(0,total-row.observedGoals);
-        row.liveResult=row.evaluation;
-        row.settledAt=new Date().toISOString();alertChanged=true;
-      }catch(e){console.warn('[NO-STATS ALERT FT]',row.fixtureId,e.message);}
-    }
-    if(alertChanged)await persistNoStatsAlertAudit();
-    // Reconcile observation fixtures independently of the legacy noStatsSamples queue.
-    // This covers restored PostgreSQL observations that have no local sample after deploy.
-    let obsChanged=false;
-    const pendingObs=new Map();
-    for(const row of noStatsObservations){
-      if(row.outcome!==null||!row.fixtureId||Date.now()-Date.parse(row.observedAt)<20*60000)continue;
-      const id=String(row.fixtureId);
-      if(!pendingObs.has(id))pendingObs.set(id,row);
-    }
-    for(const [id,representative] of [...pendingObs].slice(0,12)){
-      try{
-        let finalScore=null,status='';
-        const response=/^\d+$/.test(String(id)) && !apiSportsQuotaExhausted() ? await apiSportsGet('/fixtures',{id}) : null;
-        const f=response?.response?.[0];
-        if(String(f?.fixture?.id)===id){
-          status=String(f?.fixture?.status?.short||'').toUpperCase();
-          if(['FT','AET','PEN'].includes(status)&&f?.goals?.home!=null&&f?.goals?.away!=null)
-            finalScore={h:Number(f.goals.home),a:Number(f.goals.away)};
-        }
-        if(!finalScore && !['CANC','ABD','PST','SUSP'].includes(status)){
-          finalScore=apiSportsQuotaExhausted() ? (await flashNativeFT(id) || await audit.flashNoStatsFT({...representative,sentAt:representative.observedAt})) : null;
-          if(finalScore)status='FT';
-        }
-        if(!finalScore&&!['CANC','ABD','PST','SUSP'].includes(status))continue;
-        if(finalScore && (!Number.isInteger(finalScore.h)||!Number.isInteger(finalScore.a)||finalScore.h<0||finalScore.a<0))continue;
-        const score=finalScore?`${finalScore.h}-${finalScore.a}`:null;
-        for(const row of noStatsObservations){
-          if(String(row.fixtureId)!==id||row.outcome!==null)continue;
-          if(!finalScore){row.outcome='VOID';row.evaluation='VOID';}
-          else{
-            const at=String(row.score||'').match(/^(\d+)\s*[-–:]\s*(\d+)$/);
-            if(!at||finalScore.h+finalScore.a<Number(at[1])+Number(at[2]))continue;
-            row.outcome=finalScore.h+finalScore.a>Number(at[1])+Number(at[2])?1:0;
-            row.evaluation=row.outcome?'WIN':'LOSS';row.ftScore=score;
-          }
-          row.settledAt=new Date().toISOString();obsChanged=true;
-        }
-      }catch(e){console.warn('[NO-STATS OBS FT]',id,e.message);}
-    }
-    if(obsChanged)persistNoStatsObservations(noStatsObservations.filter(x=>x.outcome!==null&&x.settledAt));
-    // Chronological fixture-level calibration: one first valid 65-88 snapshot per match.
-    // A holdout must improve Brier score before any new model is enabled.
-    if(obsChanged){
-      const byFixture=new Map();
-      for(const row of [...noStatsObservations].sort((a,b)=>Date.parse(a.observedAt)-Date.parse(b.observedAt))){
-        if(row.fixtureId&&[0,1].includes(row.outcome)&&!byFixture.has(String(row.fixtureId)))byFixture.set(String(row.fixtureId),row);
-      }
-      const candidates=[...byFixture.values()].map(r=>({fixtureId:r.fixtureId,observedAt:r.observedAt,probability:r.baselineProbability??r.probability,outcome:r.outcome}));
-      const candidateModel=aiNoStatsHistoryTrainer.train(candidates);
-      if(candidateModel.ready)noStatsHistoryModel=candidateModel;
-    }
-    if(changed) {
-      persistNoStatsShadow();
-      if(!noStatsHistoryModel.ready)noStatsHistoryModel=aiNoStatsHistoryTrainer.train(noStatsSamples);
-      for(const record of noStatsRecords.values()) {
-        const settled=record.fixtureId && noStatsSettledByFixture.get(String(record.fixtureId));
-        if(settled) {record.evaluation=settled.evaluation;record.ftScore=settled.ftScore;record.auditStatus='SETTLED';}
-      }
-    }
-  } finally {noStatsFtAuditBusy=false;}
-}
-// Retired NO-STATS FT timer disabled: AI LIVE RUNG owns new predictions.
-// Retired NO-STATS startup audit disabled.
 // ==========================================================
 // 47. SCAN ONE MATCH
 // ==========================================================
@@ -7188,7 +6451,7 @@ function liveRungOddsDecimal(value){
 function liveRungEvaluate(match,minute){
   const id=String(match.id);
   const snap=bongdaluOddsByMatch.get(id);
-  if(!snap||snap.stale||!snap.lastReceivedAt||Date.now()-snap.lastReceivedAt>15000)
+  if(!bongdaluOddsPollLastRequestOk||!snap||snap.stale||!snap.lastReceivedAt||Date.now()-snap.lastReceivedAt>15000)
     return {status:'NO_FRESH_ODDS'};
   const total=Number(match.homeScore)+Number(match.awayScore);
   if(!Number.isFinite(total))return {status:'NO_VERIFIED_SCORE'};
@@ -7198,6 +6461,11 @@ function liveRungEvaluate(match,minute){
     Math.abs(Number(r.line)-target)<0.001);
   if(!rows.length)return {status:'NO_NEXT_GOAL_LINE',target};
   const r=rows[rows.length-1];
+  // provider_time is an update timestamp, not a match clock. A cached market
+  // must not be treated as fresh merely because our HTTP request just finished.
+  const providerTs=Number(r.provider_time);
+  if(!Number.isFinite(providerTs)||providerTs<1e9||Math.abs(Date.now()-providerTs*1000)>120000)
+    return {status:'STALE_PROVIDER_MARKET',providerTime:r.provider_time??null};
   const over=liveRungOddsDecimal(r.v1),under=liveRungOddsDecimal(r.v2);
   if(!over||!under)return {status:'INVALID_ODDS'};
   const invO=1/over,invU=1/under;
@@ -7258,59 +6526,6 @@ async function analyzeOneMatch(match, allOdds) {
   console.log(`[AI LIVE RUNG] ${record.home} vs ${record.away} | ${minute}' | ${signal.status} | P=${signal.probability??'N/A'}%`);
   const telegramSent=signal.status==='VERIFIED'&&minute>=65 ? await liveRungSendAlert(match,minute,signal):false;
   return {...match,minute,telegramSent,aiLiveRung:signal};
-}
-
-// Priority refresh does not change the ordinary 5-minute discovery schedule.
-// Query a single API-Sports fixture when possible, otherwise refresh FlashScore's
-// existing LIVE list once for all FlashScore priority matches in this tick.
-async function scanNoStatsPriority() {
-  if (scanControl.isPaused() || scanRunning || noStatsPriorityRunning || !noStatsPriorityMatches.size) return;
-  noStatsPriorityRunning=true;
-  try {
-    let flashMatches=null;
-    for (const [key, state] of [...noStatsPriorityMatches]) {
-      if (scanControl.isPaused() || scanRunning) break;
-      const original=state.match;
-      try {
-        let fresh=null;
-        const bongMatches=await fetchBongdaluLiveMatches();
-        fresh=bongMatches.find(m=>String(m.id)===String(original.id));
-        if (!fresh) {
-          console.warn(`[AI PRIORITY 30S] STALE LIVE ${original.homeName} vs ${original.awayName} | no fresh verified fixture`);
-          continue; // Do not pretend old minute/score is fresh.
-        }
-        const freshMinute=calculateExactMinute(fresh.raw);
-        if (freshMinute===999 || (Number.isFinite(Number(freshMinute)) && Number(freshMinute)>88)) {
-          noStatsPriorityMatches.delete(key);
-          console.log(`[AI PRIORITY 30S] STOP ${original.homeName} vs ${original.awayName} | FT/after 88`);
-          continue;
-        }
-        if (freshMinute==='HT' || !Number.isFinite(Number(freshMinute)) || Number(freshMinute)<60) continue;
-        const oldMinute=Number(original.minute??calculateExactMinute(original.raw));
-        const oldGoals=Number(original.homeScore)+Number(original.awayScore);
-        const newGoals=Number(fresh.homeScore)+Number(fresh.awayScore);
-        if ((Number.isFinite(oldMinute) && Number(freshMinute)<oldMinute) ||
-            (Number.isFinite(oldGoals) && Number.isFinite(newGoals) && newGoals<oldGoals)) {
-          console.warn(`[AI PRIORITY 30S] STALE PROVIDER ${fresh.homeName} vs ${fresh.awayName}`);
-          continue;
-        }
-        // Keep cross-source identity for verified HT, events and FT resolution.
-        fresh.crossSourceMatches=[original,...(original.crossSourceMatches||[])].filter(m=>
-          !(m.source===fresh.source && String(m.id)===String(fresh.id)));
-        state.match=fresh;
-        noStatsScanBudget={events:0,history:0};
-        await analyzeOneMatch(fresh, []);
-        // Publish only the freshly verified provider minute and score to LIVE monitor.
-        const priorityRecord=[...noStatsRecords.values()].filter(r=>
-          r.source===fresh.source && String(r.sourceId)===String(fresh.id))
-          .sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')))[0];
-        if(priorityRecord && Number(priorityRecord.minute)===Number(freshMinute)) {
-          scanObserver.refreshPriorityLive(fresh,priorityRecord);
-        }
-        console.log(`[AI PRIORITY 30S] REFRESH ${fresh.homeName} ${fresh.homeScore}-${fresh.awayScore} ${fresh.awayName} | ${freshMinute}'`);
-      } catch(e) {console.warn(`[AI PRIORITY 30S] ${original.homeName} vs ${original.awayName}: ${e.message}`);}
-    }
-  } finally {noStatsPriorityRunning=false;}
 }
 
 // ==========================================================
@@ -7468,9 +6683,6 @@ async function scanLiveMatches() {
     );
 
 
-    noStatsScanBudget = {events: 0, history: 0};
-    // Quota fix: do not prefetch Odds for every LIVE fixture before AI eligibility.
-    // observeNoStats requests Odds only after the AI has established eligibility.
     // ====================================================
     // ANALYZE
     //
@@ -7585,7 +6797,16 @@ app.get('/api/ai-goal-odds-shadow',(req,res)=>{
 });
 
 
-// Read-only NO-STATS monitor; isolated from Audit and alert endpoints.
+// Read-only LIVE RUNG monitor.
+app.get('/api/bongdalu-health',(req,res)=>{
+ res.set('Cache-Control','no-store');
+ const age=bongdaluOddsPollLastSuccessAt ? Date.now()-bongdaluOddsPollLastSuccessAt : null;
+ res.json({ok:true,companyId:'22',activeFixtures:bongdaluOddsActiveIds.length,
+  oddsLastRequestOk:bongdaluOddsPollLastRequestOk,oddsLastSuccessAgeMs:age,
+  oddsFresh:!!bongdaluOddsPollLastRequestOk&&age!==null&&age<=15000,
+  matchedOddsFixtures:bongdaluOddsPollLastResult.size,
+  note:'No synthetic minutes or missing odds are used for alerts'});
+});
 app.get('/api/ai-live-rung',(req,res)=>{
  res.set('Cache-Control','no-store');
  const records=[...aiLiveRungRecords.values()].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));
@@ -7593,8 +6814,6 @@ app.get('/api/ai-live-rung',(req,res)=>{
   sent:aiLiveRungSent.size,records});
 });
 // Deprecated endpoints return a clear migration response, not stale predictions.
-app.get('/api/ai-no-stats',(req,res)=>res.status(410).json({ok:false,retired:true,replacement:'/api/ai-live-rung'}));
-app.get('/api/no-stats-observations',(req,res)=>res.status(410).json({ok:false,retired:true,replacement:'/api/ai-live-rung'}));
 
 // ==========================================================
 // 49. EXPRESS ROUTES
@@ -7608,10 +6827,10 @@ app.get(
       status: 'ok',
 
       bot:
-        'THẦN TÀI MAY MẮN · AI THỬ NGHIỆM',
+        'THẦN TÀI MAY MẮN · AI LIVE RUNG',
 
       scanMinutes:
-        '46-88',
+        '60-88',
 
       telegramThreshold:
         MIN_SEND_PERCENTAGE,
@@ -7619,9 +6838,7 @@ app.get(
       bigBetThreshold:
         BIG_BET_PERCENTAGE,
 
-      scanIntervalMinutes:
-        SCAN_INTERVAL_MS /
-        60000,
+      scanIntervalSeconds: SCAN_INTERVAL_MS / 1000,
 
       features: [
         'Attacks',
@@ -7714,7 +6931,7 @@ app.get(
                 match:
                   `${x.homeName} ${x.homeScore}-${x.awayScore} ${x.awayName}`,
 
-                aiNoStats: x.aiNoStats,
+                aiLiveRung: x.aiLiveRung,
                 telegramSent: x.telegramSent
               })
             )
@@ -7742,11 +6959,6 @@ app.locals.scanControl=scanControl;
 scanControl.init().catch(e=>console.error('[SCAN CONTROL INIT]',e.message));
 scanObserver.init().catch(e=>console.error('[SHADOW STORAGE INIT]',e.message));
 // Legacy dashboard bridge: expose only current AI LIVE RUNG signals.
-app.locals.noStatsAlertView=()=>[...aiLiveRungRecords.values()].filter(x=>aiLiveRungSent.has(x.id));
-app.locals.noStatsLiveView=()=>[...aiLiveRungRecords.values()];
-app.locals.noStatsOddsWaitingView=()=>[...aiLiveRungRecords.values()].filter(x=>x.status!=='VERIFIED');
-app.locals.deleteNoStatsDashboardAlerts=async()=>({deleted:0,reason:'Retired endpoint'});
-app.locals.ensureNoStatsAlertReady=async()=>true;
 
 audit.setup(app);
 audit.init().catch(e=>console.error('[AUDIT INIT]',e.message));
@@ -7801,8 +7013,8 @@ app.listen(
     );
 
 
-   // Sau đó 5 phút / lần
-// Retired NO-STATS priority loop disabled; 5-second odds sampler remains active.
+   // Quét trận mỗi 5 giây, không chạy trùng khi vòng trước chưa kết thúc
+// Independent 5-second odds sampler remains active.
 
 // Market sampling is independent of the heavier fixture/AI scan.
 // No concurrent odds requests: late responses cannot overwrite newer snapshots.
