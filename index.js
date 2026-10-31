@@ -45,7 +45,12 @@ app.get('/scan',(req,res)=>res.status(405).json({error:'Use authenticated POST /
 // Preserve the four named pages, all powered by the single AI LIVE RUNG UI.
 for(const route of ['/dashboard.html','/live-monitor.html','/rung-bet.html','/scan-history.html'])app.get(route,(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 app.use(express.static(path.join(__dirname,'public')));
-app.get('/',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+// Serve the compact AI LIVE RUNG UI at all supported navigation routes.
+const uiFile=path.join(__dirname,'public','index.html');
+for(const route of ['/','/dashboard','/dashboard.html','/live-monitor','/live-monitor.html','/rung-bet','/rung-bet.html','/scan-history','/scan-history.html']){
+  app.get(route,(req,res)=>res.sendFile(uiFile));
+}
+app.use(express.static(path.join(__dirname,'public')));
 async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures};
