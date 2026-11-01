@@ -106,7 +106,9 @@ function verifiedOddsMinute(m, odds){
   if(m.state!==3)return null;
   const candidates=(odds||[]).filter(r=>String(r.match_id)===m.id &&
     Number(r.match_status)===4 && String(r.score||'')===`${m.homeScore}-${m.awayScore}` &&
-    Number.isFinite(Number(r.time_of_the_match)) && Number(r.time_of_the_match)>=45 && Number(r.time_of_the_match)<=120);
+    Number.isFinite(Number(r.time_of_the_match)) && Number(r.time_of_the_match)>=45 && Number(r.time_of_the_match)<=120 &&
+    Number.isFinite(Number(r.provider_time)) && Number(r.provider_time)*1000<=Date.now()+5000 &&
+    Date.now()-Number(r.provider_time)*1000<=120000);
   if(!candidates.length)return null;
   const nums=candidates.map(r=>Number(r.time_of_the_match));
   return Math.max(...nums)-Math.min(...nums)<=2?Math.max(...nums):null;
@@ -330,7 +332,7 @@ async function backfillMissingAlertLeagues(){
   }
  }finally{leagueBackfillRunning=false;}
 }
-async function fetchFixtures(){
+async function fetchFixtures(oddsSnapshot){
   const q=`date=${vnDate()}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`;
   const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
   const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
@@ -352,7 +354,7 @@ async function fetchFixtures(){
   const all=[...byId.values()].map(norm).filter(Boolean);
   for(const m of all)trackObservedScore(m);
   const live=all.filter(m=>m.state===1||m.state===3);
-  const odds=await fetchOddsMinuteRows();
+  const odds=rows(oddsSnapshot); // Same snapshot as AI: no second independent odds request.
   const byOdds=new Map();
   for(const row of odds){const id=String(row.match_id??'');if(!byOdds.has(id))byOdds.set(id,[]);byOdds.get(id).push(row);}
   const sourceCounts={direct:0,delta:0,odds:0,unknown:0};
@@ -364,7 +366,7 @@ async function fetchFixtures(){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
-  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
+  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length,watching:watchlist.size,oddsRows:odds.length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
@@ -447,12 +449,21 @@ async function scan(){
  if(scanning||paused||!ready)return [];
  scanning=true;const output=[];
  try{
-  const fixtures=await fetchFixtures();const oddsSnapshot=await proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});const seen=new Set();
+  // One LIVE odds request per scan. Fetch alongside fixtures to reduce total latency.
+  // A failed odds request cannot erase the existing watchlist.
+  const oddsPromise=proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});
+  const oddsSnapshot=await oddsPromise;
+  const fixtures=await fetchFixtures(oddsSnapshot);const seen=new Set();
   for(const m of fixtures){
    seen.add(m.id);const old=matches.get(m.id);
    // Retain last VERIFIED minute when Bongdalu temporarily omits it. Never use it for a new signal.
    const verified=m.minute!==null;
-   if(!verified&&old?.minute!==null&&old?.minute!==undefined){m.lastVerifiedMinute=old.minute;m.minuteSource='stale';m.stale=true;}
+   if(verified){m.lastVerifiedMinute=m.minute;m.minuteVerifiedAt=Date.now();m.stale=false;}
+   else if(old&&Number.isFinite(old.lastVerifiedMinute??old.minute)){
+     m.lastVerifiedMinute=old.lastVerifiedMinute??old.minute;
+     m.minuteVerifiedAt=old.minuteVerifiedAt??null;
+     m.minuteSource='stale';m.stale=true;
+   }
    matches.set(m.id,m);
    if(old&&m.state===3&&Number.isInteger(m.homeScore)&&Number.isInteger(m.awayScore)&&
      m.homeScore+m.awayScore===old.homeScore+old.awayScore+1&&m.minute!==null){
@@ -507,7 +518,7 @@ async function scan(){
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
   for(const [id] of watchlist){if(!seen.has(id)&&matches.has(id)){const old=matches.get(id);matches.set(id,{...old,stale:true,minuteSource:'stale'});}}
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size,oddsRows:rows(oddsSnapshot).length,verifiedMinutes:fixtures.filter(m=>m.minute!==null).length,staleWatched:[...watchlist.keys()].filter(id=>matches.get(id)?.stale).length};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
