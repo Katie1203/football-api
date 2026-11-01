@@ -269,6 +269,34 @@ function norm(r){
   const htH=Number(r.HomeHalfScore??r.homeHalfScore??r.HomeHalf??NaN),htA=Number(r.GuestHalfScore??r.guestHalfScore??r.AwayHalfScore??NaN);
   return {id:String(id),source:'bongdalu',homeName:home,awayName:away,league:asText(r.LeagueName??r.SclassName),homeScore:h,awayScore:a,htGoals:Number.isFinite(htH)&&Number.isFinite(htA)?htH+htA:null,minute,state,raw:r};
 }
+// Prefer the most specific verified league name supplied by Bongdalu.
+function leagueText(value){
+ if(value==null || typeof value==='object')return '';
+ return String(value).trim();
+}
+function leagueSpecificity(name){
+ const v=leagueText(name);
+ if(!v)return 0;
+ // Generic country-level labels should not override a named competition.
+ if(/^(?:football\s+league|league|giải\s+bóng\s+đá|bóng\s+đá)(?:\s+|\s*[-–:]\s*).+$/i.test(v))return 1;
+ return 2;
+}
+function preferLeague(...values){
+ return values.map(leagueText).filter(Boolean).sort((a,b)=>leagueSpecificity(b)-leagueSpecificity(a))[0]||'';
+}
+function leagueId(r){return String(r?.sclassID??r?.SclassID??r?.sclassId??r?.leagueId??r?.LeagueID??'');}
+function leagueFromRow(r){return preferLeague(r?.leagueName,r?.LeagueName,r?.name,r?.Name,r?.SclassName,r?.sort_name);}
+function buildLeagueMap(payload){
+ const map=new Map();
+ for(const r of rows(payload?.leagues??payload?.Leagues)){
+  const id=leagueId(r);
+  if(id)map.set(id,preferLeague(leagueFromRow(r),map.get(id)));
+ }
+ return map;
+}
+function resolveLeague(match,leagueMap,previous=''){
+ return preferLeague(leagueMap.get(leagueId(match)),leagueFromRow(match),previous);
+}
 async function fetchOddsMinuteRows(){
   try{
     const data=await proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`);
@@ -289,14 +317,14 @@ async function backfillMissingAlertLeagues(){
   for(const date of dates){
    try{
     const payload=await proxyGetPayload('/v1/football/match/diary?'+`date=${date}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`);
-    const names=new Map(rows(payload?.leagues).map(x=>[String(x.sclassID??x.SclassID??''),asText(x.leagueName??x.LeagueName??x.name)]));
+    const names=buildLeagueMap(payload);
     for(const match of rows(payload?.matches??payload?.results??payload)){
      const id=String(match.ScheduleID??match.scheduleId??'');
-     const league=asText(match.LeagueName??match.leagueName)||names.get(String(match.sclassID??match.SclassID??''))||'';
+     const league=resolveLeague(match,names,leagueNamesByFixture.get(id));
      if(!id||!league)continue;
      leagueNamesByFixture.set(id,league);
      const saved=sent.get(id);
-     if(saved&&!saved.league){saved.league=league;await save(id,saved);}
+     if(saved&&preferLeague(league,saved.league)!==saved.league){saved.league=preferLeague(league,saved.league);await save(id,saved);}
     }
    }catch(err){console.warn('[BONGDALU LEAGUE BACKFILL]',date,err.message);}
   }
@@ -307,9 +335,9 @@ async function fetchFixtures(){
   const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
   const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
   // Bongdalu match rows contain sclassID; names are in the sibling leagues list.
-  const leagueById=new Map(rows(diaryPayload?.leagues).filter(x=>x&&(x.sclassID??x.SclassID)).map(x=>[String(x.sclassID??x.SclassID),asText(x.leagueName??x.LeagueName??x.name??x.sort_name)]));
+  const leagueById=buildLeagueMap(diaryPayload);
   const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>{
-    const league=asText(r.LeagueName??r.SclassName??r.leagueName)||leagueById.get(String(r.sclassID??r.SclassID??''))||'';
+    const league=resolveLeague(r,leagueById,leagueNamesByFixture.get(String(r.ScheduleID)));
     if(league)leagueNamesByFixture.set(String(r.ScheduleID),league);
     return [String(r.ScheduleID),{...r,LeagueName:league}];
   }));
@@ -318,7 +346,7 @@ async function fetchFixtures(){
     for(const d of rows(await proxyGet('/v1/football/match/live?locale=vi'))){
       const id=String(d.ScheduleID??d.scheduleId??d.id);
       if(!byId.has(id))continue;
-      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,LeagueName:asText(d.LeagueName)||asText(prior.LeagueName)||leagueNamesByFixture.get(id)||''});
+      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
     }
   }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
   const all=[...byId.values()].map(norm).filter(Boolean);
