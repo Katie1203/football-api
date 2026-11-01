@@ -6,7 +6,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node test_bongdalu_repair.js && node test_dashboard_live_ft.js && node test_5_diem.js"
+    "test": "node test_8_hang_muc_regression.js && node test_approved_8_scope.js && node test_six_scope_20261101.js && node test_5_diem.js"
   },
   "engines": {
     "node": ">=20"
