@@ -247,7 +247,12 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 @media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 @media(max-width:650px){.grid{grid-template-columns:1fr!important}}
 @media(prefers-reduced-motion:reduce){.grid>.card.tt-ai-bet,.grid>.card.tt-ai-big{animation:none!important;box-shadow:0 0 0 3px currentColor!important}}
-</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Viền cam nhấp nháy: AI xác nhận BET NHẸ TAY; viền đỏ: AI xác nhận BIG BET. Thẻ không nhấp nháy chưa có kết luận; hiệu ứng không đồng nghĩa Telegram đã gửi. Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
+/* Early visual watch: a fresh, score-matched, directional BET365 move; NOT an AI verdict. */
+.grid>.card.tt-ai-early{border:3px solid #ffe05c!important;animation:tt-whole-early 1.35s steps(2,end) infinite!important}
+@keyframes tt-whole-early{0%,100%{background-color:#514315!important;border-color:#ffe05c!important;box-shadow:0 0 20px 4px #ffe05c88,inset 0 0 18px #ffe05c33!important;filter:brightness(1.16)}50%{background-color:#0c1916!important;border-color:#ffeb9a!important;box-shadow:0 0 2px #ffe05c44!important;filter:brightness(.91)}}
+.grid>.card .tt-early-label{font-weight:900;color:#ffe05c;font-size:10px;margin:3px 0}
+@media(prefers-reduced-motion:reduce){.grid>.card.tt-ai-early{animation:none!important;box-shadow:0 0 0 2px #ffe05c!important}}
+</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Vàng nhấp nháy: biến động Tài sớm, chưa được AI xác nhận và không gửi Telegram; cam: AI xác nhận BET NHẸ TAY; đỏ: AI xác nhận BIG BET. Thẻ không nhấp nháy chưa có kết luận; hiệu ứng không đồng nghĩa Telegram đã gửi. Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let rows=[],group='all';
@@ -261,18 +266,37 @@ function bucket(x){return hasExperimental(x)?'experimental':'none';}
 // Only verified AI lambda above 0.95 in the 65–88' window gets an animated border.
 // Amber means odds are still required for the higher-lambda alert; green means
 // the BET NHẸ TAY odds policy permits the signal (other alert gates still apply).
+// Visual-only precursor: one fresh directional change is enough to watch closely,
+// but never counts as an AI signal and never triggers Telegram.
+function earlyMarketWatch(x,at=Date.now()){
+ if(x.stale||x.sentTelegram||x.noStatsAlertSent||x.minuteSource==='stale')return false;
+ const minute=Number(x.minute);
+ if(!Number.isFinite(minute)||minute<60||minute>=85)return false;
+ const scoreH=Number(x.scoreH),scoreA=Number(x.scoreA);
+ if(!Number.isInteger(scoreH)||!Number.isInteger(scoreA))return false;
+ const book=(x.market?.bookmakers||[]).find(b=>String(b.bookmakerId)==='2');
+ if(!book||book.homeScore!==scoreH||book.awayScore!==scoreA)return false;
+ const quoteAt=Number(book.providerTime);
+ if(!Number.isFinite(quoteAt)||quoteAt>at+10000||at-quoteAt>120000)return false;
+ const changes=(x.market?.changes||[]).filter(c=>String(c.bookmakerId)==='2'&&c.marketMove===true&&!c.scoreChanged&&c.previous&&c.homeScore===scoreH&&c.awayScore===scoreA&&Number.isFinite(c.observedAt)&&c.observedAt<=at+10000&&at-c.observedAt<=60000);
+ if(!changes.length)return false;
+ const last=changes[changes.length-1];
+ // Rising Over line OR shortening Over odds at the same line; no count-based threshold.
+ return Number(last.lineDelta)>0||(Number(last.lineDelta)===0&&Number(last.overPriceDelta)<0);
+}
 function signalClass(x){
- // A visual marker is NOT an AI prediction. Only actual backend decision.level qualifies.
- // A valid minute and fresh server observation prevent blinking from stale cached cards.
  const level=String(x.decision?.level||'').toUpperCase().trim();
  const minute=Number(x.minute);
  const observed=Date.parse(x.observationAt||x.at||'');
  if(!Number.isFinite(minute)||minute<60||minute>=85||x.stale||x.sentTelegram||x.noStatsAlertSent)return '';
- if(!Number.isFinite(observed)||Date.now()-observed>30000||observed-Date.now()>30000)return '';
- if(/BIGG?G?\s*BET/.test(level))return ' tt-ai-big';
- if(level==='BET NHẸ TAY')return ' tt-ai-bet';
- return '';
+ if(Number.isFinite(observed)&&Math.abs(Date.now()-observed)<=30000){
+  if(/BIGG?G?\s*BET/.test(level))return ' tt-ai-big';
+  if(level==='BET NHẸ TAY')return ' tt-ai-bet';
+ }
+ return !level&&earlyMarketWatch(x)?' tt-ai-early':'';
 }
+function earlyLabel(x){return !x.decision?.level&&earlyMarketWatch(x)?'<div class="tt-early-label">⚡ DẤU HIỆU SỚM · CHƯA XÁC NHẬN AI</div>':'';}
+
 function matchesGroup(x,id){
  if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
  if(id==='rung')return /RUNG/i.test(String(x.sentAlertLabel||''));
@@ -330,7 +354,7 @@ function marketSideBySide(x){
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI LIVE RUNG</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Tín hiệu AI LIVE RUNG</span><span class="value">'+(x.decision?.level||'ĐANG THEO DÕI')+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div>'+earlyLabel(x)+'<div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI LIVE RUNG</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Tín hiệu AI LIVE RUNG</span><span class="value">'+(x.decision?.level||'ĐANG THEO DÕI')+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
 async function load(){if(refreshBusy)return;refreshBusy=true;try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows.map(x=>({...x,noStatsProbability:x.probability??x.aiProbability??null,expectedRemainingGoals:null,sentAlertLabel:x.alertLabel||null,overOdds:x.decision?.overOdds??x.market?.bookmakers?.[0]?.overDecimal??null,overLine:x.decision?.line??x.market?.bookmakers?.[0]?.line??null,oddsValid:x.market?.bookmakers?.some(b=>String(b.bookmakerId)==='2')===true,oddsStatus:x.market?.bookmakers?.length?'BET365':'CHƯA XÁC MINH',aiLiveEnhanced:x.aiLiveEnhanced||null})):[];const noStats=[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
