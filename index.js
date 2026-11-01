@@ -15,6 +15,7 @@ const BET365_COMPANY_ID=2; // Bongdalu bookmaker mapping supplied for BET365; ve
 const TOKEN=process.env.TELEGRAM_BOT_TOKEN,CHAT=process.env.TELEGRAM_CHAT_ID;
 const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
 const market=new LiveRungMarket(),matches=new Map(),sent=new Map(),observations=new Map(),watchlist=new Map();
+const leagueNamesByFixture=new Map();
 const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
@@ -63,13 +64,14 @@ function alertView(r){
  const current=scoreNow.split('-').map(Number);
  const goals=Number.isFinite(h+a+current[0]+current[1])?Math.max(0,current[0]+current[1]-h-a):null;
  const label=r.decision?.level==='BIG BET'?'BIGGG BET':r.decision?.level||'BET NHẸ TAY';
- return {...r,key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
+ return {...r,league:r.league||m?.league||leagueNamesByFixture.get(String(r.id))||'',key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,overLineAtAlert:r.decision?.line??null,scoreAtAlert:r.score,liveScore:ft?null:scoreNow,ftScore:ft?scoreNow:null,
   liveGoalsAfterAlert:goals,score: r.score,overOddsAtAlert:r.decision?.overOdds??null,
   oddsAtAlertStatus:r.decision?.overOdds==null?'CHUA_LAY_DUOC_ODDS':'DAT_ODDS',
   evaluation:resultOf(r),outcome:resultOf(r),status:r.status};
 }
-async function proxyGet(p){const {data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000});if(Number(data?.code)!==0)throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,120));return data?.data?.results||data?.data?.matches||data?.data||[];}
+async function proxyGetPayload(p){const {data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000});if(Number(data?.code)!==0)throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,120));return data?.data||[];}
+async function proxyGet(p){const payload=await proxyGetPayload(p);return payload?.results||payload?.matches||payload;}
 function rows(payload){return Array.isArray(payload)?payload:[];}
 function asText(v){return typeof v==='string'?v.trim():typeof v==='object'&&v?String(v.name||v.Name||'').trim():'';}
 function minuteNumber(value){
@@ -273,16 +275,50 @@ async function fetchOddsMinuteRows(){
     return rows(data).filter(r=>String(r.market).toUpperCase()==='OU');
   }catch(e){console.warn('[BONGDALU MINUTE ODDS]',e.message);return [];}
 }
+// Resolve older persisted alerts from Bongdalu diary dates without changing AI decisions.
+let leagueBackfillRunning=false;
+async function backfillMissingAlertLeagues(){
+ if(leagueBackfillRunning)return;
+ const missing=[...sent.values()].filter(r=>r?.status==='sent'&&!r.league&&r.sentAt);
+ if(!missing.length)return;
+ leagueBackfillRunning=true;
+ try{
+  const dates=[...new Set(missing.map(r=>{
+   const d=new Date(r.sentAt);return Number.isFinite(d.getTime())?(()=>{const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d);const v=k=>parts.find(x=>x.type===k)?.value;return `${v('year')}-${v('month')}-${v('day')}`;})():null;
+  }).filter(Boolean))].slice(0,3);
+  for(const date of dates){
+   try{
+    const payload=await proxyGetPayload('/v1/football/match/diary?'+`date=${date}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`);
+    const names=new Map(rows(payload?.leagues).map(x=>[String(x.sclassID??x.SclassID??''),asText(x.leagueName??x.LeagueName??x.name)]));
+    for(const match of rows(payload?.matches??payload?.results??payload)){
+     const id=String(match.ScheduleID??match.scheduleId??'');
+     const league=asText(match.LeagueName??match.leagueName)||names.get(String(match.sclassID??match.SclassID??''))||'';
+     if(!id||!league)continue;
+     leagueNamesByFixture.set(id,league);
+     const saved=sent.get(id);
+     if(saved&&!saved.league){saved.league=league;await save(id,saved);}
+    }
+   }catch(err){console.warn('[BONGDALU LEAGUE BACKFILL]',date,err.message);}
+  }
+ }finally{leagueBackfillRunning=false;}
+}
 async function fetchFixtures(){
   const q=`date=${vnDate()}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`;
-  const diary=rows(await proxyGet('/v1/football/match/diary?'+q));
-  const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>[String(r.ScheduleID),r]));
+  const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
+  const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
+  // Bongdalu match rows contain sclassID; names are in the sibling leagues list.
+  const leagueById=new Map(rows(diaryPayload?.leagues).filter(x=>x&&(x.sclassID??x.SclassID)).map(x=>[String(x.sclassID??x.SclassID),asText(x.leagueName??x.LeagueName??x.name??x.sort_name)]));
+  const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>{
+    const league=asText(r.LeagueName??r.SclassName??r.leagueName)||leagueById.get(String(r.sclassID??r.SclassID??''))||'';
+    if(league)leagueNamesByFixture.set(String(r.ScheduleID),league);
+    return [String(r.ScheduleID),{...r,LeagueName:league}];
+  }));
   const deltas=new Map();
   try{
     for(const d of rows(await proxyGet('/v1/football/match/live?locale=vi'))){
       const id=String(d.ScheduleID??d.scheduleId??d.id);
       if(!byId.has(id))continue;
-      deltas.set(id,d);byId.set(id,{...byId.get(id),...d});
+      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,LeagueName:asText(d.LeagueName)||asText(prior.LeagueName)||leagueNamesByFixture.get(id)||''});
     }
   }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
   const all=[...byId.values()].map(norm).filter(Boolean);
@@ -362,7 +398,7 @@ async function scan(){
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
@@ -400,7 +436,7 @@ app.get('/api/no-stats-alerts',(req,res)=>{
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
  return [...sent.values()].filter(r=>r&&r.id&&r.id!=='__control__'&&r.status==='sent').map(r=>({
-  id:r.id,at:r.sentAt||null,league:r.league,home:r.home,away:r.away,minute:r.minute,
+  id:r.id,at:r.sentAt||null,league:r.league||matches.get(r.id)?.league||leagueNamesByFixture.get(String(r.id))||'',home:r.home,away:r.away,minute:r.minute,
   scoreH:Number(String(r.score).split('-')[0]),scoreA:Number(String(r.score).split('-')[1]),
   aiProbability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,engine:'AI LIVE RUNG',alertSent:true,
