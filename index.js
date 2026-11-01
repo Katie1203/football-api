@@ -64,7 +64,7 @@ function alertView(r){
  const current=scoreNow.split('-').map(Number);
  const goals=Number.isFinite(h+a+current[0]+current[1])?Math.max(0,current[0]+current[1]-h-a):null;
  const label=r.decision?.level==='BIG BET'?'BIGGG BET':r.decision?.level||'BET NHẸ TAY';
- return {...r,league:r.league||m?.league||leagueNamesByFixture.get(String(r.id))||'',key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
+ return {...r,goalTimeline:r.goalTimeline||'Chưa có dữ liệu diễn biến xác minh',league:r.league||m?.league||leagueNamesByFixture.get(String(r.id))||'',key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,overLineAtAlert:r.decision?.line??null,scoreAtAlert:r.score,liveScore:ft?null:scoreNow,ftScore:ft?scoreNow:null,
   liveGoalsAfterAlert:goals,score: r.score,overOddsAtAlert:r.decision?.overOdds??null,
   oddsAtAlertStatus:r.decision?.overOdds==null?'CHUA_LAY_DUOC_ODDS':'DAT_ODDS',
@@ -368,16 +368,31 @@ async function fetchFixtures(){
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
 function goalTimeline(m){
- // Only print a verified provider timeline; never infer goal minutes from score changes.
- const raw=m.raw||{};
- const events=raw.goalEvents??raw.goals??raw.GoalEvents??raw.goalTimeline;
- if(!Array.isArray(events))return 'Chưa có dữ liệu diễn biến xác minh';
- const formatted=events.map(e=>{
-  const minute=minuteNumber(e.minute??e.Minute??e.time);
-  const home=Number(e.homeScore??e.HomeScore),away=Number(e.awayScore??e.GuestScore);
-  return minute!==null&&Number.isFinite(home)&&Number.isFinite(away)?`P${minute}: ${home}-${away}`:null;
- }).filter(Boolean);
- return formatted.length?formatted.join(' | '):'Chưa có dữ liệu diễn biến xác minh';
+ // Accept only explicit goal events with verified cumulative home/away scores.
+ const raw=m?.raw||{};
+ const containers=[raw.goalEvents,raw.goals,raw.GoalEvents,raw.goalTimeline,raw.events,raw.Events,raw.incidents,raw.Incidents,raw.matchEvents,raw.MatchEvents,raw.goalList,raw.GoalList];
+ const events=containers.find(Array.isArray);
+ if(!events)return 'Chưa có dữ liệu diễn biến xác minh';
+ const parsed=[];
+ for(const e of events){
+  if(!e||typeof e!=='object')continue;
+  const type=String(e.type??e.Type??e.eventType??e.EventType??'').toLowerCase();
+  if(type&&(/corner|card|yellow|red|substitution|penalty missed|var cancelled|goal cancelled/.test(type)))continue;
+  const minute=minuteNumber(e.minute??e.Minute??e.time??e.Time??e.matchTime);
+  const home=Number(e.homeScore??e.HomeScore??e.scoreHome??e.homeGoals);
+  const away=Number(e.awayScore??e.AwayScore??e.GuestScore??e.scoreAway??e.awayGoals);
+  if(minute===null||!Number.isInteger(home)||!Number.isInteger(away)||home<0||away<0)continue;
+  parsed.push({minute,home,away});
+ }
+ parsed.sort((a,b)=>a.minute-b.minute||a.home+a.away-b.home-b.away);
+ const valid=[];let h=0,a=0;
+ for(const e of parsed){
+  if(e.home+e.away!==h+a+1||(e.home!==h+1||e.away!==a)&&(e.home!==h||e.away!==a+1))continue;
+  valid.push(`P${e.minute}: ${e.home}-${e.away}`);h=e.home;a=e.away;
+ }
+ // Incomplete event histories are not presented as verified timelines.
+ if(!valid.length||h!==Number(m.homeScore)||a!==Number(m.awayScore))return 'Chưa có dữ liệu diễn biến xác minh';
+ return valid.join(' | ');
 }
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
@@ -421,7 +436,7 @@ async function scan(){
     observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
     if(m.minute<65||sent.has(m.id)||!decision.level)continue;
-    const record={id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
+    const record={goalTimeline:goalTimeline(m),id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
     sent.set(m.id,record);watchlist.delete(m.id);await save(m.id,record);
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
@@ -464,7 +479,7 @@ app.get('/api/no-stats-alerts',(req,res)=>{
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
  return [...sent.values()].filter(r=>r&&r.id&&r.id!=='__control__'&&r.status==='sent').map(r=>({
-  id:r.id,at:r.sentAt||null,league:r.league||matches.get(r.id)?.league||leagueNamesByFixture.get(String(r.id))||'',home:r.home,away:r.away,minute:r.minute,
+  id:r.id,at:r.sentAt||null,goalTimeline:r.goalTimeline||'Chưa có dữ liệu diễn biến xác minh',league:r.league||matches.get(r.id)?.league||leagueNamesByFixture.get(String(r.id))||'',home:r.home,away:r.away,minute:r.minute,
   scoreH:Number(String(r.score).split('-')[0]),scoreA:Number(String(r.score).split('-')[1]),
   aiProbability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,engine:'AI LIVE RUNG',alertSent:true,

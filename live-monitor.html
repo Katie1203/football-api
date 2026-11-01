@@ -208,37 +208,26 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 .grid .card .meta{font-size:10px!important;margin-bottom:5px!important}
 @media(max-width:1150px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 @media(max-width:620px){.grid{grid-template-columns:1fr!important}}
-</style><style id="tt-live-rung-ui-fix">
-/* Presentation-only patch: no AI thresholds, decisions, alerts or backend changes. */
-.grid .card{padding:9px!important}
-.grid .card .teams{margin:7px 0!important;line-height:1.25!important}
-.grid .card .line{margin-top:4px!important;padding-top:5px!important;gap:8px!important}
-.grid .card .line strong{font-size:12px!important;text-align:right;overflow-wrap:anywhere}
-.grid .card .score{font-size:16px!important}
-.tt-rung-summary,.tt-bet365{margin-top:6px;padding:6px 8px;border:1px solid #385c48;border-radius:7px;background:#132820}
-.tt-rung-summary .line:first-child,.tt-bet365 .line:first-child{border-top:0;margin-top:0!important;padding-top:0!important}
-.tt-rung-summary details{font-size:11px;margin-top:6px}
-.tt-rung-summary summary{cursor:pointer;color:#e9c777}
-.tt-bet365 small{font-size:10px;text-align:right;overflow-wrap:anywhere}
-<style id="tt-live-rung-compact-20261101">
-#cards.grid{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:8px!important;align-items:start}
-#cards .card{min-width:0!important;padding:9px!important;margin:0!important;gap:4px!important}
-#cards .card .teams{font-size:12px!important;line-height:1.25!important;margin:5px 0!important}
-#cards .card .score{font-size:17px!important;margin:4px 0!important}
-#cards .card .line{font-size:11px!important;gap:6px!important;padding:5px 0!important}
-#cards .tt-rung-summary,#cards .tt-bet365{padding:5px 7px!important;margin-top:5px!important}
-#cards .meta{font-size:10px!important}
-#cards .value{font-size:12px!important}
-@media(max-width:1100px){#cards.grid{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
-@media(max-width:760px){#cards.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-@media(max-width:490px){#cards.grid{grid-template-columns:minmax(0,1fr)!important}}
+<style>/* Stable compact live cards */
+.grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:8px!important}
+.grid .card{padding:9px!important;border-radius:9px!important}
+.grid .teams{font-size:13px!important;line-height:1.25!important;margin:7px 0!important}
+.grid .meta,.grid .score,.grid .line{font-size:11px!important}
+.grid .line{padding-top:5px!important;margin-top:5px!important}
+.grid .value{font-size:14px!important}
+.tt-stale{opacity:.75;border-style:dashed!important}.tt-stale-label{font-size:10px;color:#ffcf78}
+@media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:650px){.grid{grid-template-columns:1fr!important}}
 </style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let rows=[],group='all';
+const retained=new Map();let refreshBusy=false;
+const rowKey=x=>x.fixtureId!=null&&String(x.fixtureId).trim()?'id:'+String(x.fixtureId):'teams:'+String(x.home||'').toLowerCase()+'|'+String(x.away||'').toLowerCase();
+function stableRows(fresh){const now=Date.now(), seen=new Set();for(const x of fresh){const k=rowKey(x);seen.add(k);const old=retained.get(k);retained.set(k,{...old,...x,stale:false,lastSeen:now});}for(const [k,x] of retained){const m=Number(x.minute);if(x.sentTelegram||x.noStatsAlertSent||m>=85){retained.delete(k);continue;}if(!seen.has(k)){if(now-x.lastSeen>30000){retained.delete(k);continue;}retained.set(k,{...x,stale:true});}}return [...retained.values()];}
 const tabs=[['all','Tất cả'],['experimental','Đã phân tích'],['none','Chưa có kết quả'],['big','BIG BET'],['rung','RUNG'],['odds','KHÔNG ĐẠT ODD']];
 const hasNumber=x=>x!==null&&x!==undefined&&x!==''&&Number.isFinite(Number(x));
-const hasExperimental=x=>x.analyzed===true||hasNumber(x.signalConfidence?.probability)||hasNumber(x.noStatsProbability);
+const hasExperimental=x=>hasNumber(x.noStatsProbability);
 function bucket(x){return hasExperimental(x)?'experimental':'none';}
 // Only verified AI lambda above 0.95 in the 65–88' window gets an animated border.
 // Amber means odds are still required for the higher-lambda alert; green means
@@ -254,7 +243,7 @@ function signalClass(x){
 function matchesGroup(x,id){
  if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
  if(id==='rung')return /RUNG/i.test(String(x.sentAlertLabel||''));
- if(id==='odds')return x.oddsVerdict==='FAIL';
+ if(id==='odds')return x.oddsVerdict==='FAIL'||x.oddsVerdict==='WAIT';
  return id==='all'||(id==='experimental'&&hasExperimental(x))||(id==='none'&&!hasExperimental(x));
 }
 function pct(x){return hasNumber(x)?Number(x).toFixed(1)+'%':'Chưa có kết quả';}
@@ -288,33 +277,29 @@ function liveMinute(x){
 }
 function visibleLive(x){const m=liveMinute(x);return m.value!==null&&m.value>=60&&m.value<85&&x.htGoals>=1&&!x.sentTelegram;}
 
-function compactAiRung(x){
- const p=x.signalConfidence?.probability??x.probability??x.aiProbability??x.noStatsProbability;
- const status=x.decision?.level||x.signalLabel||'ĐANG THEO DÕI';
- const reason=x.decision?.reason;
- return '<div class="tt-rung-summary"><div class="line"><span>Xác suất AI LIVE RUNG</span><strong>'+pct(p)+'</strong></div>'+
- '<div class="line"><span>Tín hiệu AI LIVE RUNG</span><strong>'+esc(status)+'</strong></div>'+
- (reason?'<details><summary>Diễn giải AI LIVE RUNG</summary><small>'+esc(reason)+'</small></details>':'')+'</div>';
-}
-function compactBet365(x){
- const book=(x.market?.bookmakers||[]).find(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2');
- const rawLine=book?.line??x.overLine??x.decision?.line;
- const rawPrice=book?.overDecimal??x.overOdds??x.decision?.overOdds;
- const line=hasNumber(rawLine)?Number(rawLine).toFixed(2):'—';
- const price=hasNumber(rawPrice)&&Number(rawPrice)>1?Number(rawPrice).toFixed(2):'Chưa có kèo';
- const status=String(x.oddsStatus||'CHƯA QUÉT ODDS');
- const changes=(x.market?.changes||[]).filter(c=>String(c.bookmakerId??c.company_id??c.companyId)==='2'&&c.marketMove&&!c.scoreChanged).length;
- return '<div class="tt-bet365"><div class="line"><span>BET365 · Over LIVE '+esc(line)+'</span><strong>'+esc(price)+'</strong></div>'+
- '<div class="line"><span>Biến động kèo</span><strong>'+changes+' lần</strong></div>'+
- '<div class="line"><span>Trạng thái odds</span><small>'+esc(status)+'</small></div></div>';
+function marketSideBySide(x){
+ const m=x.market||{},book=(m.bookmakers||[]).find(b=>String(b.bookmakerId)==='2');
+ const decision=x.decision||{};
+ const line=book?.line??decision.line;
+ const over=book?.overDecimal??decision.overOdds;
+ const probability=x.signalConfidence?.probability??x.noStatsProbability;
+ const changes=(m.changes||[]).filter(c=>String(c.bookmakerId)==='2'&&c.marketMove&&!c.scoreChanged);
+ const fmt=v=>hasNumber(v)?Number(v).toFixed(2):'Chưa có dữ liệu';
+ return '<div class="market-side" style="margin:9px 0;padding:9px;border:1px solid #a88c4d;border-radius:8px;background:#24363a">'+
+ '<b style="color:#f1d17a">AI LIVE RUNG · BET365</b><div class="line"><span>Độ tin cậy tín hiệu</span><strong>'+pct(probability)+'</strong></div>'+
+ '<div class="line"><span>Mốc Over LIVE</span><strong>'+fmt(line)+'</strong></div>'+
+ '<div class="line"><span>Odds Over</span><strong>'+fmt(over)+'</strong></div>'+
+ '<div class="line"><span>Biến động cùng nhà cái</span><strong>'+changes.length+' lần</strong></div>'+
+ '<div class="line"><span>Kết luận AI</span><strong>'+esc(decision.level||'ĐANG THEO DÕI')+'</strong></div>'+
+ '<details><summary>Diễn giải tín hiệu</summary><small>'+esc(decision.reason||'Chưa đủ dữ liệu để kết luận')+'</small></details></div>';
 }
 
 function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
  $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
- $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div>'+compactAiRung(x)+compactBet365(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.sentTelegram?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
+ $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI LIVE RUNG</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Tín hiệu AI LIVE RUNG</span><span class="value">'+(x.decision?.level||'ĐANG THEO DÕI')+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
-async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows.map(x=>({...x,noStatsProbability:x.probability??x.aiProbability??null,expectedRemainingGoals:null,sentAlertLabel:x.alertLabel||null,overOdds:x.decision?.overOdds??x.market?.bookmakers?.find(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2')?.overDecimal??null,overLine:x.decision?.line??x.market?.bookmakers?.find(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2')?.line??null,oddsValid:x.market?.bookmakers?.some(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2')===true,oddsStatus:x.market?.bookmakers?.some(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2')?'BET365':'CHƯA XÁC MINH',aiLiveEnhanced:x.aiLiveEnhanced||null})):[];const noStats=[];
+async function load(){if(refreshBusy)return;refreshBusy=true;try{const r=await fetch('/api/live-monitor',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();rows=Array.isArray(d.rows)?d.rows.map(x=>({...x,noStatsProbability:x.probability??x.aiProbability??null,expectedRemainingGoals:null,sentAlertLabel:x.alertLabel||null,overOdds:x.decision?.overOdds??x.market?.bookmakers?.[0]?.overDecimal??null,overLine:x.decision?.line??x.market?.bookmakers?.[0]?.line??null,oddsValid:x.market?.bookmakers?.some(b=>String(b.bookmakerId)==='2')===true,oddsStatus:x.market?.bookmakers?.length?'BET365':'CHƯA XÁC MINH',aiLiveEnhanced:x.aiLiveEnhanced||null})):[];const noStats=[];
  // Read-only labels from successful Telegram alerts and the existing Odds-waiting endpoint.
  // Do not infer BIG BET/RUNG from lambda or from a changing live score.
  const [alertResponse,waitingResponse,fullResponse]=await Promise.allSettled([
@@ -351,8 +336,8 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
   const price=hasNumber(rawPrice)?Number(rawPrice):null;
   const status=rec?.oddsStatus||wait?.oddsStatus||x.oddsStatus||'CHƯA QUÉT ODDS';
   return {overOdds:price,overLine:rec?.bigggOverLine??wait?.overLine??x.overLine??null,oddsValid:valid,
-   oddsStatus:status,oddsUpdatedAt:rec?.bigggOddsUpdatedAt||x.market?.bookmakers?.find(b=>String(b.bookmakerId??b.company_id??b.companyId)==='2')?.providerTime||null,
-   oddsVerdict:valid&&price!==null?(price>=1.50?'PASS':'FAIL'):'UNKNOWN'};
+   oddsStatus:status,oddsUpdatedAt:rec?.bigggOddsUpdatedAt||x.market?.bookmakers?.[0]?.providerTime||null,
+   oddsVerdict:valid&&price!==null?(price>=1.50?'PASS':'FAIL'):'WAIT'};
  }
  rows=rows.map(x=>{
   const sent=(x.fixtureId!=null?sentById.get(String(x.fixtureId)):null)||sentByName.get(key(x.home,x.away));
@@ -373,11 +358,11 @@ async function load(){try{const r=await fetch('/api/live-monitor',{cache:'no-sto
  // Hide successfully alerted fixtures only on the LIVE monitor.
  // Do not change scan, Telegram, FT audit, or other pages.
  // Both card display and tab counters share this filtered list.
- rows=rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent);
+ rows=stableRows(rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent));
  const s=d.summary||{};
  const stats=[['TỔNG TRẬN ĐANG LIVE',d.totalLive??0],['LIVE 60–84 (HT ≥ 1)',d.watching??rows.length],['Đã phân tích',d.analyzed??0],['AI LIVE RUNG',d.alerts??0]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
  $('time').textContent='Dữ liệu quét máy chủ: '+(d.lastScan?.at?new Date(d.lastScan.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Máy chủ quét mỗi 5 giây; chỉ dùng phút đã xác minh để phát tín hiệu.';draw();
- }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message;}}
+ }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message+' · giữ danh sách hiện tại';}finally{refreshBusy=false;}}
 $('q').addEventListener('input',draw);load();setInterval(load,5000);
 </script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>
