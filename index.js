@@ -334,9 +334,15 @@ async function backfillMissingAlertLeagues(){
 }
 async function fetchFixtures(oddsSnapshot){
   const q=`date=${vnDate()}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`;
-  const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
+  // Diary and LIVE delta are independent. Run concurrently so one slow endpoint
+  // cannot consume the whole five-second observation window.
+  const [diaryResult,deltaResult]=await Promise.allSettled([
+    proxyGetPayload('/v1/football/match/diary?'+q),
+    proxyGet('/v1/football/match/live?locale=vi')
+  ]);
+  if(diaryResult.status!=='fulfilled')throw new Error('[BONGDALU DIARY] '+diaryResult.reason?.message);
+  const diaryPayload=diaryResult.value;
   const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
-  // Bongdalu match rows contain sclassID; names are in the sibling leagues list.
   const leagueById=buildLeagueMap(diaryPayload);
   const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>{
     const league=resolveLeague(r,leagueById,leagueNamesByFixture.get(String(r.ScheduleID)));
@@ -344,17 +350,21 @@ async function fetchFixtures(oddsSnapshot){
     return [String(r.ScheduleID),{...r,LeagueName:league}];
   }));
   const deltas=new Map();
-  try{
-    for(const d of rows(await proxyGet('/v1/football/match/live?locale=vi'))){
+  if(deltaResult.status==='fulfilled'){
+    for(const d of rows(deltaResult.value)){
       const id=String(d.ScheduleID??d.scheduleId??d.id);
       if(!byId.has(id))continue;
-      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,goalEvents:d.goalEvents??d.GoalEvents??prior.goalEvents??prior.GoalEvents,events:d.events??d.Events??prior.events??prior.Events,LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
+      deltas.set(id,d);
+      const prior=byId.get(id);
+      byId.set(id,{...prior,...d,goalEvents:d.goalEvents??d.GoalEvents??prior.goalEvents??prior.GoalEvents,
+        events:d.events??d.Events??prior.events??prior.Events,
+        LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
     }
-  }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
+  }else console.warn('[BONGDALU LIVE DELTA]',deltaResult.reason?.message);
   const all=[...byId.values()].map(norm).filter(Boolean);
   for(const m of all)trackObservedScore(m);
   const live=all.filter(m=>m.state===1||m.state===3);
-  const odds=rows(oddsSnapshot); // Same snapshot as AI: no second independent odds request.
+  const odds=rows(await oddsSnapshot); // Same snapshot as AI: no second independent odds request.
   const byOdds=new Map();
   for(const row of odds){const id=String(row.match_id??'');if(!byOdds.has(id))byOdds.set(id,[]);byOdds.get(id).push(row);}
   const sourceCounts={direct:0,delta:0,odds:0,unknown:0};
@@ -366,7 +376,11 @@ async function fetchFixtures(oddsSnapshot){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
-  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length,watching:watchlist.size,oddsRows:odds.length}));
+  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length,watching:watchlist.size,oddsRows:odds.length,
+    deltaRows:deltas.size,oddsMatchIds:byOdds.size,
+    deltaOk:deltaResult.status==='fulfilled',
+    oddsProviderFreshRows:odds.filter(r=>Number.isFinite(Number(r.provider_time))&&
+      Date.now()-Number(r.provider_time)*1000>=0&&Date.now()-Number(r.provider_time)*1000<=15000).length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
@@ -452,8 +466,9 @@ async function scan(){
   // One LIVE odds request per scan. Fetch alongside fixtures to reduce total latency.
   // A failed odds request cannot erase the existing watchlist.
   const oddsPromise=proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});
+  const fixturesPromise=fetchFixtures(oddsPromise);
   const oddsSnapshot=await oddsPromise;
-  const fixtures=await fetchFixtures(oddsSnapshot);const seen=new Set();
+  const fixtures=await fixturesPromise;const seen=new Set();
   for(const m of fixtures){
    seen.add(m.id);const old=matches.get(m.id);
    // Retain last VERIFIED minute when Bongdalu temporarily omits it. Never use it for a new signal.
@@ -477,24 +492,25 @@ async function scan(){
    if(!watchlist.has(m.id)&&qualifying(m))watchlist.set(m.id,{id:m.id,addedAt:now(),order:watchlist.size});
    if(!watchlist.has(m.id))continue;
    // Only fresh, verified minutes in range may trigger AI decisions.
-   if(!verified||m.minute<60||m.minute>=85){observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});continue;}
+   if(!verified||m.minute<60||m.minute>=85){
+     observations.set(m.id,{...(observations.get(m.id)||{}),stale:true,blockReason:!verified?'MINUTE_UNVERIFIED':'MINUTE_OUT_OF_RANGE'});
+     continue;
+   }
    try{
-    const observed=market.observe(m.id,(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`));
+    const snapshotRows=(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`);
+    const observed=market.observe(m.id,snapshotRows);
     // A market can remain unchanged while a valid signal is already present.
     // Re-evaluate fresh, score-matched quotes rather than waiting for the next price tick.
     const marketState=market.get(m.id);
     const currentQuote=marketState?.bookmakers?.find(b=>String(b.bookmakerId)==='2');
-    const snapshotRows=(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`);
     const freshQuote=!!currentQuote && snapshotRows.some(r=>Number(r.provider_time)*1000===currentQuote.providerTime&&Number(r.line)===currentQuote.line&&Number(r.v1)===currentQuote.overRaw&&Number(r.v2)===currentQuote.underRaw) &&
       Number.isFinite(currentQuote.providerTime) &&
       Date.now()-currentQuote.providerTime>=0 &&
       Date.now()-currentQuote.providerTime<=ALERT_QUOTE_MAX_AGE_MS &&
       currentQuote.homeScore===m.homeScore &&
       currentQuote.awayScore===m.awayScore;
-    if(!freshQuote || (observed.status!=='OBSERVED'&&observed.status!=='UNCHANGED')){
-      observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});
-      continue;
-    }
+    // Analyze every verified score-matched market state even if the sending quote
+    // is stale/missing. Only the dispatch gate requires a fresh current quote.
     const goalEvent=newGoalPending.get(m.id);
     // Goal event triggers immediate separate BIG BET evaluation, never from a pre-goal price trend.
     const decision=goalEvent&&Date.now()-goalEvent.at<=30000
@@ -502,11 +518,16 @@ async function scan(){
       : decideLiveRung(m,marketState);
     if(goalEvent&&Date.now()-goalEvent.at>30000)newGoalPending.delete(m.id);
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
-    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),firstMarketMoveAt:marketState?.changes?.find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,latestMarketMoveAt:[...(marketState?.changes||[])].reverse().find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
+    const blockReason=!freshQuote
+      ? (!snapshotRows.length?'NO_CURRENT_ODDS':'ODDS_STALE_OR_MISMATCH')
+      : (observed.status!=='OBSERVED'&&observed.status!=='UNCHANGED'?'MARKET_UNAVAILABLE':
+         !decision.level?(decision.reason||'SIGNAL_NOT_QUALIFIED'):'READY');
+    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,blockReason,at:now(),firstMarketMoveAt:marketState?.changes?.find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,latestMarketMoveAt:[...(marketState?.changes||[])].reverse().find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
     // Dispatch at the first verified qualifying market signal (including minutes 60-64).
     // Do not impose the former minute-65 waiting gate.
     if(sent.has(m.id)||!decision.level)continue;
+    if(blockReason!=='READY')continue;
     // Dispatch uses the quote verified in THIS scan, not an older cached price.
     if(decision.level==='BET NHẸ TAY'&&!(Number(currentQuote.overDecimal)>=1.50))continue;
     decision.overOdds=currentQuote.overDecimal;decision.line=currentQuote.line;
@@ -518,7 +539,8 @@ async function scan(){
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
   for(const [id] of watchlist){if(!seen.has(id)&&matches.has(id)){const old=matches.get(id);matches.set(id,{...old,stale:true,minuteSource:'stale'});}}
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size,oddsRows:rows(oddsSnapshot).length,verifiedMinutes:fixtures.filter(m=>m.minute!==null).length,staleWatched:[...watchlist.keys()].filter(id=>matches.get(id)?.stale).length};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size,oddsRows:rows(oddsSnapshot).length,verifiedMinutes:fixtures.filter(m=>m.minute!==null).length,staleWatched:[...watchlist.keys()].filter(id=>matches.get(id)?.stale).length,
+    blocked:[...watchlist.keys()].reduce((acc,id)=>{const reason=observations.get(id)?.blockReason||'NOT_ANALYZED';acc[reason]=(acc[reason]||0)+1;return acc;},{})};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
