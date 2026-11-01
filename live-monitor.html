@@ -197,6 +197,13 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
  50%{border-color:#ffe8a0;box-shadow:0 0 6px #ffcf4266;filter:brightness(.86)}
 }
 @media(prefers-reduced-motion:reduce){.card.tt-signal-ready,.card.tt-signal-odds-wait{animation:none!important;filter:none!important}}
+/* Visual signal only: uses the backend AI decision, never creates an alert. */
+.card.tt-ai-bet{border:3px solid #ff9b25!important;animation:tt-ai-bet-pulse 1.1s ease-in-out infinite!important;box-shadow:0 0 19px #ff9b2577!important}
+.card.tt-ai-big{border:3px solid #ff4040!important;animation:tt-ai-big-pulse .8s ease-in-out infinite!important;box-shadow:0 0 24px #ff404099!important}
+.card.tt-ai-bet .teams,.card.tt-ai-big .teams{color:#fff4c6!important}
+@keyframes tt-ai-bet-pulse{0%,100%{border-color:#ff9b25;box-shadow:0 0 20px #ff9b2588}50%{border-color:#ffe3a2;box-shadow:0 0 3px #ff9b2544}}
+@keyframes tt-ai-big-pulse{0%,100%{border-color:#ff3434;box-shadow:0 0 26px #ff3434aa}50%{border-color:#ffb6b6;box-shadow:0 0 4px #ff343455}}
+@media(prefers-reduced-motion:reduce){.card.tt-ai-bet,.card.tt-ai-big{animation:none!important}}
 </style><style>/* Compact comparison cards */
 .match-card{padding:9px!important}.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:6px 0!important}.match-card .match-metric{padding:7px!important;min-height:56px!important}.match-card .match-metric strong{font-size:18px!important}.match-card .match-teams{margin:5px 0!important}.market-side{margin:5px 0!important;padding:7px!important}.market-explain{font-size:11px;margin-top:4px}.market-explain summary{cursor:pointer;color:#f1d17a;font-weight:700}.market-explain[open] summary{margin-bottom:4px}@media(max-width:550px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 /* Thu gọn thẻ LIVE, giữ nguyên màu sắc và DOM gốc */
@@ -208,7 +215,7 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 .grid .card .meta{font-size:10px!important;margin-bottom:5px!important}
 @media(max-width:1150px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 @media(max-width:620px){.grid{grid-template-columns:1fr!important}}
-<style>/* Stable compact live cards */
+/* Stable compact live cards */
 .grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:8px!important}
 .grid .card{padding:9px!important;border-radius:9px!important}
 .grid .teams{font-size:13px!important;line-height:1.25!important;margin:7px 0!important}
@@ -218,7 +225,29 @@ tbody tr:nth-child(odd){background-color:#26353d!important}
 .tt-stale{opacity:.75;border-style:dashed!important}.tt-stale-label{font-size:10px;color:#ffcf78}
 @media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 @media(max-width:650px){.grid{grid-template-columns:1fr!important}}
-</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
+
+/* 2026-11-02: compact cards + whole-card pulse; no AI logic changes. */
+.grid{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:7px!important}
+.grid>.card{padding:7px!important;border-radius:8px!important;transition:none!important}
+.grid>.card .teams{font-size:12px!important;line-height:1.2!important;margin:4px 0!important}
+.grid>.card .teams .muted{font-size:10px!important}
+.grid>.card .score{font-size:13px!important;margin:3px 0!important}
+.grid>.card .meta{font-size:9px!important;margin:0 0 3px!important;gap:4px!important}
+.grid>.card .line{font-size:10px!important;margin-top:3px!important;padding:3px 0 0!important;gap:4px!important}
+.grid>.card .value{font-size:11px!important}
+.grid>.card .pill{font-size:9px!important;padding:2px 4px!important}
+.grid>.card .market-side{padding:5px!important;margin:4px 0!important;border-radius:6px!important}
+.grid>.card .market-side .line{margin-top:2px!important;padding-top:2px!important}
+.grid>.card .market-explain{font-size:10px!important;margin-top:2px!important}
+.grid>.card .market-explain summary{padding:3px!important}
+.grid>.card.tt-ai-bet{animation:tt-whole-bet 1s steps(2,end) infinite!important;will-change:filter,background-color,box-shadow}
+.grid>.card.tt-ai-big{animation:tt-whole-big .85s steps(2,end) infinite!important;will-change:filter,background-color,box-shadow}
+@keyframes tt-whole-bet{0%,100%{background-color:#5b3614!important;border-color:#ff9b25!important;box-shadow:0 0 22px 5px #ff9b25b8,inset 0 0 26px #ff9b2550!important;filter:brightness(1.28)}50%{background-color:#0c1916!important;border-color:#ffcf70!important;box-shadow:0 0 3px #ff9b2544!important;filter:brightness(.88)}}
+@keyframes tt-whole-big{0%,100%{background-color:#641a1a!important;border-color:#ff3030!important;box-shadow:0 0 25px 6px #ff3030bd,inset 0 0 28px #ff303065!important;filter:brightness(1.3)}50%{background-color:#0c1916!important;border-color:#ff9999!important;box-shadow:0 0 3px #ff303044!important;filter:brightness(.85)}}
+@media(max-width:1100px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:650px){.grid{grid-template-columns:1fr!important}}
+@media(prefers-reduced-motion:reduce){.grid>.card.tt-ai-bet,.grid>.card.tt-ai-big{animation:none!important;box-shadow:0 0 0 3px currentColor!important}}
+</style></head><body class="tt-unified"><div class="tt-global-header"><a class="tt-global-brand" href="/dashboard">✦ THẦN TÀI MAY MẮN</a><nav class="tt-global-links" aria-label="Điều hướng chính"><a href="/dashboard">Dashboard</a><a href="/dashboard">Thống kê</a><a href="/live-monitor" class="tt-current">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></nav><span class="tt-global-clock" aria-label="Giờ Việt Nam"></span><span class="tt-global-running">● Đang chạy</span><button type="button" class="tt-global-refresh" onclick="location.reload()" title="Làm mới trang" aria-label="Làm mới trang">↻</button></div><main><header><div><div class="muted">THẦN TÀI MAY MẮN · GIÁM SÁT CHUNG</div><h1>Theo dõi LIVE theo lượt quét</h1><div class="muted">Theo dõi một cơ chế AI LIVE RUNG duy nhất; xác suất và λ lấy từ kết quả thực tế</div></div><span id="time" class="muted">Đang tải...</span></header><div class="stats" id="stats"></div><div class="tools"><div id="tabs"></div><input id="q" placeholder="Tìm đội hoặc giải đấu" aria-label="Tìm trận"></div><div class="grid" id="cards"></div><p class="hint">Viền cam nhấp nháy: AI xác nhận BET NHẸ TAY; viền đỏ: AI xác nhận BIG BET. Thẻ không nhấp nháy chưa có kết luận; hiệu ứng không đồng nghĩa Telegram đã gửi. Chỉ sử dụng AI LIVE RUNG; thiếu dữ liệu không đồng nghĩa dự đoán thất bại. Trang cập nhật dữ liệu LIVE theo lượt quét.</p></main><script>
 const $=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let rows=[],group='all';
@@ -233,12 +262,16 @@ function bucket(x){return hasExperimental(x)?'experimental':'none';}
 // Amber means odds are still required for the higher-lambda alert; green means
 // the BET NHẸ TAY odds policy permits the signal (other alert gates still apply).
 function signalClass(x){
- const m=Number(x.minute),l=Number(x.expectedRemainingGoals);
- if(!Number.isFinite(m)||m<65||m>88||!hasNumber(x.expectedRemainingGoals)||!Number.isFinite(l)||l<=0.95)return '';
- const odds=hasNumber(x.overOdds)&&Number(x.overOdds)>1?Number(x.overOdds):null;
- if(x.oddsValid===true&&odds!==null&&odds<1.50)return ' tt-signal-odds-wait';
- // No verified price: ordinary alerts are eligible, not WAIT_ODDS.
- return ' tt-signal-ready';
+ // A visual marker is NOT an AI prediction. Only actual backend decision.level qualifies.
+ // A valid minute and fresh server observation prevent blinking from stale cached cards.
+ const level=String(x.decision?.level||'').toUpperCase().trim();
+ const minute=Number(x.minute);
+ const observed=Date.parse(x.observationAt||x.at||'');
+ if(!Number.isFinite(minute)||minute<60||minute>=85||x.stale||x.sentTelegram||x.noStatsAlertSent)return '';
+ if(!Number.isFinite(observed)||Date.now()-observed>30000||observed-Date.now()>30000)return '';
+ if(/BIGG?G?\s*BET/.test(level))return ' tt-ai-big';
+ if(level==='BET NHẸ TAY')return ' tt-ai-bet';
+ return '';
 }
 function matchesGroup(x,id){
  if(id==='big')return /BIGGG?\s*BET/i.test(String(x.sentAlertLabel||''));
