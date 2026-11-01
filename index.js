@@ -350,6 +350,7 @@ async function fetchFixtures(){
     }
   }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
   const all=[...byId.values()].map(norm).filter(Boolean);
+  for(const m of all)trackObservedScore(m);
   const live=all.filter(m=>m.state===1||m.state===3);
   const odds=await fetchOddsMinuteRows();
   const byOdds=new Map();
@@ -367,12 +368,29 @@ async function fetchFixtures(){
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
+// Score-change observations are not official goal minutes. Keep provenance explicit.
+const observedScoreHistory=new Map();
+function trackObservedScore(m){
+ if(!m||!m.id||!Number.isInteger(m.homeScore)||!Number.isInteger(m.awayScore))return;
+ const id=String(m.id),old=observedScoreHistory.get(id)||[];
+ const last=old[old.length-1];
+ if(!last){observedScoreHistory.set(id,[{home:m.homeScore,away:m.awayScore,minute:m.minute,observedAt:Date.now(),initial:true}]);return;}
+ if(last.home===m.homeScore&&last.away===m.awayScore)return;
+ const next=[...old,{home:m.homeScore,away:m.awayScore,minute:m.minute,observedAt:Date.now(),initial:false}].slice(-40);
+ observedScoreHistory.set(id,next);
+}
+function observedScoreTimeline(m){
+ const entries=observedScoreHistory.get(String(m?.id))||[];
+ const changes=entries.filter(e=>!e.initial);
+ if(!changes.length)return '';
+ return changes.map(e=>`P${e.minute??'?'}: ${e.home}-${e.away}`).join(' | ');
+}
 function goalTimeline(m){
  // Accept only explicit goal events with verified cumulative home/away scores.
  const raw=m?.raw||{};
  const containers=[raw.goalEvents,raw.goals,raw.GoalEvents,raw.goalTimeline,raw.events,raw.Events,raw.incidents,raw.Incidents,raw.matchEvents,raw.MatchEvents,raw.goalList,raw.GoalList,raw.detail?.events,raw.detail?.goalEvents];
  const events=containers.find(Array.isArray);
- if(!events)return 'Chưa có dữ liệu diễn biến xác minh';
+ if(!events)return observedScoreTimeline(m)?`Quan sát tỷ số LIVE (không phải phút ghi bàn xác minh): ${observedScoreTimeline(m)}`:'Chưa có dữ liệu diễn biến xác minh';
  const parsed=[];
  for(const e of events){
   if(!e||typeof e!=='object')continue;
@@ -391,7 +409,7 @@ function goalTimeline(m){
   valid.push(`P${e.minute}: ${e.home}-${e.away}`);h=e.home;a=e.away;
  }
  // Incomplete event histories are not presented as verified timelines.
- if(!valid.length||h!==Number(m.homeScore)||a!==Number(m.awayScore))return 'Chưa có dữ liệu diễn biến xác minh';
+ if(!valid.length||h!==Number(m.homeScore)||a!==Number(m.awayScore))return observedScoreTimeline(m)?`Quan sát tỷ số LIVE (không phải phút ghi bàn xác minh): ${observedScoreTimeline(m)}`:'Chưa có dữ liệu diễn biến xác minh';
  return valid.join(' | ');
 }
 function telegramBody(m,decision,confidence){
@@ -430,10 +448,23 @@ async function scan(){
    if(!verified||m.minute<60||m.minute>=85){observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});continue;}
    try{
     const observed=market.observe(m.id,(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`));
-    if(observed.status!=='OBSERVED'){observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});continue;}
-    const decision=decideLiveRung(m,market.get(m.id));
+    // A market can remain unchanged while a valid signal is already present.
+    // Re-evaluate fresh, score-matched quotes rather than waiting for the next price tick.
+    const marketState=market.get(m.id);
+    const currentQuote=marketState?.bookmakers?.find(b=>String(b.bookmakerId)==='2');
+    const freshQuote=!!currentQuote &&
+      Number.isFinite(currentQuote.providerTime) &&
+      Date.now()-currentQuote.providerTime>=0 &&
+      Date.now()-currentQuote.providerTime<=120000 &&
+      currentQuote.homeScore===m.homeScore &&
+      currentQuote.awayScore===m.awayScore;
+    if(!freshQuote || (observed.status!=='OBSERVED'&&observed.status!=='UNCHANGED')){
+      observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});
+      continue;
+    }
+    const decision=decideLiveRung(m,marketState);
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
-    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
+    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),firstMarketMoveAt:marketState?.changes?.find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,latestMarketMoveAt:[...(marketState?.changes||[])].reverse().find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
     if(m.minute<65||sent.has(m.id)||!decision.level)continue;
     const record={goalTimeline:goalTimeline(m),id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
