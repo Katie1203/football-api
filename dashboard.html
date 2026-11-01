@@ -1036,7 +1036,7 @@ body #audit-list .match-teams .match-score,
 body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-shadow:0 1px 4px rgba(0,0,0,.3)!important}
 </style><style>/* Compact comparison cards */
 .match-card{padding:9px!important}.match-card .match-metrics{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:6px!important;margin:6px 0!important}.match-card .match-metric{padding:7px!important;min-height:56px!important}.match-card .match-metric strong{font-size:18px!important}.match-card .match-teams{margin:5px 0!important}.market-side{margin:5px 0!important;padding:7px!important}.market-explain{font-size:11px;margin-top:4px}.market-explain summary{cursor:pointer;color:#f1d17a;font-weight:700}.market-explain[open] summary{margin-bottom:4px}@media(max-width:550px){.match-card .match-metrics{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-</style><style id="ttm-compact-ft-fix">/* Compact FT/alert cards */
+<style>/* Compact FT/alert cards */
 #noStatsAlertRows .match-card{padding:9px!important;row-gap:5px!important;column-gap:7px!important;border-radius:9px!important}
 #noStatsAlertRows .match-head{padding:4px 0!important;gap:5px!important}
 #noStatsAlertRows .match-teams{min-height:0!important;padding:3px 0!important;gap:5px!important}
@@ -1047,48 +1047,16 @@ body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-s
 #noStatsAlertRows .match-metric small{font-size:10px!important}
 #noStatsAlertRows .match-achieved{margin:5px 0!important;min-height:0!important}
 #noStatsAlertRows .match-bottom{font-size:10px!important}
-</style><style id="ttm-compact-final-override">
-/* Last-authoritative compact desktop grid; earlier CSS forces 3 columns. */
-@media(min-width:1250px){
- #noStatsAlertRows{display:grid!important;grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:8px!important}
-}
-@media(min-width:750px) and (max-width:1249px){
- #noStatsAlertRows{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
-}
-@media(max-width:749px){
- #noStatsAlertRows{display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:8px!important}
-}
-#noStatsAlertRows > .match-card{min-width:0!important;min-height:0!important;padding:8px!important;gap:5px!important;box-sizing:border-box!important}
-#noStatsAlertRows .match-head{margin:0 0 4px!important;padding:0!important}
-#noStatsAlertRows .match-teams{min-height:0!important;margin:4px 0!important;padding:0!important}
-#noStatsAlertRows .match-name{font-size:11px!important;line-height:1.2!important;overflow-wrap:anywhere!important}
-#noStatsAlertRows .match-score{font-size:19px!important}
-#noStatsAlertRows .match-metrics{margin:5px 0!important;gap:5px!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
-#noStatsAlertRows .match-metric{min-height:0!important;padding:6px!important}
-#noStatsAlertRows .match-metric strong{font-size:16px!important;margin-top:2px!important}
-#noStatsAlertRows .match-metric small{font-size:10px!important}
-#noStatsAlertRows .match-bottom{padding:4px 0 0!important;font-size:10px!important}
-#noStatsAlertRows .match-achieved{margin:3px 0!important;min-height:0!important}
-</style><style id="tt-dashboard-final-compact-20261101">
-/* Effective 4 columns on desktop regardless of previous 3-column declarations. */
-@media(min-width:1024px){body #noStatsAlertRows{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:7px!important}}
-@media(min-width:650px) and (max-width:1023px){body #noStatsAlertRows{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
-@media(max-width:649px){body #noStatsAlertRows{grid-template-columns:minmax(0,1fr)!important}}
-body #noStatsAlertRows>article.match-card{padding:7px!important;gap:3px!important;min-height:0!important;height:auto!important;line-height:1.15!important}
-body #noStatsAlertRows .match-head{padding:0!important;margin:0!important;min-height:0!important}
-body #noStatsAlertRows .match-head-left{gap:3px!important;font-size:9px!important}
-body #noStatsAlertRows .match-teams{margin:2px 0!important;min-height:0!important;gap:3px!important}
-body #noStatsAlertRows .match-name{font-size:10px!important;line-height:1.15!important}
-body #noStatsAlertRows .match-score{font-size:17px!important;line-height:1.05!important}
-body #noStatsAlertRows .match-status-inline{margin:1px 0!important;gap:3px!important}
-body #noStatsAlertRows .match-status-inline .ai-status{padding:3px 5px!important;font-size:9px!important}
-body #noStatsAlertRows .match-metrics{margin:2px 0!important;gap:4px!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
-body #noStatsAlertRows .match-metric{padding:4px!important;min-height:0!important}
-body #noStatsAlertRows .match-metric small{font-size:9px!important;line-height:1.1!important}
-body #noStatsAlertRows .match-metric strong{font-size:14px!important;line-height:1.15!important;margin:1px 0!important}
-body #noStatsAlertRows .match-bottom{padding:2px 0 0!important;margin:0!important;font-size:9px!important}
-body #noStatsAlertRows .match-achieved{margin:1px 0!important}
-body #noStatsAlertRows p{margin:2px 0!important}
+</style><style id="tt-compact-final">
+#noStatsAlerts .match-card{padding:9px!important;min-height:0!important}
+#noStatsAlerts .match-metrics{margin:5px 0!important;gap:5px!important}
+#noStatsAlerts .match-metric{min-height:0!important;padding:5px!important}
+#noStatsAlerts .match-teams{margin:5px 0!important;gap:4px!important}
+#noStatsAlerts .match-live-score{font-size:11px!important;line-height:1.35!important;margin:3px 0!important}
+#noStatsAlerts .tt-goal-timeline{overflow-wrap:anywhere;color:#f3d48b}
+@media(min-width:1100px){#noStatsAlertRows{grid-template-columns:repeat(4,minmax(0,1fr))!important}}
+@media(min-width:650px) and (max-width:1099px){#noStatsAlertRows{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:649px){#noStatsAlertRows{grid-template-columns:1fr!important}}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1101,7 +1069,7 @@ body #noStatsAlertRows p{margin:2px 0!important}
   <button class="promax-refresh" type="button" onclick="window.location.reload()" title="Tải lại trang Dashboard" aria-label="Tải lại trang Dashboard">↻</button>
 <div class="tt-mobile-nav"><a href="/dashboard">Dashboard</a><a href="/live-monitor">Theo dõi LIVE</a><a href="/rung-bet">RUNG BET</a><a href="/scan-history">Lịch sử quét</a></div></div><header><div><div class="sub">THẦN TÀI MAY MẮN · DASHBOARD</div><h1>THẦN TÀI MAY MẮN – AI LIVE RUNG</h1><div class="hint">Theo dõi cảnh báo Telegram và kết quả FT của AI LIVE RUNG.</div></div><div><button type="button" onclick="loadNoStatsAlerts()">↻ Làm mới</button></div></header><section class="panel" id="ttLowBetControl" style="margin:12px 0;border:1px solid #b99752;padding:12px;border-radius:10px"><div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px"><div><strong style="color:#f1d17a">CẢNH BÁO AI LIVE RUNG · BET NHẸ TAY</strong><div class="hint">Chỉ xét odds LIVE BET365 theo quy tắc cảnh báo AI LIVE RUNG.</div><div class="hint" id="ttLowBetStatus" aria-live="polite">Đang tải trạng thái...</div></div><button type="button" id="ttLowBetButton" onclick="ttToggleLowBet()" disabled>Đang tải...</button></div></section><div class="unified-alert-title" style="margin:14px 0"><h3 style="color:#f1d17a;margin:0">CẢNH BÁO AI LIVE RUNG</h3><small style="color:#f5f7f9">Một cơ chế dự đoán · Một danh sách cảnh báo</small></div><section class="panel" id="noStatsAlerts" role="tabpanel" style="display:block;margin:12px 0"><div class="ai-toolbar"><div><h3>Tổng hợp Telegram · AI LIVE RUNG</h3><p class="hint">AI LIVE RUNG: phân tích từ phút 60, cảnh báo phút 65–88 · WIN/LOSS chỉ tính cảnh báo Telegram đã gửi và chốt FT.</p></div><span class="hint">Cơ chế AI LIVE RUNG duy nhất</span></div>
 <section class="stats" style="margin:12px 0"><div class="stat"><small>Đã phát · AI LIVE RUNG</small><strong id="nsSent">—</strong></div><div class="stat"><small>Đã chốt FT</small><strong id="nsSettled">—</strong></div><div class="stat"><small>Win rate còn bàn</small><strong id="nsGoalRate" class="green">—</strong><small id="nsGoalDetail"></small></div><div class="stat"><small>Win rate Over</small><strong id="nsOverRate" class="amber">—</strong><small id="nsOverDetail"></small></div></section><section class="split" style="margin:10px 0"><div class="panel"><h3>Hiệu quả theo lần cảnh báo · AI LIVE RUNG</h3><div id="nsGroups" class="hint">Cảnh báo #1 — Đang tải...</div></div><div class="panel"><h3>Quy tắc kiểm toán · AI LIVE RUNG</h3><p class="hint">Còn bàn: FT có tổng bàn lớn hơn thời điểm Telegram gửi.</p><p class="hint">Over: FT so với line đã lưu khi cảnh báo. Bằng line = PUSH.</p><p class="hint">Không có line: NO LINE, không tự coi là WIN.</p><p class="hint">Kết quả FT lấy từ dữ liệu trận Bongdalu; chỉ chốt khi trạng thái trận là FT.</p></div></section><div id="noStatsAlertSummary" class="hint" style="margin:10px 0">Đang tải thống kê AI LIVE RUNG...</div>
-<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI LIVE RUNG"></div></section></main><script>
+<div class="audit-tools" id="nsFilters"><button type="button" onclick="nsSetFilter('all')">Tất cả</button><button type="button" onclick="nsSetFilter('pending')">Đang theo dõi</button><button type="button" onclick="nsSetFilter('settled')">Đã chốt</button><button type="button" onclick="nsSetFilter('big')">BIG BET</button><button type="button" onclick="nsSetFilter('rung')">RUNG</button><button type="button" onclick="nsSetFilter('odds')">KHÔNG ĐẠT ODD</button></div><div class="audit-tools" id="nsDeleteTools"><button type="button" onclick="nsSelectVisible()">☑ Chọn trang này</button><button type="button" onclick="nsClearSelection()">Bỏ chọn</button><button type="button" id="nsDeleteSelected" onclick="nsDeleteSelected()" disabled>🗑 Xóa vĩnh viễn (0)</button><span id="nsSelectionCount" class="hint">Đã chọn 0 trận</span></div><div class="audit-scroll" style="max-height:70vh;overflow-y:auto"><div id="noStatsAlertRows" class="matches" style="display:grid;gap:8px"></div></div><div class="audit-tools" id="nsPagination" aria-label="Phân trang lịch sử AI LIVE RUNG"></div></section></main><script>
 const el=id=>document.getElementById(id);
 const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const pill=x=>'<span class="ai-status">'+esc(x)+'</span>';
@@ -1179,6 +1147,7 @@ function nsRenderHistory(){
     '<div class="match-live-score" style="margin-bottom:5px"><b>Odds lúc cảnh báo:</b> <span style="font-weight:800;color:'+(oddsKnown?'#55e8ad':oddsState==='CHUA_LAY_DUOC_ODDS'?'#f0c768':'#aebdc4')+'">'+oddsLabel+'</span>'+oddsDetail+'</div>'+
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
+    '<div class="match-live-score tt-goal-timeline"><b>Diễn biến tỷ số:</b> '+esc(x.goalTimeline||'Chưa có dữ liệu diễn biến xác minh')+'</div>'+
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
   }).join('')||(nsFilter==='odds'?'<div class="hint">Không có trận đang chờ Odds trong dữ liệu LIVE hiện tại.</div>':'<div class="hint">Không có cảnh báo Telegram thuộc nhóm đã chọn.</div>');
 }
