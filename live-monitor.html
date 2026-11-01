@@ -224,7 +224,7 @@ const esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>'
 let rows=[],group='all';
 const retained=new Map();let refreshBusy=false;
 const rowKey=x=>x.fixtureId!=null&&String(x.fixtureId).trim()?'id:'+String(x.fixtureId):'teams:'+String(x.home||'').toLowerCase()+'|'+String(x.away||'').toLowerCase();
-function stableRows(fresh){const now=Date.now(), seen=new Set();for(const x of fresh){const k=rowKey(x);seen.add(k);const old=retained.get(k);retained.set(k,{...old,...x,stale:false,lastSeen:now});}for(const [k,x] of retained){const m=Number(x.minute);if(x.sentTelegram||x.noStatsAlertSent||m>=85){retained.delete(k);continue;}if(!seen.has(k)){if(now-x.lastSeen>30000){retained.delete(k);continue;}retained.set(k,{...x,stale:true});}}return [...retained.values()];}
+function stableRows(fresh){const now=Date.now(), seen=new Set();for(const x of fresh){const k=rowKey(x);seen.add(k);const old=retained.get(k);retained.set(k,{...old,...x,stale:false,lastSeen:now});}for(const [k,x] of retained){const m=Number(x.minute);if(x.sentTelegram||x.noStatsAlertSent||m>=85){retained.delete(k);continue;}if(!seen.has(k)){if(now-x.lastSeen>300000){retained.delete(k);continue;}retained.set(k,{...x,stale:true});}}return [...retained.values()];}
 const tabs=[['all','Tất cả'],['experimental','Đã phân tích'],['none','Chưa có kết quả'],['big','BIG BET'],['rung','RUNG'],['odds','KHÔNG ĐẠT ODD']];
 const hasNumber=x=>x!==null&&x!==undefined&&x!==''&&Number.isFinite(Number(x));
 const hasExperimental=x=>hasNumber(x.noStatsProbability);
@@ -294,8 +294,8 @@ function marketSideBySide(x){
  '<details><summary>Diễn giải tín hiệu</summary><small>'+esc(decision.reason||'Chưa đủ dữ liệu để kết luận')+'</small></details></div>';
 }
 
-function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>visibleLive(x)&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
- $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>visibleLive(x)&&matchesGroup(x,id)).length+')</button>').join(' ');
+function draw(){const q=$('q').value.toLowerCase();const shown=rows.filter(x=>(x.stale||visibleLive(x))&&matchesGroup(x,group)&&[x.home,x.away,x.league].join(' ').toLowerCase().includes(q));
+ $('tabs').innerHTML=tabs.map(([id,name])=>'<button type="button" class="'+(group===id?'active':'')+'" data-tab="'+id+'">'+name+' ('+rows.filter(x=>(x.stale||visibleLive(x))&&matchesGroup(x,id)).length+')</button>').join(' ');
  document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{group=b.dataset.tab;draw()});
  $('cards').innerHTML=shown.map(x=>'<article class="card '+bucket(x)+signalClass(x)+'"><div class="meta"><span class="minute">LIVE '+esc(x.minute??'?')+'′</span><span>'+esc(x.league)+'</span></div><div class="teams">'+esc(x.home)+'<div class="muted">vs</div>'+esc(x.away)+'</div><div class="score">Tỷ số '+esc(x.scoreH??'?')+'–'+esc(x.scoreA??'?')+'</div><div class="line"><span>Xác suất AI LIVE RUNG</span><span class="value rule">'+pct(x.noStatsProbability)+'</span></div><div class="line"><span>Tín hiệu AI LIVE RUNG</span><span class="value">'+(x.decision?.level||'ĐANG THEO DÕI')+'</span></div>'+marketSideBySide(x)+oddsInfo(x)+'<div class="line"><span class="pill">'+(x.sentAlertLabel?esc(x.sentAlertLabel)+' · Đã gửi Telegram':(x.noStatsAlertSent?'Đã gửi Telegram':'Đang theo dõi'))+'</span><span class="muted">'+esc(x.at?.slice(11,19)||'')+' UTC</span></div></article>').join('')||'<div class="empty">Không có trận phù hợp trong lượt quét gần nhất.</div>';
 }
@@ -358,7 +358,7 @@ async function load(){if(refreshBusy)return;refreshBusy=true;try{const r=await f
  // Hide successfully alerted fixtures only on the LIVE monitor.
  // Do not change scan, Telegram, FT audit, or other pages.
  // Both card display and tab counters share this filtered list.
- rows=stableRows(rows.filter(x=>visibleLive(x)&&!x.sentTelegram&&!x.noStatsAlertSent));
+ rows=stableRows(rows.filter(x=>!x.sentTelegram&&!x.noStatsAlertSent));
  const s=d.summary||{};
  const stats=[['TỔNG TRẬN ĐANG LIVE',d.totalLive??0],['LIVE 60–84 (HT ≥ 1)',d.watching??rows.length],['Đã phân tích',d.analyzed??0],['AI LIVE RUNG',d.alerts??0]];
  $('stats').innerHTML=stats.map(([k,v])=>'<div class="stat"><small>'+k+'</small><strong>'+v+'</strong></div>').join('');
