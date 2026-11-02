@@ -505,10 +505,13 @@ async function scan(){
     // Re-evaluate fresh, score-matched quotes rather than waiting for the next price tick.
     const marketState=market.get(m.id);
     const currentQuote=marketState?.bookmakers?.find(b=>String(b.bookmakerId)==='2');
-    const freshQuote=!!currentQuote && snapshotRows.some(r=>Number(r.provider_time)*1000===currentQuote.providerTime&&Number(r.line)===currentQuote.line&&Number(r.v1)===currentQuote.overRaw&&Number(r.v2)===currentQuote.underRaw) &&
-      Number.isFinite(currentQuote.providerTime) &&
-      Date.now()-currentQuote.providerTime>=0 &&
-      Date.now()-currentQuote.providerTime<=ALERT_QUOTE_MAX_AGE_MS &&
+    // Do not require a provider timestamp within a fixed 15-second window.
+    // Preserve match/score identity checks and the actual bookmaker quote.
+    const quoteMatched=!!currentQuote && snapshotRows.some(r=>
+      String(r.company_id??r.companyId??r.bookmaker_id??r.bookmakerId??'2')==='2' &&
+      Number(r.line)===currentQuote.line &&
+      Number(r.v1)===currentQuote.overRaw &&
+      Number(r.v2)===currentQuote.underRaw) &&
       currentQuote.homeScore===m.homeScore &&
       currentQuote.awayScore===m.awayScore;
     // Analyze every verified score-matched market state even if the sending quote
@@ -520,8 +523,8 @@ async function scan(){
       : decideLiveRung(m,marketState,Date.now());
     if(goalEvent&&Date.now()-goalEvent.at>30000)newGoalPending.delete(m.id);
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
-    const blockReason=!freshQuote
-      ? (!snapshotRows.length?'NO_CURRENT_ODDS':'ODDS_STALE_OR_MISMATCH')
+    const blockReason=!quoteMatched
+      ? (!snapshotRows.length?'NO_CURRENT_ODDS':'ODDS_MATCH_MISSING')
       : (observed.status!=='OBSERVED'&&observed.status!=='UNCHANGED'?'MARKET_UNAVAILABLE':
          !decision.level?(decision.reason||'SIGNAL_NOT_QUALIFIED'):'READY');
     observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,blockReason,at:now(),firstMarketMoveAt:marketState?.changes?.find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,latestMarketMoveAt:[...(marketState?.changes||[])].reverse().find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
