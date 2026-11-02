@@ -64,7 +64,7 @@ function alertView(r){
  const current=scoreNow.split('-').map(Number);
  const goals=Number.isFinite(h+a+current[0]+current[1])?Math.max(0,current[0]+current[1]-h-a):null;
  const label=r.decision?.level==='BIG BET'?'BIGGG BET':r.decision?.level||'BET NHẸ TAY';
- return {...r,goalTimeline:r.goalTimeline||'Chưa có dữ liệu diễn biến xác minh',league:r.league||m?.league||leagueNamesByFixture.get(String(r.id))||'',key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
+ return {...r,league:r.league||m?.league||leagueNamesByFixture.get(String(r.id))||'',key:r.id,fixtureId:r.id,liveMinute:m?.minute??null,alertLabel:label,alertType:label,probability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,overLineAtAlert:r.decision?.line??null,scoreAtAlert:r.score,liveScore:ft?null:scoreNow,ftScore:ft?scoreNow:null,
   liveGoalsAfterAlert:goals,score: r.score,overOddsAtAlert:r.decision?.overOdds??null,
   oddsAtAlertStatus:r.decision?.overOdds==null?'CHUA_LAY_DUOC_ODDS':'DAT_ODDS',
@@ -106,9 +106,7 @@ function verifiedOddsMinute(m, odds){
   if(m.state!==3)return null;
   const candidates=(odds||[]).filter(r=>String(r.match_id)===m.id &&
     Number(r.match_status)===4 && String(r.score||'')===`${m.homeScore}-${m.awayScore}` &&
-    Number.isFinite(Number(r.time_of_the_match)) && Number(r.time_of_the_match)>=45 && Number(r.time_of_the_match)<=120 &&
-    Number.isFinite(Number(r.provider_time)) && Number(r.provider_time)*1000<=Date.now()+5000 &&
-    Date.now()-Number(r.provider_time)*1000<=120000);
+    Number.isFinite(Number(r.time_of_the_match)) && Number(r.time_of_the_match)>=45 && Number(r.time_of_the_match)<=120);
   if(!candidates.length)return null;
   const nums=candidates.map(r=>Number(r.time_of_the_match));
   return Math.max(...nums)-Math.min(...nums)<=2?Math.max(...nums):null;
@@ -332,17 +330,11 @@ async function backfillMissingAlertLeagues(){
   }
  }finally{leagueBackfillRunning=false;}
 }
-async function fetchFixtures(oddsSnapshot){
+async function fetchFixtures(){
   const q=`date=${vnDate()}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`;
-  // Diary and LIVE delta are independent. Run concurrently so one slow endpoint
-  // cannot consume the whole five-second observation window.
-  const [diaryResult,deltaResult]=await Promise.allSettled([
-    proxyGetPayload('/v1/football/match/diary?'+q),
-    proxyGet('/v1/football/match/live?locale=vi')
-  ]);
-  if(diaryResult.status!=='fulfilled')throw new Error('[BONGDALU DIARY] '+diaryResult.reason?.message);
-  const diaryPayload=diaryResult.value;
+  const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
   const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
+  // Bongdalu match rows contain sclassID; names are in the sibling leagues list.
   const leagueById=buildLeagueMap(diaryPayload);
   const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>{
     const league=resolveLeague(r,leagueById,leagueNamesByFixture.get(String(r.ScheduleID)));
@@ -350,21 +342,16 @@ async function fetchFixtures(oddsSnapshot){
     return [String(r.ScheduleID),{...r,LeagueName:league}];
   }));
   const deltas=new Map();
-  if(deltaResult.status==='fulfilled'){
-    for(const d of rows(deltaResult.value)){
+  try{
+    for(const d of rows(await proxyGet('/v1/football/match/live?locale=vi'))){
       const id=String(d.ScheduleID??d.scheduleId??d.id);
       if(!byId.has(id))continue;
-      deltas.set(id,d);
-      const prior=byId.get(id);
-      byId.set(id,{...prior,...d,goalEvents:d.goalEvents??d.GoalEvents??prior.goalEvents??prior.GoalEvents,
-        events:d.events??d.Events??prior.events??prior.Events,
-        LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
+      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
     }
-  }else console.warn('[BONGDALU LIVE DELTA]',deltaResult.reason?.message);
+  }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
   const all=[...byId.values()].map(norm).filter(Boolean);
-  for(const m of all)trackObservedScore(m);
   const live=all.filter(m=>m.state===1||m.state===3);
-  const odds=rows(await oddsSnapshot); // Same snapshot as AI: no second independent odds request.
+  const odds=await fetchOddsMinuteRows();
   const byOdds=new Map();
   for(const row of odds){const id=String(row.match_id??'');if(!byOdds.has(id))byOdds.set(id,[]);byOdds.get(id).push(row);}
   const sourceCounts={direct:0,delta:0,odds:0,unknown:0};
@@ -376,78 +363,26 @@ async function fetchFixtures(oddsSnapshot){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
-  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length,watching:watchlist.size,oddsRows:odds.length,
-    deltaRows:deltas.size,oddsMatchIds:byOdds.size,
-    deltaOk:deltaResult.status==='fulfilled',
-    oddsProviderFreshRows:odds.filter(r=>Number.isFinite(Number(r.provider_time))&&
-      Date.now()-Number(r.provider_time)*1000>=0&&Date.now()-Number(r.provider_time)*1000<=15000).length}));
+  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
-// Score-change observations are not official goal minutes. Keep provenance explicit.
-const observedScoreHistory=new Map();
-const verifiedGoalEvents=new Map();
-const newGoalPending=new Map();
-const incidentEndpoint=process.env.BONGDALU_INCIDENTS_PATH_TEMPLATE||'';
-const ALERT_QUOTE_MAX_AGE_MS=Number(process.env.ALERT_QUOTE_MAX_AGE_MS||15000);
-// Odds are derived from provider raw values; executable BET365 prices require external verification.
-async function fetchVerifiedIncidents(m){
- const embedded=m.raw?.incidents||m.raw?.detail?.incidents;
- if(Array.isArray(embedded)){verifiedGoalEvents.set(m.id,embedded);return;}
- // Configure only the provider's verified incidents URL; never guess its route.
- if(!incidentEndpoint)return;
- try{const path=incidentEndpoint.replace('{id}',encodeURIComponent(m.id));
-  const data=await proxyGetPayload(path);const events=data?.incidents||data?.data?.incidents;
-  if(Array.isArray(events))verifiedGoalEvents.set(m.id,events);
- }catch(e){console.warn('[GOAL INCIDENTS]',m.id,e.message);}
-}
-
-function trackObservedScore(m){
- if(!m||!m.id||!Number.isInteger(m.homeScore)||!Number.isInteger(m.awayScore))return;
- const id=String(m.id),old=observedScoreHistory.get(id)||[];
- const last=old[old.length-1];
- if(!last){observedScoreHistory.set(id,[{home:m.homeScore,away:m.awayScore,minute:m.minute,observedAt:Date.now(),initial:true}]);return;}
- if(last.home===m.homeScore&&last.away===m.awayScore)return;
- const next=[...old,{home:m.homeScore,away:m.awayScore,minute:m.minute,observedAt:Date.now(),initial:false}].slice(-40);
- observedScoreHistory.set(id,next);
-}
-function observedScoreTimeline(m){
- const entries=observedScoreHistory.get(String(m?.id))||[];
- const changes=entries.filter(e=>!e.initial);
- if(!changes.length)return '';
- return changes.map(e=>`P${e.minute??'?'}: ${e.home}-${e.away}`).join(' | ');
-}
 function goalTimeline(m){
- // Accept only explicit goal events with verified cumulative home/away scores.
- const raw=m?.raw||{};
- const containers=[verifiedGoalEvents.get(String(m?.id)),raw.goalEvents,raw.goals,raw.GoalEvents,raw.goalTimeline,raw.events,raw.Events,raw.incidents,raw.Incidents,raw.matchEvents,raw.MatchEvents,raw.goalList,raw.GoalList,raw.detail?.events,raw.detail?.goalEvents];
- const events=containers.find(Array.isArray);
- if(!events)return observedScoreTimeline(m)?`Quan sát tỷ số LIVE (không phải phút ghi bàn xác minh): ${observedScoreTimeline(m)}`:'Chưa có dữ liệu diễn biến xác minh';
- const parsed=[];
- for(const e of events){
-  if(!e||typeof e!=='object')continue;
-  const type=String(e.type??e.Type??e.eventType??e.EventType??'').toLowerCase();
-  if(type==='1'){}else if(type&&(/corner|card|yellow|red|substitution|penalty missed|var cancelled|goal cancelled/.test(type)||/^\d+$/.test(type)))continue;
-  const minute=minuteNumber(e.minute??e.Minute??e.time??e.Time??e.matchTime);
-  const home=Number(e.homeScore??e.HomeScore??e.scoreHome??e.homeGoals);
-  const away=Number(e.awayScore??e.AwayScore??e.GuestScore??e.scoreAway??e.awayGoals);
-  if(minute===null||!Number.isInteger(home)||!Number.isInteger(away)||home<0||away<0)continue;
-  if(type==='1'||!type||type==='goal')parsed.push({minute,home,away});
- }
- parsed.sort((a,b)=>a.minute-b.minute||a.home+a.away-b.home-b.away);
- const valid=[];let h=0,a=0;
- for(const e of parsed){
-  if(e.home+e.away!==h+a+1||(e.home!==h+1||e.away!==a)&&(e.home!==h||e.away!==a+1))continue;
-  valid.push(`P${e.minute}: ${e.home}-${e.away}`);h=e.home;a=e.away;
- }
- // Incomplete event histories are not presented as verified timelines.
- if(!valid.length||h!==Number(m.homeScore)||a!==Number(m.awayScore))return observedScoreTimeline(m)?`Quan sát tỷ số LIVE (không phải phút ghi bàn xác minh): ${observedScoreTimeline(m)}`:'Chưa có dữ liệu diễn biến xác minh';
- return valid.join(' | ');
+ // Only print a verified provider timeline; never infer goal minutes from score changes.
+ const raw=m.raw||{};
+ const events=raw.goalEvents??raw.goals??raw.GoalEvents??raw.goalTimeline;
+ if(!Array.isArray(events))return 'Chưa có dữ liệu diễn biến xác minh';
+ const formatted=events.map(e=>{
+  const minute=minuteNumber(e.minute??e.Minute??e.time);
+  const home=Number(e.homeScore??e.HomeScore),away=Number(e.awayScore??e.GuestScore);
+  return minute!==null&&Number.isFinite(home)&&Number.isFinite(away)?`P${minute}: ${home}-${away}`:null;
+ }).filter(Boolean);
+ return formatted.length?formatted.join(' | '):'Chưa có dữ liệu diễn biến xác minh';
 }
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
- const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)} (quy đổi Malay, nguồn ${new Date(decision.oddsProviderTime||Date.now()).toISOString()})`:'BET365 — Chưa xác minh odds LIVE';
+ const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
  const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa có xác suất xác minh';
  return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\n⚽️ Diễn biến tỷ số: ${goalTimeline(m)}\nODD NHÀ CÁI: ${oddsText}\n🎯 Xác suất: ${probabilityText}`;
@@ -463,91 +398,35 @@ async function scan(){
  if(scanning||paused||!ready)return [];
  scanning=true;const output=[];
  try{
-  // One LIVE odds request per scan. Fetch alongside fixtures to reduce total latency.
-  // A failed odds request cannot erase the existing watchlist.
-  const oddsPromise=proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});
-  const fixturesPromise=fetchFixtures(oddsPromise);
-  const oddsSnapshot=await oddsPromise;
-  const fixtures=await fixturesPromise;const seen=new Set();
+  const fixtures=await fetchFixtures();const oddsSnapshot=await proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});const seen=new Set();
   for(const m of fixtures){
    seen.add(m.id);const old=matches.get(m.id);
    // Retain last VERIFIED minute when Bongdalu temporarily omits it. Never use it for a new signal.
    const verified=m.minute!==null;
-   if(verified){m.lastVerifiedMinute=m.minute;m.minuteVerifiedAt=Date.now();m.stale=false;}
-   else if(old&&Number.isFinite(old.lastVerifiedMinute??old.minute)){
-     m.lastVerifiedMinute=old.lastVerifiedMinute??old.minute;
-     m.minuteVerifiedAt=old.minuteVerifiedAt??null;
-     m.minuteSource='stale';m.stale=true;
-   }
+   if(!verified&&old?.minute!==null&&old?.minute!==undefined){m.lastVerifiedMinute=old.minute;m.minuteSource='stale';}
    matches.set(m.id,m);
-   if(old&&m.state===3&&Number.isInteger(m.homeScore)&&Number.isInteger(m.awayScore)&&
-     m.homeScore+m.awayScore===old.homeScore+old.awayScore+1&&m.minute!==null){
-     newGoalPending.set(m.id,{at:Date.now(),minute:m.minute,score:`${m.homeScore}-${m.awayScore}`});
-   }
-   trackObservedScore(m);
    if(m.state===-1){const previous=sent.get(m.id);if(previous&&previous.status==='sent'&&!previous.ft&&Number.isFinite(m.homeScore)&&Number.isFinite(m.awayScore)){previous.ft={home:m.homeScore,away:m.awayScore,at:now()};await save(m.id,previous);}watchlist.delete(m.id);continue;}
-   if(m.state!==1&&m.state!==3){if(old&&(old.state===1||old.state===3)&&watchlist.has(m.id)){matches.set(m.id,{...old,stale:true});}else{watchlist.delete(m.id);}continue;}
+   if(m.state!==1&&m.state!==3){watchlist.delete(m.id);continue;}
    if(sent.has(m.id)){watchlist.delete(m.id);continue;}
-   if(verified&&m.minute>=85){watchlist.delete(m.id);newGoalPending.delete(m.id);continue;}
+   if(verified&&m.minute>=85){watchlist.delete(m.id);continue;}
    if(!watchlist.has(m.id)&&qualifying(m))watchlist.set(m.id,{id:m.id,addedAt:now(),order:watchlist.size});
    if(!watchlist.has(m.id))continue;
-   // Collect score-matched market history on every watchlist scan, including a
-   // transiently missing minute. This must NOT authorize an alert without a
-   // fresh verified minute: it only prevents losing early market movements.
+   // Only fresh, verified minutes in range may trigger AI decisions.
+   if(!verified||m.minute<60||m.minute>=85){observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});continue;}
    try{
-    const snapshotRows=rows(oddsSnapshot).filter(r=>String(r.match_id)===String(m.id)&&String(r.market).toUpperCase()==='OU').filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`).filter(r=>[r.line,r.v1,r.v2,r.provider_time].every(v=>v!==null&&v!==undefined&&String(v).trim()!==''));
-    const observed=market.observe(m.id,snapshotRows);
-    if(!verified||m.minute<60||m.minute>=85){
-      observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true,blockReason:!verified?'MINUTE_UNVERIFIED':'MINUTE_OUT_OF_RANGE'});
-      continue;
-    }
-    // A market can remain unchanged while a valid signal is already present.
-    // Re-evaluate fresh, score-matched quotes rather than waiting for the next price tick.
-    const marketState=market.get(m.id);
-    const currentQuote=marketState?.bookmakers?.find(b=>String(b.bookmakerId)==='2');
-    // Do not require a provider timestamp within a fixed 15-second window.
-    // Preserve match/score identity checks and the actual bookmaker quote.
-    const quoteMatched=!!currentQuote && snapshotRows.some(r=>
-      String(r.company_id??r.companyId??r.bookmaker_id??r.bookmakerId??'2')==='2' &&
-      Number(r.line)===currentQuote.line &&
-      Number(r.v1)===currentQuote.overRaw &&
-      Number(r.v2)===currentQuote.underRaw) &&
-      currentQuote.homeScore===m.homeScore &&
-      currentQuote.awayScore===m.awayScore;
-    // Analyze every verified score-matched market state even if the sending quote
-    // is stale/missing. Only the dispatch gate requires a fresh current quote.
-    const goalEvent=newGoalPending.get(m.id);
-    // Goal event triggers immediate separate BIG BET evaluation, never from a pre-goal price trend.
-    const decision=goalEvent&&Date.now()-goalEvent.at<=30000
-      ? decideLiveRung(m,marketState,Date.now())
-      : decideLiveRung(m,marketState,Date.now());
-    if(goalEvent&&Date.now()-goalEvent.at>30000)newGoalPending.delete(m.id);
+    const observed=market.observe(m.id,(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`));
+    if(observed.status!=='OBSERVED'){observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});continue;}
+    const decision=decideLiveRung(m,market.get(m.id));
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
-    const blockReason=!quoteMatched
-      ? (!snapshotRows.length?'NO_CURRENT_ODDS':'ODDS_MATCH_MISSING')
-      : (observed.status!=='OBSERVED'&&observed.status!=='UNCHANGED'?'MARKET_UNAVAILABLE':
-         !decision.level?(decision.reason||'SIGNAL_NOT_QUALIFIED'):'READY');
-    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,blockReason,at:now(),firstMarketMoveAt:marketState?.changes?.find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,latestMarketMoveAt:[...(marketState?.changes||[])].reverse().find(c=>c.marketMove&&!c.scoreChanged)?.observedAt??null,stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
+    observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
-    // Dispatch at the first verified qualifying market signal (including minutes 60-64).
-    // Do not impose the former minute-65 waiting gate.
-    if(sent.has(m.id)||!decision.level)continue;
-    if(blockReason!=='READY')continue;
-    // Dispatch uses the quote verified in THIS scan, not an older cached price.
-    if(decision.level==='BET NHẸ TAY'&&!(Number(currentQuote.overDecimal)>=1.50))continue;
-    decision.overOdds=currentQuote.overDecimal;decision.line=currentQuote.line;
-    decision.oddsProviderTime=currentQuote.providerTime;decision.oddsFormat='assumed_malay';decision.oddsSource='Bongdalu company_id=2';
-    // Do not block an otherwise eligible Telegram alert on the incidents endpoint.
-    // Use only already-verified goal incidents; backfill after dispatch.
-    const record={goalTimeline:goalTimeline(m),id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
-    sent.set(m.id,record);watchlist.delete(m.id);newGoalPending.delete(m.id);await save(m.id,record);
+    if(m.minute<65||sent.has(m.id)||!decision.level)continue;
+    const record={id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
+    sent.set(m.id,record);watchlist.delete(m.id);await save(m.id,record);
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
-    void fetchVerifiedIncidents(m).then(async()=>{record.goalTimeline=goalTimeline(m);await save(m.id,record);}).catch(e=>console.warn('[INCIDENTS AFTER ALERT]',m.id,e.message));
-   }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true,blockReason:'AI_EXCEPTION',error:e.message});}
+   }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
-  for(const [id] of watchlist){if(!seen.has(id)&&matches.has(id)){const old=matches.get(id);matches.set(id,{...old,stale:true,minuteSource:'stale'});}}
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size,oddsRows:rows(oddsSnapshot).length,verifiedMinutes:fixtures.filter(m=>m.minute!==null).length,staleWatched:[...watchlist.keys()].filter(id=>matches.get(id)?.stale).length,
-    blocked:[...watchlist.keys()].reduce((acc,id)=>{const reason=observations.get(id)?.blockReason||'NOT_ANALYZED';acc[reason]=(acc[reason]||0)+1;return acc;},{})};console.log('[AI LIVE SCAN AUDIT]',JSON.stringify({watching:lastScan.watching,analyzed:lastScan.analyzed,blocked:lastScan.blocked}));lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
@@ -561,7 +440,7 @@ app.get('/scan',(req,res)=>res.status(405).json({error:'Use authenticated POST /
 // Compatibility view-models for the ORIGINAL HTML screens; no old AI computation.
 function uiLiveRows(){return [...matches.values()].filter(m=>m.state===1||m.state===3).map(m=>{
  const o=observations.get(m.id)||{},d=o.decision||{},q=market.get(m.id)||{};
- return {fixtureId:m.id,id:m.id,tracked:watchlist.has(m.id),htGoals:m.htGoals,lastVerifiedMinute:m.lastVerifiedMinute??null,minuteSource:m.minuteSource,stale:!!o.stale||!!m.stale,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute??m.lastVerifiedMinute??null,scoreH:m.homeScore,scoreA:m.awayScore,score:`${m.homeScore}-${m.awayScore}`,status:'LIVE',goalTimeline:goalTimeline(m),alertLabel:sent.get(m.id)?.status==='sent'?(sent.get(m.id).decision?.level||'RUNG BET'):null,probability:o.signalConfidence?.probability??null,signalConfidence:o.signalConfidence??null,aiProbability:o.signalConfidence?.probability??null,expectedRemainingGoals:null,aiLiveEnhanced:{marketProbability:o.signalConfidence?.probability??null,combinedLambda:null,marketLambda:null,overOdds:d.overOdds??q.bookmakers?.[0]?.overDecimal??null,marketLine:d.line??q.bookmakers?.[0]?.line??null,liveCoverage:o.marketStatus||'UNAVAILABLE'},market:q,decision:d,blockReason:o.blockReason||null,observationAt:o.at||null,telegramStatus:sent.get(m.id)?.status||null};
+ return {fixtureId:m.id,id:m.id,tracked:watchlist.has(m.id),htGoals:m.htGoals,lastVerifiedMinute:m.lastVerifiedMinute??null,minuteSource:m.minuteSource,stale:!!o.stale,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute??m.lastVerifiedMinute??null,scoreH:m.homeScore,scoreA:m.awayScore,score:`${m.homeScore}-${m.awayScore}`,status:'LIVE',alertLabel:sent.get(m.id)?.status==='sent'?(sent.get(m.id).decision?.level||'RUNG BET'):null,probability:o.signalConfidence?.probability??null,signalConfidence:o.signalConfidence??null,aiProbability:o.signalConfidence?.probability??null,expectedRemainingGoals:null,aiLiveEnhanced:{marketProbability:o.signalConfidence?.probability??null,combinedLambda:null,marketLambda:null,overOdds:d.overOdds??q.bookmakers?.[0]?.overDecimal??null,marketLine:d.line??q.bookmakers?.[0]?.line??null,liveCoverage:o.marketStatus||'UNAVAILABLE'},market:q,decision:d};
 });}
 app.get('/api/live-monitor',(req,res)=>res.json({ok:true,rows:uiLiveRows().filter(m=>watchlist.has(String(m.id))&&!([...sent.values()].some(r=>r.id===m.id&&r.status==='sent'))),noStats:[],totalLive:[...matches.values()].filter(m=>m.state===1||m.state===3).length,watching:watchlist.size,analyzed:[...observations].filter(([id,o])=>watchlist.has(id)&&o.decision).length,alerts:[...sent.values()].filter(r=>r.status==='sent').length,lastScan}));
 app.get('/api/ai-live-market',(req,res)=>res.json({ok:true,rows:uiLiveRows()}));
@@ -585,7 +464,7 @@ app.get('/api/no-stats-alerts',(req,res)=>{
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
  return [...sent.values()].filter(r=>r&&r.id&&r.id!=='__control__'&&r.status==='sent').map(r=>({
-  id:r.id,at:r.sentAt||null,goalTimeline:r.goalTimeline||'Chưa có dữ liệu diễn biến xác minh',league:r.league||matches.get(r.id)?.league||leagueNamesByFixture.get(String(r.id))||'',home:r.home,away:r.away,minute:r.minute,
+  id:r.id,at:r.sentAt||null,league:r.league||matches.get(r.id)?.league||leagueNamesByFixture.get(String(r.id))||'',home:r.home,away:r.away,minute:r.minute,
   scoreH:Number(String(r.score).split('-')[0]),scoreA:Number(String(r.score).split('-')[1]),
   aiProbability:r.signalConfidence?.probability??null,signalConfidence:r.signalConfidence??null,
   expectedRemainingGoals:null,engine:'AI LIVE RUNG',alertSent:true,
