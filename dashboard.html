@@ -1047,6 +1047,28 @@ body #noStatsAlertRows .match-teams .match-score {color:#FFFFFF!important;text-s
 #noStatsAlertRows .match-metric small{font-size:10px!important}
 #noStatsAlertRows .match-achieved{margin:5px 0!important;min-height:0!important}
 #noStatsAlertRows .match-bottom{font-size:10px!important}
+</style><style id="tt-compact-alert-cards-20261102">
+/* Presentation only: compact FT cards; no changes to signal or API logic. */
+#noStatsAlertRows{grid-template-columns:repeat(4,minmax(0,1fr))!important;gap:7px!important;align-items:start!important}
+#noStatsAlertRows>.match-card{padding:7px!important;gap:3px!important;border-radius:7px!important}
+#noStatsAlertRows .ns-select-label{padding:2px 5px!important;margin:0 0 3px!important;font-size:10px!important;min-height:0!important}
+#noStatsAlertRows .match-head-left{margin:1px 0!important;font-size:10px!important}
+#noStatsAlertRows .match-teams{margin:3px 0!important;padding:0!important;min-height:0!important;gap:3px!important}
+#noStatsAlertRows .match-name{font-size:11px!important;line-height:1.15!important}
+#noStatsAlertRows .match-score{font-size:17px!important;line-height:1.1!important}
+#noStatsAlertRows .match-status-inline{margin:3px 0!important}
+#noStatsAlertRows .match-status-inline .ai-status,#noStatsAlertRows .match-status-inline .pill{font-size:10px!important;padding:4px 6px!important}
+#noStatsAlertRows .match-metrics{margin:4px 0!important;gap:5px!important;grid-template-columns:repeat(2,minmax(0,1fr))!important}
+#noStatsAlertRows .match-metric{padding:5px!important;min-height:0!important}
+#noStatsAlertRows .match-metric strong{font-size:15px!important;margin-top:1px!important}
+#noStatsAlertRows .match-metric small{font-size:9px!important;line-height:1.15!important}
+#noStatsAlertRows .match-live-score,#noStatsAlertRows .hint{font-size:10px!important;line-height:1.25!important;margin:3px 0!important}
+#noStatsAlertRows .tt-ft-details{margin:3px 0!important;border-top:1px solid #6f6b51;padding-top:3px}
+#noStatsAlertRows .tt-ft-details>summary{font-size:10px!important;cursor:pointer;color:#ffd36c!important;padding:3px!important;list-style:revert!important}
+#noStatsAlertRows .tt-ft-details .match-live-score{overflow-wrap:anywhere}
+@media(max-width:1180px){#noStatsAlertRows{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+@media(max-width:850px){#noStatsAlertRows{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
+@media(max-width:520px){#noStatsAlertRows{grid-template-columns:1fr!important}}
 </style></head><body><main><div class="promax-topbar">
   <div class="promax-brand">✦ THẦN TÀI MAY MẮN</div>
   <nav class="promax-nav" aria-label="Điều hướng">
@@ -1135,7 +1157,6 @@ function nsRenderHistory(){
      
      '<div class="match-metric match-ft-metric"><small>FT · AI LIVE RUNG</small><strong class="match-result '+(result==='WIN'?'win':result==='LOSS'?'loss':'pending')+'">'+result+'</strong><small>FT: '+esc(ft||'Đang chờ')+'</small></div></div>'+
     '<div class="match-live-score" style="margin-bottom:5px"><b>Odds lúc cảnh báo:</b> <span style="font-weight:800;color:'+(oddsKnown?'#55e8ad':oddsState==='CHUA_LAY_DUOC_ODDS'?'#f0c768':'#aebdc4')+'">'+oddsLabel+'</span>'+oddsDetail+'</div>'+
-    '<div class="match-live-score" style="font-size:11px"><b>Diễn biến tỷ số:</b> '+esc(x.goalTimeline||'Chưa có dữ liệu diễn biến xác minh')+'</div>'+ 
     '<div class="match-live-score">Lúc gửi Telegram: <b>'+esc(alert)+'</b> · Phút '+esc(x.minute)+'′'+
     (ft?' · FT: <b>'+esc(ft)+'</b>':live?' · LIVE: <b>'+esc(live)+'</b>':' · LIVE: Đang chờ')+'</div>'+
     '<div class="hint" style="margin-top:7px">'+esc(x.sentAt||'')+(x.liveGoalsAfterAlert==null?'':' · '+esc(x.liveGoalsAfterAlert)+' bàn sau cảnh báo')+'</div></article>';
