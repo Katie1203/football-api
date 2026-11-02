@@ -6,8 +6,7 @@ const fs=require('fs');
 const path=require('path');
 const {Pool}=require('pg');
 const {LiveRungMarket}=require('./ai_live_rung_market');
-const {decideLiveRung: originalSensitiveDecision}=require('./live_rung_decision');
-const {decideWithGoalPolicy}=require('./sensitive_signal_adapter');
+const {decideLiveRung}=require('./live_rung_decision');
 const {signalConfidence}=require('./signal_confidence');
 const app=express();app.use(express.json({limit:'32kb'}));
 const PORT=Number(process.env.PORT||10000);
@@ -517,8 +516,8 @@ async function scan(){
     const goalEvent=newGoalPending.get(m.id);
     // Goal event triggers immediate separate BIG BET evaluation, never from a pre-goal price trend.
     const decision=goalEvent&&Date.now()-goalEvent.at<=30000
-      ? decideWithGoalPolicy(m,marketState,Date.now(),{justScored:true})
-      : decideWithGoalPolicy(m,marketState,Date.now());
+      ? decideLiveRung(m,marketState,Date.now())
+      : decideLiveRung(m,marketState,Date.now());
     if(goalEvent&&Date.now()-goalEvent.at>30000)newGoalPending.delete(m.id);
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
     const blockReason=!freshQuote
