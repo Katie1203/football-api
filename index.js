@@ -14,8 +14,6 @@ const PROXY=(process.env.BONGDALU_BASE_URL||'https://g4mlw.net').replace(/\/+$/,
 const BET365_COMPANY_ID=2; // Bongdalu bookmaker mapping supplied for BET365; verify against provider metadata
 const TOKEN=process.env.TELEGRAM_BOT_TOKEN,CHAT=process.env.TELEGRAM_CHAT_ID;
 const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
-// Optional Telegram custom emoji ID. Without it, ordinary emoji remain visible.
-const LUCKY_EMOJI_ID=String(process.env.TELEGRAM_LUCKY_EMOJI_ID||'').trim();
 const market=new LiveRungMarket(),matches=new Map(),sent=new Map(),observations=new Map(),watchlist=new Map();
 const leagueNamesByFixture=new Map();
 // Display-only observed score history; never feeds AI decisions.
@@ -367,6 +365,7 @@ async function fetchFixtures(){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
+  for(const m of live)recordObservedScore(m);
   console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
   return all;
 }
@@ -422,23 +421,33 @@ function goalTimeline(m){
  return `Theo dõi LIVE (không phải phút ghi bàn): ban đầu ${baseline.home}-${baseline.away}`+(changes.length?` | ${changes.join(' | ')}`:' | chưa ghi nhận thay đổi tỷ số');
 }
 function telegramBody(m,decision,confidence){
- const label=String(decision.level||'').toUpperCase().includes('BIG')?'🔥💎 BIGGG BET':'BET NHẸ TAY';
+ const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
  const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
  const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa đủ dữ liệu FT để tính %';
- return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
+ return `💰✨ THẦN TÀI ĐẾN 🧧🧧🧧 - ${label} ${label==='BET NHẸ TAY'?'🍀✨':'🔥💎'}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
 }
 async function telegram(m,decision,confidence){
  if(!TOKEN||!CHAT)throw Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
  const body=telegramBody(m,decision,confidence);
+ // Presentation-only: Telegram custom emoji IDs are optional. Without one, plain 🧧 is sent immediately.
+ const emojiId=String(process.env.TELEGRAM_LUCKY_EMOJI_ID||'').trim();
  const payload={chat_id:CHAT,text:body};
- // Custom emoji entity is presentation-only; no network call to load an icon.
- if(/^\d+$/.test(LUCKY_EMOJI_ID)){
-  const marker='🧧';const offset=body.indexOf(marker);
-  if(offset>=0)payload.entities=[{type:'custom_emoji',offset,length:marker.length,custom_emoji_id:LUCKY_EMOJI_ID}];
+ if(/^\d+$/.test(emojiId)){
+  const marker='🧧🧧🧧';const start=body.indexOf(marker);
+  if(start>=0){
+   const offset=body.slice(0,start).length;
+   payload.entities=[0,1,2].map(i=>({type:'custom_emoji',offset:offset+i*2,length:2,custom_emoji_id:emojiId}));
+  }
  }
- const {data}=await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,payload,{timeout:10000});
+ let data;
+ try {({data}=await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,payload,{timeout:10000}));}
+ catch(e){
+  // Fallback only for a rejected custom emoji; never retry network errors (could duplicate alerts).
+  if(payload.entities&&e.response?.status===400){delete payload.entities;({data}=await axios.post(`https://api.telegram.org/bot${TOKEN}/sendMessage`,payload,{timeout:10000}));}
+  else throw e;
+ }
  if(!data?.ok)throw Error('Telegram rejected');return data.result?.message_id;
 }
 function qualifying(m){return m.state===3&&m.minute!==null&&m.minute>=60&&m.minute<85&&m.htGoals!==null&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName);}
@@ -468,9 +477,7 @@ async function scan(){
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
     observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
-    if(m.minute<60||sent.has(m.id)||!decision.level)continue;
-    // Sending gate only: preserve AI signals even when the current Over odds is too low or missing.
-    if(decision.level==='BET NHẸ TAY'&&!(Number.isFinite(Number(decision.overOdds))&&Number(decision.overOdds)>=1.50))continue;
+    if(m.minute<65||sent.has(m.id)||!decision.level)continue;
     const record={id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
     sent.set(m.id,record);watchlist.delete(m.id);await save(m.id,record);
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
