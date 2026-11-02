@@ -45,7 +45,7 @@ button.active,button[aria-current="page"],.tabs button.active{background:#e8c66b
 .pill.loss,.match-result.loss,.match-result.LOSS{background:#a9343c!important;color:#fff!important}
 .pill.pending,.match-result.pending{background:#56616c!important;color:#fff!important}
 .ai-bet,.bet-indicator{background:#85474e!important;color:#fff!important}
-.tt-global-clock{font-size:12px;color:#fff;white-space:nowrap;padding:6px 10px;border:1px solid #657887;border-radius:7px;background:#2a4050;font-variant-numeric:tabular-nums}
+.tt-global-clock{font-size:12px;color:#ff4b4b;white-space:normal;text-align:center;line-height:1.25;padding:5px 9px;border:1px solid #b88b27;border-radius:7px;background:#172831;font-variant-numeric:tabular-nums}
 @media(max-width:700px){.tt-global-clock{font-size:11px;padding:4px 6px}}
 
 </style>
@@ -422,4 +422,4 @@ async function load(){if(refreshBusy)return;refreshBusy=true;try{const r=await f
  $('time').textContent='Dữ liệu quét máy chủ: '+(d.lastScan?.at?new Date(d.lastScan.at).toLocaleString('vi-VN'):'Chưa có dữ liệu')+' · Máy chủ quét mỗi 5 giây; chỉ dùng phút đã xác minh để phát tín hiệu.';draw();
  }catch(e){$('time').textContent='Lỗi dữ liệu: '+e.message+' · giữ danh sách hiện tại';}finally{refreshBusy=false;}}
 $('q').addEventListener('input',draw);load();setInterval(load,5000);
-</script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.textContent=new Date().toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'}));}tick();setInterval(tick,1000)})();</script></body></html>
+</script><script>/* Shared VN clock; presentation only */(function(){function tick(){document.querySelectorAll('.tt-global-clock').forEach(e=>e.innerHTML='<strong>'+new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date())+'</strong><span style="display:block;font-size:10px">'+new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',weekday:'long',day:'2-digit',month:'2-digit',year:'numeric'}).format(new Date())+'</span>');}tick();setInterval(tick,1000)})();</script></body></html>
