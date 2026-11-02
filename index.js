@@ -16,6 +16,8 @@ const TOKEN=process.env.TELEGRAM_BOT_TOKEN,CHAT=process.env.TELEGRAM_CHAT_ID;
 const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
 const market=new LiveRungMarket(),matches=new Map(),sent=new Map(),observations=new Map(),watchlist=new Map();
 const leagueNamesByFixture=new Map();
+// Display-only observed score history; never feeds AI decisions.
+const scoreHistory=new Map();
 const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
@@ -25,8 +27,8 @@ let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
 function authorized(req,res,next){if(!ADMIN_TOKEN)return res.status(503).json({error:'ADMIN_TOKEN is required for control endpoints'});if(req.get('x-admin-token')!==ADMIN_TOKEN)return res.status(401).json({error:'Unauthorized'});next();}
-function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],savedAt:now()};}
-function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);}
+function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],scoreHistory:[...scoreHistory],savedAt:now()};}
+function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);for(const [id,v] of data.scoreHistory||[])scoreHistory.set(id,v);}
 async function init(){
  if(pool){
   await pool.query('CREATE TABLE IF NOT EXISTS live_rung_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL)');
@@ -363,29 +365,68 @@ async function fetchFixtures(){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
+  for(const m of live)recordObservedScore(m);
   console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
-function goalTimeline(m){
- // Only print a verified provider timeline; never infer goal minutes from score changes.
+// Passive score snapshots for Telegram display only. No AI or alert gate reads this map.
+function recordObservedScore(m){
+ if(!m||!Number.isInteger(m.homeScore)||!Number.isInteger(m.awayScore))return;
+ const previous=scoreHistory.get(m.id)||[];
+ const last=previous[previous.length-1];
+ if(last&&last.home===m.homeScore&&last.away===m.awayScore)return;
+ const entry={home:m.homeScore,away:m.awayScore,observedAt:now(),minute:Number.isFinite(m.minute)?m.minute:null};
+ // Preserve the first observed score as a baseline, not a fabricated goal event.
+ const next=[...previous,entry].slice(-40);
+ scoreHistory.set(m.id,next);
+}
+function verifiedGoalTimeline(m){
  const raw=m.raw||{};
- const events=raw.goalEvents??raw.goals??raw.GoalEvents??raw.goalTimeline;
- if(!Array.isArray(events))return 'Chưa có dữ liệu diễn biến xác minh';
- const formatted=events.map(e=>{
-  const minute=minuteNumber(e.minute??e.Minute??e.time);
-  const home=Number(e.homeScore??e.HomeScore),away=Number(e.awayScore??e.GuestScore);
-  return minute!==null&&Number.isFinite(home)&&Number.isFinite(away)?`P${minute}: ${home}-${away}`:null;
+ const containers=[raw.goalEvents,raw.goals,raw.GoalEvents,raw.goalTimeline,raw.events,raw.Events,raw.incidents,raw.Incidents,raw.matchEvents,raw.MatchEvents,raw.goalList,raw.GoalList,raw.detail?.events,raw.detail?.goalEvents];
+ const events=containers.find(Array.isArray);
+ if(!events)return null;
+ const parsed=[];
+ for(const e of events){
+  if(!e||typeof e!=='object')continue;
+  const type=String(e.type??e.Type??e.eventType??e.EventType??'').toLowerCase();
+  if(type&&/corner|card|yellow|red|substitution|penalty missed|var cancelled|goal cancelled/.test(type))continue;
+  const minute=minuteNumber(e.minute??e.Minute??e.time??e.Time??e.matchTime);
+  const home=Number(e.homeScore??e.HomeScore??e.scoreHome??e.homeGoals);
+  const away=Number(e.awayScore??e.AwayScore??e.GuestScore??e.scoreAway??e.awayGoals);
+  if(minute===null||!Number.isInteger(home)||!Number.isInteger(away)||home<0||away<0)continue;
+  parsed.push({minute,home,away});
+ }
+ parsed.sort((a,b)=>a.minute-b.minute||a.home+a.away-b.home-b.away);
+ const valid=[];let h=0,a=0;
+ for(const e of parsed){
+  if(e.home+e.away!==h+a+1||!((e.home===h+1&&e.away===a)||(e.home===h&&e.away===a+1)))continue;
+  valid.push(`P${e.minute}: ${e.home}-${e.away}`);h=e.home;a=e.away;
+ }
+ return valid.length&&h===m.homeScore&&a===m.awayScore?valid.join(' | '):null;
+}
+function goalTimeline(m){
+ const verified=verifiedGoalTimeline(m);
+ if(verified)return verified;
+ const history=scoreHistory.get(m.id)||[];
+ if(!history.length)return 'Chưa có dữ liệu diễn biến xác minh';
+ const baseline=history[0];
+ const changes=history.slice(1).map((e,i)=>{
+  const prev=history[i];
+  const diff=e.home+e.away-prev.home-prev.away;
+  if(diff<=0)return null;
+  const when=e.minute!==null?`phát hiện P${e.minute}`:`phát hiện ${e.observedAt.slice(11,16)} UTC`;
+  return `${when}: ${prev.home}-${prev.away} → ${e.home}-${e.away}${diff>1?` (+${diff} bàn giữa 2 lần quét)`:''}`;
  }).filter(Boolean);
- return formatted.length?formatted.join(' | '):'Chưa có dữ liệu diễn biến xác minh';
+ return `Theo dõi LIVE (không phải phút ghi bàn): ban đầu ${baseline.home}-${baseline.away}`+(changes.length?` | ${changes.join(' | ')}`:' | chưa ghi nhận thay đổi tỷ số');
 }
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
  const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
- const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa có xác suất xác minh';
- return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\n⚽️ Diễn biến tỷ số: ${goalTimeline(m)}\nODD NHÀ CÁI: ${oddsText}\n🎯 Xác suất: ${probabilityText}`;
+ const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa đủ dữ liệu FT để tính %';
+ return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\n⚽️ Diễn biến tỷ số: ${goalTimeline(m)}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
 }
 async function telegram(m,decision,confidence){
  if(!TOKEN||!CHAT)throw Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
