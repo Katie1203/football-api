@@ -1136,7 +1136,7 @@ function nsRenderHistory(){
  });
  const pages=Math.max(1,Math.ceil(filtered.length/nsPageSize));nsPage=Math.max(1,Math.min(nsPage,pages));
  nsVisibleKeys=nsFilter==='odds'?[]:filtered.slice((nsPage-1)*nsPageSize,nsPage*nsPageSize).map(x=>x.key).filter(Boolean);
- el('nsDeleteTools').style.display=nsFilter==='odds'?'none':'flex';nsUpdateSelection();
+ el('nsDeleteTools').style.display='none';nsUpdateSelection();
  const pg=document.getElementById('nsPagination');
  pg.innerHTML='<span class="hint">Trang '+nsPage+'/'+pages+' · '+filtered.length+' cảnh báo</span> <button type="button" onclick="nsGoPage('+Math.max(1,nsPage-1)+')" '+(nsPage===1?'disabled':'')+'>Trước</button> '+Array.from({length:pages},(_,i)=>i+1).filter(i=>i===1||i===pages||Math.abs(i-nsPage)<=2).map(i=>'<button type="button" onclick="nsGoPage('+i+')" '+(i===nsPage?'aria-current="page"':'')+'>'+i+'</button>').join(' ')+' <button type="button" onclick="nsGoPage('+Math.min(pages,nsPage+1)+')" '+(nsPage===pages?'disabled':'')+'>Sau</button>';
  document.querySelectorAll('#nsFilters button').forEach((b,i)=>b.setAttribute('aria-pressed',String(['all','pending','settled','big','rung','odds'][i]===nsFilter)));

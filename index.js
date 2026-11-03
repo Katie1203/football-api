@@ -17,7 +17,7 @@ const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
 const market=new LiveRungMarket(),matches=new Map(),sent=new Map(),observations=new Map(),watchlist=new Map();
 const leagueNamesByFixture=new Map();
 // Display-only observed score history; never feeds AI decisions.
-
+const scoreHistory=new Map();
 const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
@@ -27,8 +27,8 @@ let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
 function authorized(req,res,next){if(!ADMIN_TOKEN)return res.status(503).json({error:'ADMIN_TOKEN is required for control endpoints'});if(req.get('x-admin-token')!==ADMIN_TOKEN)return res.status(401).json({error:'Unauthorized'});next();}
-function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],savedAt:now()};}
-function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);}
+function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],scoreHistory:[...scoreHistory],savedAt:now()};}
+function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);for(const [id,v] of data.scoreHistory||[])scoreHistory.set(id,v);}
 async function init(){
  if(pool){
   await pool.query('CREATE TABLE IF NOT EXISTS live_rung_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL)');
@@ -365,10 +365,22 @@ async function fetchFixtures(){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
+  for(const m of live)recordObservedScore(m);
   console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
+// Passive score snapshots for Telegram display only. No AI or alert gate reads this map.
+function recordObservedScore(m){
+ if(!m||!Number.isInteger(m.homeScore)||!Number.isInteger(m.awayScore))return;
+ const previous=scoreHistory.get(m.id)||[];
+ const last=previous[previous.length-1];
+ if(last&&last.home===m.homeScore&&last.away===m.awayScore)return;
+ const entry={home:m.homeScore,away:m.awayScore,observedAt:now(),minute:Number.isFinite(m.minute)?m.minute:null};
+ // Preserve the first observed score as a baseline, not a fabricated goal event.
+ const next=[...previous,entry].slice(-40);
+ scoreHistory.set(m.id,next);
+}
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
@@ -451,17 +463,17 @@ app.get('/api/no-stats-alerts',(req,res)=>{
  const settled=records.filter(r=>r.evaluation!=='PENDING_FT').length;
  res.json({ok:true,records,summary:{sent:records.length,settled,pending:records.length-settled,wins,losses,voids:0,winRate:wins+losses?Number((100*wins/(wins+losses)).toFixed(1)):null,over:{rate:null,wins:0,losses:0,noLine:records.length}}});
 });
-// Delete only explicitly selected sent alerts; administrative action, never touches AI logic.
+// Dashboard only: permanently remove explicitly selected alert records.
 app.post('/api/no-stats-alerts/delete',async(req,res)=>{
  const keys=req.body?.keys;
- if(!Array.isArray(keys)||keys.length===0||keys.length>500||keys.some(k=>typeof k!=='string'||k.length>150))return res.status(400).json({ok:false,error:'Danh sách trận không hợp lệ'});
- const ids=[...new Set(keys)].filter(id=>sent.get(id)?.status==='sent');
+ if(!Array.isArray(keys)||!keys.length||keys.length>500||keys.some(k=>typeof k!=='string'&&typeof k!=='number'))return res.status(400).json({ok:false,error:'Danh sách trận không hợp lệ'});
+ const ids=[...new Set(keys.map(String))].filter(id=>id!=='__control__'&&id!==trackedKey&&sent.has(id));
  try{
   if(pool&&ids.length)await pool.query('DELETE FROM live_rung_state WHERE id = ANY($1::text[])',[ids]);
-  ids.forEach(id=>sent.delete(id));
+  for(const id of ids)sent.delete(id);
   if(!pool&&ids.length){const tmp=STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify([...sent.values()],null,2));fs.renameSync(tmp,STATE);}
   res.json({ok:true,deleted:ids.length});
- }catch(e){res.status(500).json({ok:false,error:'Không thể xóa bản ghi: '+e.message});}
+ }catch(e){res.status(500).json({ok:false,error:e.message});}
 });
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
