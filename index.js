@@ -23,6 +23,8 @@ const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_t
 const trackedKey='__tracking__';
 let persistQueue=Promise.resolve();
 const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
+// Handle errors on idle PostgreSQL clients so a transient disconnect does not crash Node.js.
+if(pool)pool.on('error',err=>console.error('[POSTGRES IDLE]',err.code||'ERROR',err.message));
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
@@ -521,6 +523,20 @@ const originalPages = {'/':'dashboard.html','/dashboard':'dashboard.html','/dash
 for (const [route,file] of Object.entries(originalPages)) app.get(route,(req,res)=>res.sendFile(path.join(__dirname,file)));
 // Original HTML files remain in project root. No public/ folder required.
 
-async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
+// Retry transient DNS/database startup failures before starting any AI scan.
+// Keep the existing init() restore logic and never fall back to an empty local state.
+async function initWithRetry(){
+ const maxAttempts=15;
+ for(let attempt=1;attempt<=maxAttempts;attempt++){
+  try{return await init();}
+  catch(e){
+   if(!['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','57P03','08006','08001','08003'].includes(e.code)||attempt===maxAttempts)throw e;
+   const delay=Math.min(1000*Math.pow(2,Math.min(attempt-1,4)),15000);
+   console.warn(`[POSTGRES STARTUP] ${e.code}: retry ${attempt}/${maxAttempts} in ${delay/1000}s`);
+   await new Promise(resolve=>setTimeout(resolve,delay));
+  }
+ }
+}
+async function start(){await initWithRetry();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
