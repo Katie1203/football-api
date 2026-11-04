@@ -22,23 +22,45 @@ const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
 let persistQueue=Promise.resolve();
-const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
+const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},connectionTimeoutMillis:4000,idleTimeoutMillis:30000,keepAlive:true,keepAliveInitialDelayMillis:10000,max:3}):null;
 // Handle errors on idle PostgreSQL clients so a transient disconnect does not crash Node.js.
 if(pool)pool.on('error',err=>console.error('[POSTGRES IDLE]',err.code||'ERROR',err.message));
-// Retry only transient connection failures; never switch to volatile RAM when PostgreSQL is configured.
+// A DB outage on Render can last longer than a scan interval. Limit reconnect
+// attempts and let the next scan probe again instead of flooding DNS/PG every 5s.
+// Never silently switch to local files/RAM when DATABASE_URL is configured.
 const transientDbCodes=new Set(['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','EPIPE','ETIMEDOUT','57P03','08006','08001','08003','08000']);
 function transientDbError(err){return transientDbCodes.has(String(err?.code||''))||/Connection terminated unexpectedly|the database system is starting up|Connection terminated|timeout exceeded/i.test(String(err?.message||''));}
+const DB_COOLDOWN_MS=30000;
+let dbUnavailableUntil=0,dbLastError=null,dbLastSuccess=null,dbProbe=null;
+function dbUnavailableError(){const err=Error('PostgreSQL temporarily unavailable; retry after cooldown');err.code='DB_COOLDOWN';return err;}
 async function dbQuery(sql,params){
  if(!pool)throw Error('PostgreSQL is not configured');
- for(let attempt=0;attempt<3;attempt++){
-  try{return await pool.query(sql,params);}
-  catch(err){
-   if(!transientDbError(err)||attempt===2)throw err;
-   const delay=350*(attempt+1);
-   console.warn(`[POSTGRES RETRY] ${err.code||'TRANSIENT'} attempt ${attempt+1}/3, waiting ${delay}ms`);
-   await new Promise(resolve=>setTimeout(resolve,delay));
+ if(Date.now()<dbUnavailableUntil)throw dbUnavailableError();
+ // Allow one recovery probe at a time; prevent multiple scans/background tasks
+ // from simultaneously hammering an unhealthy Render database.
+ if(dbProbe){await dbProbe; if(Date.now()<dbUnavailableUntil)throw dbUnavailableError();}
+ let releaseProbe;
+ dbProbe=new Promise(resolve=>{releaseProbe=resolve;});
+ try{
+  for(let attempt=1;attempt<=2;attempt++){
+   try{
+    const result=await pool.query(sql,params);
+    if(dbLastError)console.log('[POSTGRES RECOVERED] Connection restored');
+    dbLastError=null;dbUnavailableUntil=0;dbLastSuccess=now();
+    return result;
+   }catch(err){
+    if(!transientDbError(err))throw err;
+    if(attempt===2){
+     dbLastError={at:new Date().toISOString(),code:err.code||'TRANSIENT',message:err.message};
+     dbUnavailableUntil=Date.now()+DB_COOLDOWN_MS;
+     console.warn(`[POSTGRES UNAVAILABLE] ${dbLastError.code}: cooling down for ${DB_COOLDOWN_MS/1000}s`);
+     throw err;
+    }
+    console.warn(`[POSTGRES RETRY] ${err.code||'TRANSIENT'} attempt ${attempt}/2`);
+    await new Promise(resolve=>setTimeout(resolve,750));
+   }
   }
- }
+ }finally{dbProbe=null;releaseProbe();}
 }
 
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
@@ -487,7 +509,7 @@ async function scan(){
   lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking().catch(e=>console.warn('[POSTGRES TRACKING]',e.message));void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
-app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
+app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool,dbStatus:!pool?'not_configured':Date.now()<dbUnavailableUntil?'cooldown':dbLastError?'retry_pending':'connected_or_unverified',dbLastError,dbLastSuccess}));
 app.get('/api/live-rung',(req,res)=>res.json({ok:true,engine:'AI LIVE RUNG',source:'bongdalu',paused,lastScan,lastError,matches:[...matches.values()].filter(x=>x.state===1||x.state===3).map(m=>({...m,observation:observations.get(m.id)||null,market:market.get(m.id),alert:sent.get(m.id)||null}))}));
 app.get('/api/rung-bet',(req,res)=>res.json({ok:true,records:[...sent.values()].filter(r=>r.status==='sent'&&!r.ft).map(alertView)}));
 app.get('/api/audit',(req,res)=>res.json({ok:true,records:[...sent.values()].map(alertView)}));
@@ -591,6 +613,6 @@ async function initWithRetry(){
   }
  }
 }
-async function start(){await initWithRetry();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
+async function start(){await initWithRetry();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>{if(e.code!=='DB_COOLDOWN')console.error('[scan]',e.message);}),1500);setInterval(()=>scan().catch(e=>{if(e.code!=='DB_COOLDOWN')console.error('[scan]',e.message);}),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
