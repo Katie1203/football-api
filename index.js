@@ -16,63 +16,21 @@ const TOKEN=process.env.TELEGRAM_BOT_TOKEN,CHAT=process.env.TELEGRAM_CHAT_ID;
 const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
 const market=new LiveRungMarket(),matches=new Map(),sent=new Map(),observations=new Map(),watchlist=new Map();
 const leagueNamesByFixture=new Map();
-// Display-only observed score history; never feeds AI decisions.
-const scoreHistory=new Map();
 const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
 let persistQueue=Promise.resolve();
-const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},connectionTimeoutMillis:4000,idleTimeoutMillis:30000,keepAlive:true,keepAliveInitialDelayMillis:10000,max:3}):null;
-// Handle errors on idle PostgreSQL clients so a transient disconnect does not crash Node.js.
-if(pool)pool.on('error',err=>console.error('[POSTGRES IDLE]',err.code||'ERROR',err.message));
-// A DB outage on Render can last longer than a scan interval. Limit reconnect
-// attempts and let the next scan probe again instead of flooding DNS/PG every 5s.
-// Never silently switch to local files/RAM when DATABASE_URL is configured.
-const transientDbCodes=new Set(['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','EPIPE','ETIMEDOUT','57P03','08006','08001','08003','08000']);
-function transientDbError(err){return transientDbCodes.has(String(err?.code||''))||/Connection terminated unexpectedly|the database system is starting up|Connection terminated|timeout exceeded/i.test(String(err?.message||''));}
-const DB_COOLDOWN_MS=30000;
-let dbUnavailableUntil=0,dbLastError=null,dbLastSuccess=null,dbProbe=null;
-function dbUnavailableError(){const err=Error('PostgreSQL temporarily unavailable; retry after cooldown');err.code='DB_COOLDOWN';return err;}
-async function dbQuery(sql,params){
- if(!pool)throw Error('PostgreSQL is not configured');
- if(Date.now()<dbUnavailableUntil)throw dbUnavailableError();
- // Allow one recovery probe at a time; prevent multiple scans/background tasks
- // from simultaneously hammering an unhealthy Render database.
- if(dbProbe){await dbProbe; if(Date.now()<dbUnavailableUntil)throw dbUnavailableError();}
- let releaseProbe;
- dbProbe=new Promise(resolve=>{releaseProbe=resolve;});
- try{
-  for(let attempt=1;attempt<=2;attempt++){
-   try{
-    const result=await pool.query(sql,params);
-    if(dbLastError)console.log('[POSTGRES RECOVERED] Connection restored');
-    dbLastError=null;dbUnavailableUntil=0;dbLastSuccess=now();
-    return result;
-   }catch(err){
-    if(!transientDbError(err))throw err;
-    if(attempt===2){
-     dbLastError={at:new Date().toISOString(),code:err.code||'TRANSIENT',message:err.message};
-     dbUnavailableUntil=Date.now()+DB_COOLDOWN_MS;
-     console.warn(`[POSTGRES UNAVAILABLE] ${dbLastError.code}: cooling down for ${DB_COOLDOWN_MS/1000}s`);
-     throw err;
-    }
-    console.warn(`[POSTGRES RETRY] ${err.code||'TRANSIENT'} attempt ${attempt}/2`);
-    await new Promise(resolve=>setTimeout(resolve,750));
-   }
-  }
- }finally{dbProbe=null;releaseProbe();}
-}
-
+const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
 function authorized(req,res,next){if(!ADMIN_TOKEN)return res.status(503).json({error:'ADMIN_TOKEN is required for control endpoints'});if(req.get('x-admin-token')!==ADMIN_TOKEN)return res.status(401).json({error:'Unauthorized'});next();}
-function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],scoreHistory:[...scoreHistory],savedAt:now()};}
-function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);for(const [id,v] of data.scoreHistory||[])scoreHistory.set(id,v);}
+function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],savedAt:now()};}
+function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);}
 async function init(){
  if(pool){
-  await dbQuery('CREATE TABLE IF NOT EXISTS live_rung_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL)');
-  const r=await dbQuery('SELECT id,payload FROM live_rung_state');
+  await pool.query('CREATE TABLE IF NOT EXISTS live_rung_state (id TEXT PRIMARY KEY, payload JSONB NOT NULL)');
+  const r=await pool.query('SELECT id,payload FROM live_rung_state');
   for(const x of r.rows){if(x.id==='__control__')paused=!!x.payload?.paused;else if(x.id===trackedKey)restoreTracking(x.payload);else sent.set(x.id,x.payload);}
   // Restore tracking after alerts, so already-alerted fixtures are never re-added.
   for(const id of watchlist.keys())if(sent.has(id))watchlist.delete(id);
@@ -84,7 +42,7 @@ async function init(){
  ready=true;
 }
 async function save(id,value){
- if(pool){await dbQuery('INSERT INTO live_rung_state(id,payload) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',[id,JSON.stringify(value)]);}
+ if(pool){await pool.query('INSERT INTO live_rung_state(id,payload) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',[id,JSON.stringify(value)]);}
  else if(id!=='__control__'&&id!==trackedKey){const tmp=STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify([...sent.values()],null,2));fs.renameSync(tmp,STATE);}
 }
 async function persistTracking(){
@@ -405,29 +363,29 @@ async function fetchFixtures(){
     if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
     else{m.minuteSource='unverified';sourceCounts.unknown++;}
   }
-  for(const m of live)recordObservedScore(m);
   console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
   return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
-// Passive score snapshots for Telegram display only. No AI or alert gate reads this map.
-function recordObservedScore(m){
- if(!m||!Number.isInteger(m.homeScore)||!Number.isInteger(m.awayScore))return;
- const previous=scoreHistory.get(m.id)||[];
- const last=previous[previous.length-1];
- if(last&&last.home===m.homeScore&&last.away===m.awayScore)return;
- const entry={home:m.homeScore,away:m.awayScore,observedAt:now(),minute:Number.isFinite(m.minute)?m.minute:null};
- // Preserve the first observed score as a baseline, not a fabricated goal event.
- const next=[...previous,entry].slice(-40);
- scoreHistory.set(m.id,next);
+function goalTimeline(m){
+ // Only print a verified provider timeline; never infer goal minutes from score changes.
+ const raw=m.raw||{};
+ const events=raw.goalEvents??raw.goals??raw.GoalEvents??raw.goalTimeline;
+ if(!Array.isArray(events))return 'Chưa có dữ liệu diễn biến xác minh';
+ const formatted=events.map(e=>{
+  const minute=minuteNumber(e.minute??e.Minute??e.time);
+  const home=Number(e.homeScore??e.HomeScore),away=Number(e.awayScore??e.GuestScore);
+  return minute!==null&&Number.isFinite(home)&&Number.isFinite(away)?`P${minute}: ${home}-${away}`:null;
+ }).filter(Boolean);
+ return formatted.length?formatted.join(' | '):'Chưa có dữ liệu diễn biến xác minh';
 }
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
  const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
- const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa đủ dữ liệu FT để tính %';
- return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
+ const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa có xác suất xác minh';
+ return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\n⚽️ Diễn biến tỷ số: ${goalTimeline(m)}\nODD NHÀ CÁI: ${oddsText}\n🎯 Xác suất: ${probabilityText}`;
 }
 async function telegram(m,decision,confidence){
  if(!TOKEN||!CHAT)throw Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
@@ -436,43 +394,6 @@ async function telegram(m,decision,confidence){
  if(!data?.ok)throw Error('Telegram rejected');return data.result?.message_id;
 }
 function qualifying(m){return m.state===3&&m.minute!==null&&m.minute>=60&&m.minute<85&&m.htGoals!==null&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName);}
-
-// Persist FT before marking the alert settled in memory. Only Bongdalu state -1 is authoritative.
-async function settleVerifiedFt(m){
- const previous=sent.get(m.id);
- if(!previous||previous.status!=='sent'||previous.ft||m.state!==-1)return false;
- if(!Number.isFinite(m.homeScore)||!Number.isFinite(m.awayScore))return false;
- const updated={...previous,ft:{home:m.homeScore,away:m.awayScore,at:now()}};
- await save(m.id,updated);
- sent.set(m.id,updated);
- watchlist.delete(m.id);
- console.log('[FT VERIFIED]',m.id,`${m.homeScore}-${m.awayScore}`);
- return true;
-}
-let lastFtReconcile=0;
-async function reconcileMissingFt(seen){
- // Keep 5-second LIVE scanning unchanged; reconciliation is limited to once per minute.
- if(Date.now()-lastFtReconcile<60000)return;
- const pending=[...sent.values()].filter(r=>r.status==='sent'&&!r.ft&&!seen.has(String(r.id)));
- if(!pending.length)return;
- lastFtReconcile=Date.now();
- const today=vnDate();
- const yesterday=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(Date.now()-86400000));
- const dates=[...new Set([today,yesterday])];
- const pendingIds=new Set(pending.map(r=>String(r.id)));
- for(const date of dates){
-  try{
-   const payload=await proxyGetPayload(`/v1/football/match/diary?date=${date}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`);
-   for(const raw of rows(payload?.matches??payload?.results??payload)){
-    const id=String(raw.ScheduleID??raw.scheduleId??raw.id??'');
-    if(!pendingIds.has(id))continue;
-    const match=norm(raw);
-    if(match?.state===-1){await settleVerifiedFt(match);pendingIds.delete(id);}
-   }
-   if(!pendingIds.size)break;
-  }catch(e){console.warn('[FT RECONCILE]',date,e.message);}
- }
-}
 async function scan(){
  if(scanning||paused||!ready)return [];
  scanning=true;const output=[];
@@ -484,7 +405,7 @@ async function scan(){
    const verified=m.minute!==null;
    if(!verified&&old?.minute!==null&&old?.minute!==undefined){m.lastVerifiedMinute=old.minute;m.minuteSource='stale';}
    matches.set(m.id,m);
-   if(m.state===-1){try{await settleVerifiedFt(m);}catch(e){console.warn('[FT SAVE]',m.id,e.message);}watchlist.delete(m.id);continue;}
+   if(m.state===-1){const previous=sent.get(m.id);if(previous&&previous.status==='sent'&&!previous.ft&&Number.isFinite(m.homeScore)&&Number.isFinite(m.awayScore)){previous.ft={home:m.homeScore,away:m.awayScore,at:now()};await save(m.id,previous);}watchlist.delete(m.id);continue;}
    if(m.state!==1&&m.state!==3){watchlist.delete(m.id);continue;}
    if(sent.has(m.id)){watchlist.delete(m.id);continue;}
    if(verified&&m.minute>=85){watchlist.delete(m.id);continue;}
@@ -505,11 +426,10 @@ async function scan(){
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
-  await reconcileMissingFt(seen).catch(e=>console.warn('[FT RECONCILE]',e.message));
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking().catch(e=>console.warn('[POSTGRES TRACKING]',e.message));void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
-app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool,dbStatus:!pool?'not_configured':Date.now()<dbUnavailableUntil?'cooldown':dbLastError?'retry_pending':'connected_or_unverified',dbLastError,dbLastSuccess}));
+app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
 app.get('/api/live-rung',(req,res)=>res.json({ok:true,engine:'AI LIVE RUNG',source:'bongdalu',paused,lastScan,lastError,matches:[...matches.values()].filter(x=>x.state===1||x.state===3).map(m=>({...m,observation:observations.get(m.id)||null,market:market.get(m.id),alert:sent.get(m.id)||null}))}));
 app.get('/api/rung-bet',(req,res)=>res.json({ok:true,records:[...sent.values()].filter(r=>r.status==='sent'&&!r.ft).map(alertView)}));
 app.get('/api/audit',(req,res)=>res.json({ok:true,records:[...sent.values()].map(alertView)}));
@@ -540,23 +460,6 @@ app.get('/api/no-stats-alerts',(req,res)=>{
  const wins=records.filter(r=>r.evaluation==='WIN').length,losses=records.filter(r=>r.evaluation==='LOSS').length;
  const settled=records.filter(r=>r.evaluation!=='PENDING_FT').length;
  res.json({ok:true,records,summary:{sent:records.length,settled,pending:records.length-settled,wins,losses,voids:0,winRate:wins+losses?Number((100*wins/(wins+losses)).toFixed(1)):null,over:{rate:null,wins:0,losses:0,noLine:records.length}}});
-});
-// Delete only explicitly selected persisted AI LIVE RUNG alert records.
-app.post('/api/no-stats-alerts/delete',async(req,res)=>{
- const keys=req.body?.keys;
- if(!Array.isArray(keys)||!keys.length||keys.length>500||keys.some(k=>typeof k!=='string'&&typeof k!=='number'))return res.status(400).json({ok:false,error:'Danh sách trận không hợp lệ'});
- const ids=[...new Set(keys.map(String))].filter(id=>id&&id!=='__control__'&&id!==trackedKey);
- if(!ids.length)return res.status(400).json({ok:false,error:'Không có trận hợp lệ'});
- const existing=ids.filter(id=>sent.has(id));
- try{
-  if(pool){await dbQuery('DELETE FROM live_rung_state WHERE id = ANY($1::text[])',[existing]);}
-  else{
-   const remaining=[...sent.values()].filter(r=>!existing.includes(String(r.id)));
-   const tmp=STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify(remaining,null,2));fs.renameSync(tmp,STATE);
-  }
-  for(const id of existing){sent.delete(id);watchlist.delete(id);observations.delete(id);}
-  res.json({ok:true,deleted:existing.length});
- }catch(e){console.error('[DELETE ALERTS]',e.message);res.status(500).json({ok:false,error:'Không thể xóa dữ liệu: '+e.message});}
 });
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
@@ -599,20 +502,6 @@ const originalPages = {'/':'dashboard.html','/dashboard':'dashboard.html','/dash
 for (const [route,file] of Object.entries(originalPages)) app.get(route,(req,res)=>res.sendFile(path.join(__dirname,file)));
 // Original HTML files remain in project root. No public/ folder required.
 
-// Retry transient DNS/database startup failures before starting any AI scan.
-// Keep the existing init() restore logic and never fall back to an empty local state.
-async function initWithRetry(){
- const maxAttempts=15;
- for(let attempt=1;attempt<=maxAttempts;attempt++){
-  try{return await init();}
-  catch(e){
-   if(!transientDbError(e)||attempt===maxAttempts)throw e;
-   const delay=Math.min(1000*Math.pow(2,Math.min(attempt-1,4)),15000);
-   console.warn(`[POSTGRES STARTUP] ${e.code}: retry ${attempt}/${maxAttempts} in ${delay/1000}s`);
-   await new Promise(resolve=>setTimeout(resolve,delay));
-  }
- }
-}
-async function start(){await initWithRetry();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>{if(e.code!=='DB_COOLDOWN')console.error('[scan]',e.message);}),1500);setInterval(()=>scan().catch(e=>{if(e.code!=='DB_COOLDOWN')console.error('[scan]',e.message);}),5000);}
+async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
