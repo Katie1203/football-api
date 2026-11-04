@@ -23,8 +23,6 @@ const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_t
 const trackedKey='__tracking__';
 let persistQueue=Promise.resolve();
 const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
-// Handle errors on idle PostgreSQL clients so a transient disconnect does not crash Node.js.
-if(pool)pool.on('error',err=>console.error('[POSTGRES IDLE]',err.code||'ERROR',err.message));
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
@@ -383,13 +381,52 @@ function recordObservedScore(m){
  const next=[...previous,entry].slice(-40);
  scoreHistory.set(m.id,next);
 }
+function verifiedGoalTimeline(m){
+ const raw=m.raw||{};
+ const containers=[raw.goalEvents,raw.goals,raw.GoalEvents,raw.goalTimeline,raw.events,raw.Events,raw.incidents,raw.Incidents,raw.matchEvents,raw.MatchEvents,raw.goalList,raw.GoalList,raw.detail?.events,raw.detail?.goalEvents];
+ const events=containers.find(Array.isArray);
+ if(!events)return null;
+ const parsed=[];
+ for(const e of events){
+  if(!e||typeof e!=='object')continue;
+  const type=String(e.type??e.Type??e.eventType??e.EventType??'').toLowerCase();
+  if(type&&/corner|card|yellow|red|substitution|penalty missed|var cancelled|goal cancelled/.test(type))continue;
+  const minute=minuteNumber(e.minute??e.Minute??e.time??e.Time??e.matchTime);
+  const home=Number(e.homeScore??e.HomeScore??e.scoreHome??e.homeGoals);
+  const away=Number(e.awayScore??e.AwayScore??e.GuestScore??e.scoreAway??e.awayGoals);
+  if(minute===null||!Number.isInteger(home)||!Number.isInteger(away)||home<0||away<0)continue;
+  parsed.push({minute,home,away});
+ }
+ parsed.sort((a,b)=>a.minute-b.minute||a.home+a.away-b.home-b.away);
+ const valid=[];let h=0,a=0;
+ for(const e of parsed){
+  if(e.home+e.away!==h+a+1||!((e.home===h+1&&e.away===a)||(e.home===h&&e.away===a+1)))continue;
+  valid.push(`P${e.minute}: ${e.home}-${e.away}`);h=e.home;a=e.away;
+ }
+ return valid.length&&h===m.homeScore&&a===m.awayScore?valid.join(' | '):null;
+}
+function goalTimeline(m){
+ const verified=verifiedGoalTimeline(m);
+ if(verified)return verified;
+ const history=scoreHistory.get(m.id)||[];
+ if(!history.length)return 'Chưa có dữ liệu diễn biến xác minh';
+ const baseline=history[0];
+ const changes=history.slice(1).map((e,i)=>{
+  const prev=history[i];
+  const diff=e.home+e.away-prev.home-prev.away;
+  if(diff<=0)return null;
+  const when=e.minute!==null?`phát hiện P${e.minute}`:`phát hiện ${e.observedAt.slice(11,16)} UTC`;
+  return `${when}: ${prev.home}-${prev.away} → ${e.home}-${e.away}${diff>1?` (+${diff} bàn giữa 2 lần quét)`:''}`;
+ }).filter(Boolean);
+ return `Theo dõi LIVE (không phải phút ghi bàn): ban đầu ${baseline.home}-${baseline.away}`+(changes.length?` | ${changes.join(' | ')}`:' | chưa ghi nhận thay đổi tỷ số');
+}
 function telegramBody(m,decision,confidence){
  const label=String(decision.level||'').toUpperCase().includes('BIG')?'BIGGG BET':'BET NHẸ TAY';
  const odd=Number(decision.overOdds);
  const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
  const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa đủ dữ liệu FT để tính %';
- return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
+ return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\n⚽️ Diễn biến tỷ số: ${goalTimeline(m)}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
 }
 async function telegram(m,decision,confidence){
  if(!TOKEN||!CHAT)throw Error('Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID');
@@ -465,23 +502,6 @@ app.get('/api/no-stats-alerts',(req,res)=>{
  const settled=records.filter(r=>r.evaluation!=='PENDING_FT').length;
  res.json({ok:true,records,summary:{sent:records.length,settled,pending:records.length-settled,wins,losses,voids:0,winRate:wins+losses?Number((100*wins/(wins+losses)).toFixed(1)):null,over:{rate:null,wins:0,losses:0,noLine:records.length}}});
 });
-// Delete only explicitly selected persisted AI LIVE RUNG alert records.
-app.post('/api/no-stats-alerts/delete',async(req,res)=>{
- const keys=req.body?.keys;
- if(!Array.isArray(keys)||!keys.length||keys.length>500||keys.some(k=>typeof k!=='string'&&typeof k!=='number'))return res.status(400).json({ok:false,error:'Danh sách trận không hợp lệ'});
- const ids=[...new Set(keys.map(String))].filter(id=>id&&id!=='__control__'&&id!==trackedKey);
- if(!ids.length)return res.status(400).json({ok:false,error:'Không có trận hợp lệ'});
- const existing=ids.filter(id=>sent.has(id));
- try{
-  if(pool){await pool.query('DELETE FROM live_rung_state WHERE id = ANY($1::text[])',[existing]);}
-  else{
-   const remaining=[...sent.values()].filter(r=>!existing.includes(String(r.id)));
-   const tmp=STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify(remaining,null,2));fs.renameSync(tmp,STATE);
-  }
-  for(const id of existing){sent.delete(id);watchlist.delete(id);observations.delete(id);}
-  res.json({ok:true,deleted:existing.length});
- }catch(e){console.error('[DELETE ALERTS]',e.message);res.status(500).json({ok:false,error:'Không thể xóa dữ liệu: '+e.message});}
-});
 app.get('/api/no-stats-odds-waiting',(req,res)=>res.json({ok:true,records:[]}));
 function historyRows(){
  return [...sent.values()].filter(r=>r&&r.id&&r.id!=='__control__'&&r.status==='sent').map(r=>({
@@ -523,20 +543,6 @@ const originalPages = {'/':'dashboard.html','/dashboard':'dashboard.html','/dash
 for (const [route,file] of Object.entries(originalPages)) app.get(route,(req,res)=>res.sendFile(path.join(__dirname,file)));
 // Original HTML files remain in project root. No public/ folder required.
 
-// Retry transient DNS/database startup failures before starting any AI scan.
-// Keep the existing init() restore logic and never fall back to an empty local state.
-async function initWithRetry(){
- const maxAttempts=15;
- for(let attempt=1;attempt<=maxAttempts;attempt++){
-  try{return await init();}
-  catch(e){
-   if(!['ENOTFOUND','EAI_AGAIN','ECONNREFUSED','ECONNRESET','ETIMEDOUT','57P03','08006','08001','08003'].includes(e.code)||attempt===maxAttempts)throw e;
-   const delay=Math.min(1000*Math.pow(2,Math.min(attempt-1,4)),15000);
-   console.warn(`[POSTGRES STARTUP] ${e.code}: retry ${attempt}/${maxAttempts} in ${delay/1000}s`);
-   await new Promise(resolve=>setTimeout(resolve,delay));
-  }
- }
-}
-async function start(){await initWithRetry();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
+async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
