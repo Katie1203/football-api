@@ -9,7 +9,7 @@ function decideLiveRung(match,market){
  if(!changes.length)return {...empty,overOdds};
  const recent=changes.filter(c=>Date.now()-c.observedAt<=300000);
  if(recent.length>=2&&overOdds!==null&&overOdds>1.50)return {level:'BIG BET',reason:'BET365 nâng mốc Tài nhiều lần trong 5 phút',overOdds};
- if(recent.length>=1&&(overOdds===null||overOdds>=1.50))return {level:'BET NHẸ TAY',reason:'BET365 tăng mốc Tài LIVE',overOdds};
+ if(recent.length>=1&&(overOdds!==null&&overOdds>=1.50))return {level:'BET NHẸ TAY',reason:'BET365 tăng mốc Tài LIVE',overOdds};
  return {...empty,overOdds};
 }
 module.exports={decideLiveRung};
