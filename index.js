@@ -446,7 +446,18 @@ async function scan(){
    const verified=m.minute!==null;
    if(!verified&&old?.minute!==null&&old?.minute!==undefined){m.lastVerifiedMinute=old.minute;m.minuteSource='stale';}
    matches.set(m.id,m);
-   if(m.state===-1){const previous=sent.get(m.id);if(previous&&previous.status==='sent'&&!previous.ft&&Number.isFinite(m.homeScore)&&Number.isFinite(m.awayScore)){previous.ft={home:m.homeScore,away:m.awayScore,at:now()};await save(m.id,previous);}watchlist.delete(m.id);continue;}
+   if(m.state===-1){
+    // Confirmed FT: settle and persist the alert before discarding transient LIVE odds history.
+    const previous=sent.get(m.id);
+    if(previous&&previous.status==='sent'&&!previous.ft&&Number.isFinite(m.homeScore)&&Number.isFinite(m.awayScore)){
+     previous.ft={home:m.homeScore,away:m.awayScore,at:now()};await save(m.id,previous);
+    }
+    watchlist.delete(m.id);
+    market.matches.delete(m.id);
+    observations.delete(m.id);
+    scoreHistory.delete(m.id);
+    continue;
+   }
    if(m.state!==1&&m.state!==3){watchlist.delete(m.id);continue;}
    if(sent.has(m.id)){watchlist.delete(m.id);continue;}
    if(verified&&m.minute>=85){watchlist.delete(m.id);continue;}
