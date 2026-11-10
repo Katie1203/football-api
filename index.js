@@ -22,12 +22,29 @@ const STATE=process.env.STATE_FILE||path.join(__dirname,'live_rung_sent.json');
 const TRACK_STATE=process.env.TRACK_STATE_FILE||path.join(__dirname,'live_rung_tracking.json');
 const trackedKey='__tracking__';
 let persistQueue=Promise.resolve();
+let lastTrackingWriteAt=0;
+let trackingDirty=false;
+let trackingVersion=0; // Preserve updates arriving while a PostgreSQL write is in flight.
+const TRACK_WRITE_INTERVAL_MS=15000; // Storage-only batching; LIVE scanning remains 5 seconds.
+const EMPTY_MARKET_RETENTION_MS=24*60*60*1000;
 const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
 function authorized(req,res,next){if(!ADMIN_TOKEN)return res.status(503).json({error:'ADMIN_TOKEN is required for control endpoints'});if(req.get('x-admin-token')!==ADMIN_TOKEN)return res.status(401).json({error:'Unauthorized'});next();}
-function trackingSnapshot(){return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],scoreHistory:[...scoreHistory],savedAt:now()};}
+function prunePersistedTracking(){
+ // Only remove confirmed FT state and old empty market placeholders; never discard active market evidence.
+ const cutoff=Date.now()-EMPTY_MARKET_RETENTION_MS;
+ for(const [id,v] of market.matches){
+  if(sent.get(id)?.ft || (!watchlist.has(id) && !sent.has(id) &&
+    v?.books?.size===0 && (!Array.isArray(v?.changes)||v.changes.length===0) &&
+    Number.isFinite(Number(v?.lastObservedAt)) && Number(v.lastObservedAt)<cutoff)){
+   market.matches.delete(id);observations.delete(id);scoreHistory.delete(id);
+  }
+ }
+ for(const id of watchlist.keys())if(sent.get(id)?.ft)watchlist.delete(id);
+}
+function trackingSnapshot(){prunePersistedTracking();return {watchlist:[...watchlist],market:[...market.matches].map(([id,v])=>[id,{...v,books:[...v.books]}]),observations:[...observations],scoreHistory:[...scoreHistory],savedAt:now()};}
 function restoreTracking(data){if(!data||typeof data!=='object')return;for(const [id,v] of data.watchlist||[])if(!sent.has(id))watchlist.set(id,v);for(const [id,v] of data.market||[])market.matches.set(id,{...v,books:new Map(v.books||[])});for(const [id,v] of data.observations||[])observations.set(id,v);for(const [id,v] of data.scoreHistory||[])scoreHistory.set(id,v);}
 async function init(){
  if(pool){
@@ -36,10 +53,12 @@ async function init(){
   for(const x of r.rows){if(x.id==='__control__')paused=!!x.payload?.paused;else if(x.id===trackedKey)restoreTracking(x.payload);else sent.set(x.id,x.payload);}
   // Restore tracking after alerts, so already-alerted fixtures are never re-added.
   for(const id of watchlist.keys())if(sent.has(id))watchlist.delete(id);
+  prunePersistedTracking(); // Clean already-settled FT odds loaded from older PostgreSQL snapshots.
  }else{
   try{for(const r of JSON.parse(fs.readFileSync(STATE,'utf8')))sent.set(String(r.id),r);}catch{}
   try{restoreTracking(JSON.parse(fs.readFileSync(TRACK_STATE,'utf8')));}catch{}
   for(const id of watchlist.keys())if(sent.has(id))watchlist.delete(id);
+  prunePersistedTracking();
  }
  ready=true;
 }
@@ -47,13 +66,33 @@ async function save(id,value){
  if(pool){await pool.query('INSERT INTO live_rung_state(id,payload) VALUES($1,$2::jsonb) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',[id,JSON.stringify(value)]);}
  else if(id!=='__control__'&&id!==trackedKey){const tmp=STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify([...sent.values()],null,2));fs.renameSync(tmp,STATE);}
 }
-async function persistTracking(){
- const payload=trackingSnapshot();
- persistQueue=persistQueue.catch(()=>{}).then(async()=>{
-  if(pool)await save(trackedKey,payload);
-  else{const tmp=TRACK_STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify(payload));fs.renameSync(tmp,TRACK_STATE);}
- });return persistQueue;
+async function persistTracking(force=false){
+ // Never lose changes that arrive while a JSONB write is still in flight.
+ trackingDirty=true;
+ trackingVersion++;
+ if(!force && Date.now()-lastTrackingWriteAt<TRACK_WRITE_INTERVAL_MS)return persistQueue;
+ persistQueue=persistQueue.catch(e=>{
+  console.warn('[TRACKING PERSIST RETRY]',e.message);
+ }).then(async()=>{
+  if(!trackingDirty)return;
+  const version=trackingVersion;
+  const payload=trackingSnapshot();
+  try{
+   if(pool)await save(trackedKey,payload);
+   else{const tmp=TRACK_STATE+'.tmp';fs.writeFileSync(tmp,JSON.stringify(payload));fs.renameSync(tmp,TRACK_STATE);}
+   lastTrackingWriteAt=Date.now();
+   // A scan may have updated the watchlist/odds while the DB write was pending.
+   // Leave it dirty for the next scan rather than silently dropping the update.
+   trackingDirty=trackingVersion!==version;
+  }catch(e){
+   trackingDirty=true;
+   console.warn('[TRACKING PERSIST FAILED]',e.message);
+   throw e;
+  }
+ });
+ return persistQueue;
 }
+
 function resultOf(r){
  if(!r.ft)return 'PENDING_FT';
  const [h,a]=String(r.score).split('-').map(Number);
