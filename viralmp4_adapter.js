@@ -17,9 +17,9 @@ function halfScore(info,side){
 function transform(payload,competitionNames=new Map()){
  const source=payload?.data?.matches?payload.data:payload;
  if(!Array.isArray(source?.matches))throw Error('Viralmp4 v3 response missing data.matches');
+ const teams=new Map((Array.isArray(source?.relation?.teams)?source.relation.teams:[]).filter(t=>t?.id!=null&&typeof t.name==='string'&&t.name.trim()).map(t=>[String(t.id),t.name.trim()]));
+ const competitions=new Map((Array.isArray(source?.relation?.competitions)?source.relation.competitions:[]).filter(c=>c?.id!=null&&typeof c.name==='string'&&c.name.trim()).map(c=>[String(c.id),c.name.trim()]));
  const fixtures=[],odds=[];
- const teams=new Map((Array.isArray(source?.relation?.teams)?source.relation.teams:[]).filter(t=>t?.id).map(t=>[String(t.id),String(t.name||t.shortName||'').trim()]));
- const competitions=new Map((Array.isArray(source?.relation?.competitions)?source.relation.competitions:[]).filter(c=>c?.id).map(c=>[String(c.id),String(c.name||c.shortName||'').trim()]));
  for(const match of source.matches){
   const info=match?.info,id=String(info?.id||match?.id||'');if(!id)continue;
   const status=Number(info?.statusId);
