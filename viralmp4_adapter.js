@@ -2,12 +2,17 @@
 // Adapter for viralmp4.in /v3/matches response; provider odds are decimal.
 function numeric(v){const n=Number(v);return Number.isFinite(n)?n:null;}
 function minute(v){const n=numeric(v);return n!==null&&n>=1&&n<130?Math.floor(n):null;}
-function score(info,side,status){
- const a=info?.[side+'Scores'];if(!Array.isArray(a))return null;
- const n=i=>numeric(a[i]);
- if(status===2)return n(0);
- if(status===4||status===8||status===-1)return n(4)??(n(0)!==null&&n(3)!==null?n(0)+n(3):null);
- return n(4)??n(0);
+function score(info,side){
+ const a=info?.[side+'Scores'];
+ if(!Array.isArray(a))return null;
+ const n=numeric(a[0]);
+ return n!==null&&Number.isInteger(n)&&n>=0?n:null;
+}
+function halfScore(info,side){
+ const a=info?.[side+'Scores'];
+ if(!Array.isArray(a)||a.length<2)return null;
+ const n=numeric(a[1]);
+ return n!==null&&Number.isInteger(n)&&n>=0?n:null;
 }
 function transform(payload,competitionNames=new Map()){
  const source=payload?.data?.matches?payload.data:payload;
@@ -18,12 +23,14 @@ function transform(payload,competitionNames=new Map()){
   const status=Number(info?.statusId);
   // Provider 2 = first half, 4 = second half. Other statuses are not inferred as LIVE.
   const state=status===2?1:status===4?3:status===8?-1:0;
-  const h=score(info,'home',status),a=score(info,'away',status);
+  const h=score(info,'home'),a=score(info,'away');
   const raw=match?.bs?.['2'];const valid=Array.isArray(raw)&&raw.length>=8;
+  // Minute belongs to the latest Bet365 OU quote, not a guaranteed match clock.
+  // Use only when the provider actually supplies a valid numeric minute.
   const minuteValue=valid?minute(raw[1]):null;
-  // Half-time score is not independently supplied in this response. Do not invent it.
-  const htH=status===4?numeric(info?.homeScores?.[0]):null;
-  const htA=status===4?numeric(info?.awayScores?.[0]):null;
+  // Provider score arrays: [current score, first-half score, ...].
+  const htH=status===4?halfScore(info,'home'):null;
+  const htA=status===4?halfScore(info,'away'):null;
   const homeName=String(info?.homeTeamName||info?.homeName||info?.homeTeam?.name||info?.homeTeamId||'');
   const awayName=String(info?.awayTeamName||info?.awayName||info?.awayTeam?.name||info?.awayTeamId||'');
   fixtures.push({ScheduleID:id,MatchState:state,homeTeam:homeName,guestTeam:awayName,HomeScore:h,GuestScore:a,HomeHalfScore:htH,GuestHalfScore:htA,minute:minuteValue,LeagueName:String(info?.competitionName||info?.competition?.name||competitionNames.get(String(info?.competitionId))||info?.competitionId||''),matchTime:info?.matchTime,matchTime2:info?.matchTime2});
