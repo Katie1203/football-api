@@ -361,7 +361,7 @@ async function refreshViralMetadata(){
 let latestV3Odds=[];
 async function fetchFixtures(){
  await refreshViralMetadata();
- const payload=await proxyGetPayload('/v3/matches?limit=50&page=1&companyIds=2&statuses=LIVE&returnList=info&returnList=bs&lang=vi&isIncludedRelation=true');
+ const payload=await proxyGetPayload('/v3/matches?limit=50&page=1&companyIds=2&statuses=LIVE&priorityCompetitionIds=jednm9whz0ryox8&priorityCompetitionIds=p4jwq2gh4xwm0ve&priorityCompetitionIds=z8yomo4h7wq0j6l&priorityCompetitionIds=56ypq3nh0xmd7oj&priorityCompetitionIds=gy0or5jhg6qwzv3&priorityCompetitionIds=vl7oqdehlyr510j&priorityCompetitionIds=4zp5rzghp5q82w1&priorityCompetitionIds=yl5ergphnzr8k0o&priorityCompetitionIds=kn54qllhg2qvy9d&priorityCompetitionIds=j1l4rjnh66nm7vx&sortMatchTime=asc&sortCompetition=desc&returnList=info&returnList=livestreams&returnList=asia&returnList=eu&returnList=bs&returnList=cr&lang=vi&isIncludedRelation=true');
  const parsed=transformViralmp4(payload,viralCompetitionNames);
  latestV3Odds=parsed.odds;
  const all=parsed.fixtures.map(norm).filter(Boolean);

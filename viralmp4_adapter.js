@@ -18,6 +18,8 @@ function transform(payload,competitionNames=new Map()){
  const source=payload?.data?.matches?payload.data:payload;
  if(!Array.isArray(source?.matches))throw Error('Viralmp4 v3 response missing data.matches');
  const fixtures=[],odds=[];
+ const teams=new Map((Array.isArray(source?.relation?.teams)?source.relation.teams:[]).filter(t=>t?.id).map(t=>[String(t.id),String(t.name||t.shortName||'').trim()]));
+ const competitions=new Map((Array.isArray(source?.relation?.competitions)?source.relation.competitions:[]).filter(c=>c?.id).map(c=>[String(c.id),String(c.name||c.shortName||'').trim()]));
  for(const match of source.matches){
   const info=match?.info,id=String(info?.id||match?.id||'');if(!id)continue;
   const status=Number(info?.statusId);
@@ -27,14 +29,14 @@ function transform(payload,competitionNames=new Map()){
   const raw=match?.bs?.['2'];const valid=Array.isArray(raw)&&raw.length>=8;
   // Minute belongs to the latest Bet365 OU quote, not a guaranteed match clock.
   // Use only when the provider actually supplies a valid numeric minute.
-  const minuteValue=valid?minute(raw[1]):null;
+  const minuteValue=minute(raw?.[1]) ?? minute(match?.asia?.['2']?.[1]) ?? minute(match?.eu?.['2']?.[1]);
   // Provider score arrays: [current score, first-half score, ...].
   const htH=status===4?halfScore(info,'home'):null;
   const htA=status===4?halfScore(info,'away'):null;
-  const homeName=String(info?.homeTeamName||info?.homeName||info?.homeTeam?.name||info?.homeTeamId||'');
-  const awayName=String(info?.awayTeamName||info?.awayName||info?.awayTeam?.name||info?.awayTeamId||'');
-  fixtures.push({ScheduleID:id,MatchState:state,homeTeam:homeName,guestTeam:awayName,HomeScore:h,GuestScore:a,HomeHalfScore:htH,GuestHalfScore:htA,minute:minuteValue,LeagueName:String(info?.competitionName||info?.competition?.name||competitionNames.get(String(info?.competitionId))||info?.competitionId||''),matchTime:info?.matchTime,matchTime2:info?.matchTime2});
-  if(!valid||state!==3||h===null||a===null)continue;
+  const homeName=String(info?.homeTeamName||info?.homeName||info?.homeTeam?.name||teams.get(String(info?.homeTeamId))||info?.homeTeamId||'');
+  const awayName=String(info?.awayTeamName||info?.awayName||info?.awayTeam?.name||teams.get(String(info?.awayTeamId))||info?.awayTeamId||'');
+  fixtures.push({ScheduleID:id,MatchState:state,homeTeam:homeName,guestTeam:awayName,HomeScore:h,GuestScore:a,HomeHalfScore:htH,GuestHalfScore:htA,minute:minuteValue,LeagueName:String(info?.competitionName||info?.competition?.name||competitions.get(String(info?.competitionId))||competitionNames.get(String(info?.competitionId))||info?.competitionId||''),matchTime:info?.matchTime,matchTime2:info?.matchTime2});
+  if(!valid||state!==3||h===null||a===null||minute(raw[1])===null)continue;
   const [ts,clock,over,line,under]=raw;
   if(![ts,over,line,under].every(x=>numeric(x)!==null))continue;
   const providerTime=numeric(ts);
