@@ -464,7 +464,7 @@ function telegramBody(m,decision,confidence){
  const odd=Number(decision.overOdds);
  const oddsText=decision.overOdds!==null&&decision.overOdds!==undefined&&Number.isFinite(odd)&&odd>1?`BET365 — Tài ${decision.line??'—'} @ ${odd.toFixed(2)}`:'BET365 — Chưa xác minh odds LIVE';
  const probability=Number(confidence?.probability);
- const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa đủ dữ liệu FT để tính %';
+ const probabilityText=confidence?.probability!=null&&Number.isFinite(probability)?`${probability.toFixed(1)}%`:'Chưa có % tín hiệu LIVE được kiểm định';
  return `💰 THẦN TÀI ĐẾN 🧧🧧🧧 - ${label}\n🏆 ${m.league||'Chưa rõ giải đấu'}\n⚽️ ${m.homeName} ${m.homeScore}-${m.awayScore} ${m.awayName} ⏱️ Phút ${m.minute}\nODD NHÀ CÁI: ${oddsText}\n🎯 Độ tin cậy: ${probabilityText}`;
 }
 async function telegram(m,decision,confidence){
@@ -507,11 +507,14 @@ async function scan(){
    try{
     const observed=market.observe(m.id,(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`));
     if(observed.status!=='OBSERVED'){observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});continue;}
-    const decision=decideLiveRung(m,market.get(m.id));
+    const decision=decideLiveRung({...m,goalJustOccurred:!!old&&(m.homeScore+m.awayScore>old.homeScore+old.awayScore)},market.get(m.id));
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
     observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
     output.push({...m,marketStatus:observed.status,decision});
-    if(m.minute<65||sent.has(m.id)||!decision.level)continue;
+    if(m.minute<65||m.minute>=90||sent.has(m.id)||!decision.level)continue;
+    // Both alert categories require a freshly verified LIVE Over price >= 1.50.
+    const liveQuote=market.get(m.id)?.bookmakers?.find(q=>String(q.bookmakerId)==='2');
+    if(!liveQuote||!Number.isFinite(liveQuote.overDecimal)||liveQuote.overDecimal<1.50||!Number.isFinite(liveQuote.providerTime)||Date.now()-liveQuote.providerTime>120000||Date.now()<liveQuote.providerTime)continue;
     const record={id:m.id,home:m.homeName,away:m.awayName,league:m.league,minute:m.minute,score:`${m.homeScore}-${m.awayScore}`,decision,signalConfidence:confidence,marketEvidenceAtAlert:confidence?.evidence??null,marketSnapshotAtAlert:market.get(m.id),status:'pending',sentAt:null,ft:null};
     sent.set(m.id,record);watchlist.delete(m.id);await save(m.id,record);
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
