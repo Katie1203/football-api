@@ -8,9 +8,10 @@ const {Pool}=require('pg');
 const {LiveRungMarket}=require('./ai_live_rung_market');
 const {decideLiveRung}=require('./live_rung_decision');
 const {signalConfidence}=require('./signal_confidence');
+const {transform:transformViralmp4}=require('./viralmp4_adapter');
 const app=express();app.use(express.json({limit:'32kb'}));
 const PORT=Number(process.env.PORT||10000);
-const PROXY=(process.env.BONGDALU_BASE_URL||'https://www.elliedixon.me').replace(/\/+$/,'');
+const PROXY=(process.env.BONGDALU_BASE_URL||'https://viralmp4.in').replace(/\/+$/,'');
 const BET365_COMPANY_ID=2; // Bongdalu bookmaker mapping supplied for BET365; verify against provider metadata
 const TOKEN=process.env.TELEGRAM_BOT_TOKEN,CHAT=process.env.TELEGRAM_CHAT_ID;
 const ADMIN_TOKEN=process.env.ADMIN_TOKEN;
@@ -111,7 +112,7 @@ function alertView(r){
   oddsAtAlertStatus:r.decision?.overOdds==null?'CHUA_LAY_DUOC_ODDS':'DAT_ODDS',
   evaluation:resultOf(r),outcome:resultOf(r),status:r.status};
 }
-async function proxyGetPayload(p){const {data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000});if(Number(data?.code)!==0)throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,120));return data?.data||[];}
+async function proxyGetPayload(p){const {data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000});if(data?.success===false|| (data?.code!==undefined && Number(data.code)!==0))throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,120));return data?.data||[];}
 async function proxyGet(p){const payload=await proxyGetPayload(p);return payload?.results||payload?.matches||payload;}
 function rows(payload){return Array.isArray(payload)?payload:[];}
 function asText(v){return typeof v==='string'?v.trim():typeof v==='object'&&v?String(v.name||v.Name||'').trim():'';}
@@ -371,42 +372,35 @@ async function backfillMissingAlertLeagues(){
   }
  }finally{leagueBackfillRunning=false;}
 }
-async function fetchFixtures(){
-  const q=`date=${vnDate()}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`;
-  const diaryPayload=await proxyGetPayload('/v1/football/match/diary?'+q);
-  const diary=rows(diaryPayload?.matches??diaryPayload?.results??diaryPayload);
-  // Bongdalu match rows contain sclassID; names are in the sibling leagues list.
-  const leagueById=buildLeagueMap(diaryPayload);
-  const byId=new Map(diary.filter(r=>r.ScheduleID).map(r=>{
-    const league=resolveLeague(r,leagueById,leagueNamesByFixture.get(String(r.ScheduleID)));
-    if(league)leagueNamesByFixture.set(String(r.ScheduleID),league);
-    return [String(r.ScheduleID),{...r,LeagueName:league}];
-  }));
-  const deltas=new Map();
-  try{
-    for(const d of rows(await proxyGet('/v1/football/match/live?locale=vi'))){
-      const id=String(d.ScheduleID??d.scheduleId??d.id);
-      if(!byId.has(id))continue;
-      deltas.set(id,d);const prior=byId.get(id);byId.set(id,{...prior,...d,LeagueName:resolveLeague(d,leagueById,preferLeague(prior.LeagueName,leagueNamesByFixture.get(id)))});
-    }
-  }catch(e){console.warn('[BONGDALU LIVE DELTA]',e.message);}
-  const all=[...byId.values()].map(norm).filter(Boolean);
-  const live=all.filter(m=>m.state===1||m.state===3);
-  const odds=await fetchOddsMinuteRows();
-  const byOdds=new Map();
-  for(const row of odds){const id=String(row.match_id??'');if(!byOdds.has(id))byOdds.set(id,[]);byOdds.get(id).push(row);}
-  const sourceCounts={direct:0,delta:0,odds:0,unknown:0};
-  for(const m of live){
-    if(m.minute!==null){sourceCounts.direct++;m.minuteSource='direct';continue;}
-    const fromDelta=verifiedDeltaMinute(deltas.get(m.id));
-    const fromOdds=verifiedOddsMinute(m,byOdds.get(m.id));
-    const minute=fromDelta??fromOdds;
-    if(minute!==null){m.minute=minute;m.minuteSource=fromDelta!==null?'delta':'odds';sourceCounts[m.minuteSource]++;}
-    else{m.minuteSource='unverified';sourceCounts.unknown++;}
+// Provider metadata is descriptive only; never used for signal or odds decisions.
+const viralCompetitionNames=new Map();
+let viralMetadataLastAttempt=0;
+async function refreshViralMetadata(){
+ const current=Date.now();
+ if(current-viralMetadataLastAttempt<60*60*1000)return;
+ viralMetadataLastAttempt=current;
+ try{
+  const payload=await proxyGetPayload('/v3/metadata?lang=vi');
+  const competitions=Array.isArray(payload?.hotCompetitions)?payload.hotCompetitions:[];
+  for(const c of competitions){
+   if(c?.id && typeof c.name==='string' && c.name.trim())viralCompetitionNames.set(String(c.id),c.name.trim());
   }
-  for(const m of live)recordObservedScore(m);
-  console.log('[BONGDALU MINUTE AUDIT]',JSON.stringify({live:live.length,...sourceCounts,eligible:live.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
-  return all;
+  console.log('[BONGDALU V3 METADATA]',JSON.stringify({competitions:viralCompetitionNames.size,companies:Array.isArray(payload?.companies)?payload.companies.length:0}));
+ }catch(err){console.warn('[BONGDALU V3 METADATA]',err.message);}
+}
+let latestV3Odds=[];
+async function fetchFixtures(){
+ await refreshViralMetadata();
+ const payload=await proxyGetPayload('/v3/matches?limit=100&page=1&companyIds=2&statuses=LIVE&returnList=info&returnList=bs&lang=vi&isIncludedRelation=true');
+ const parsed=transformViralmp4(payload,viralCompetitionNames);
+ latestV3Odds=parsed.odds;
+ const all=parsed.fixtures.map(norm).filter(Boolean);
+ for(const m of all){
+  m.minuteSource=m.minute!==null?'direct':'unverified';
+  recordObservedScore(m);
+ }
+ console.log('[BONGDALU V3 LIVE]',JSON.stringify({total:parsed.total,fixtures:all.length,odds:latestV3Odds.length,eligible:all.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
+ return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
 // Passive score snapshots for Telegram display only. No AI or alert gate reads this map.
@@ -478,7 +472,7 @@ async function scan(){
  if(scanning||paused||!ready)return [];
  scanning=true;const output=[];
  try{
-  const fixtures=await fetchFixtures();const oddsSnapshot=await proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`).catch(e=>{console.warn('[BET365 ODDS]',e.message);return [];});const seen=new Set();
+  const fixtures=await fetchFixtures();const oddsSnapshot=latestV3Odds;const seen=new Set();
   for(const m of fixtures){
    seen.add(m.id);const old=matches.get(m.id);
    // Retain last VERIFIED minute when Bongdalu temporarily omits it. Never use it for a new signal.
@@ -520,7 +514,7 @@ async function scan(){
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();void backfillMissingAlertLeagues().catch(e=>console.warn('[LEAGUE BACKFILL]',e.message));return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
