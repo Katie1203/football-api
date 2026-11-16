@@ -28,7 +28,8 @@ let trackingDirty=false;
 let trackingVersion=0; // Preserve updates arriving while a PostgreSQL write is in flight.
 const TRACK_WRITE_INTERVAL_MS=15000; // Storage-only batching; LIVE scanning remains 5 seconds.
 const EMPTY_MARKET_RETENTION_MS=24*60*60*1000;
-const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false}}):null;
+const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL,ssl:process.env.PGSSL==='disable'?false:{rejectUnauthorized:false},connectionTimeoutMillis:4000,idleTimeoutMillis:15000,max:3}):null;
+if(pool)pool.on('error',e=>console.warn('[POSTGRES IDLE]',e.code||'',e.message));
 let scanning=false,paused=false,lastScan=null,lastError=null,ready=false;
 const now=()=>new Date().toISOString();
 function vnDate(){const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const g=x=>f.find(p=>p.type===x)?.value;return `${g('year')}-${g('month')}-${g('day')}`;}
@@ -339,39 +340,8 @@ function buildLeagueMap(payload){
 function resolveLeague(match,leagueMap,previous=''){
  return preferLeague(leagueMap.get(leagueId(match)),leagueFromRow(match),previous);
 }
-async function fetchOddsMinuteRows(){
-  try{
-    const data=await proxyGet(`/v1/football/odds/live?companyid=${BET365_COMPANY_ID}&locale=vi`);
-    return rows(data).filter(r=>String(r.market).toUpperCase()==='OU');
-  }catch(e){console.warn('[BONGDALU MINUTE ODDS]',e.message);return [];}
-}
-// Resolve older persisted alerts from Bongdalu diary dates without changing AI decisions.
-let leagueBackfillRunning=false;
-async function backfillMissingAlertLeagues(){
- if(leagueBackfillRunning)return;
- const missing=[...sent.values()].filter(r=>r?.status==='sent'&&!r.league&&r.sentAt);
- if(!missing.length)return;
- leagueBackfillRunning=true;
- try{
-  const dates=[...new Set(missing.map(r=>{
-   const d=new Date(r.sentAt);return Number.isFinite(d.getTime())?(()=>{const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d);const v=k=>parts.find(x=>x.type===k)?.value;return `${v('year')}-${v('month')}-${v('day')}`;})():null;
-  }).filter(Boolean))].slice(0,3);
-  for(const date of dates){
-   try{
-    const payload=await proxyGetPayload('/v1/football/match/diary?'+`date=${date}&timeRange=all&lang=vn&ishot=0&halfOdd=0&locale=vi`);
-    const names=buildLeagueMap(payload);
-    for(const match of rows(payload?.matches??payload?.results??payload)){
-     const id=String(match.ScheduleID??match.scheduleId??'');
-     const league=resolveLeague(match,names,leagueNamesByFixture.get(id));
-     if(!id||!league)continue;
-     leagueNamesByFixture.set(id,league);
-     const saved=sent.get(id);
-     if(saved&&preferLeague(league,saved.league)!==saved.league){saved.league=preferLeague(league,saved.league);await save(id,saved);}
-    }
-   }catch(err){console.warn('[BONGDALU LEAGUE BACKFILL]',date,err.message);}
-  }
- }finally{leagueBackfillRunning=false;}
-}
+// Legacy /v1 odds and diary endpoints removed: LIVE quotes are embedded in /v3/matches.
+// Historical alerts retain their saved league names; no unsupported /v1 backfill.
 // Provider metadata is descriptive only; never used for signal or odds decisions.
 const viralCompetitionNames=new Map();
 let viralMetadataLastAttempt=0;
@@ -399,7 +369,8 @@ async function fetchFixtures(){
   m.minuteSource=m.minute!==null?'direct':'unverified';
   recordObservedScore(m);
  }
- console.log('[BONGDALU V3 LIVE]',JSON.stringify({total:parsed.total,fixtures:all.length,odds:latestV3Odds.length,eligible:all.filter(m=>m.minute>=60&&m.minute<85&&m.htGoals>=1&&!isFilteredLeague(m.league,m.homeName,m.awayName)).length}));
+ const stage2=all.filter(m=>m.state===3);const ageWindow=stage2.filter(m=>m.minute>=60&&m.minute<85);const htEligible=ageWindow.filter(m=>m.htGoals>=1);const eligible=htEligible.filter(m=>!isFilteredLeague(m.league,m.homeName,m.awayName));
+ console.log('[BONGDALU V3 LIVE]',JSON.stringify({total:parsed.total,fixtures:all.length,secondHalf:stage2.length,minute60to84:ageWindow.length,htGoal:htEligible.length,eligible:eligible.length,odds:latestV3Odds.length,missingMinute:stage2.filter(m=>m.minute===null).length,missingOU:stage2.filter(m=>!latestV3Odds.some(o=>o.match_id===m.id)).length}));
  return all;
 }
 async function fetchMarket(id,allOdds){return rows(allOdds).filter(r=>String(r.match_id)===String(id)&&String(r.market).toUpperCase()==='OU');}
@@ -500,7 +471,7 @@ async function scan(){
    if(!verified||m.minute<60||m.minute>=85){observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});continue;}
    try{
     const observed=market.observe(m.id,(await fetchMarket(m.id,oddsSnapshot)).filter(r=>Number(r.match_status)===4&&String(r.score)===`${m.homeScore}-${m.awayScore}`));
-    if(observed.status!=='OBSERVED'){observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:true});continue;}
+    if(observed.status!=='OBSERVED'){observations.set(m.id,{...(observations.get(m.id)||{}),marketStatus:observed.status,stale:observed.status!=='UNCHANGED'});continue;}
     const decision=decideLiveRung({...m,goalJustOccurred:!!old&&(m.homeScore+m.awayScore>old.homeScore+old.awayScore)},market.get(m.id));
     const confidence=decision.level?signalConfidence(decision.level,market.get(m.id),sent.values()):null;
     observations.set(m.id,{marketStatus:observed.status,decision,signalConfidence:confidence,at:now(),stale:false,goalChanged:!!old&&(old.homeScore!==m.homeScore||old.awayScore!==m.awayScore)});
@@ -514,7 +485,7 @@ async function scan(){
     try{record.telegramMessageId=await telegram(m,decision,confidence);record.status='sent';record.sentAt=now();}catch(e){record.status='send_unknown';record.error=e.message;console.error('[Telegram]',m.id,e.message);}await save(m.id,record);
    }catch(e){console.warn('[AI LIVE RUNG]',m.id,e.message);observations.set(m.id,{...(observations.get(m.id)||{}),stale:true});}
   }
-  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;await persistTracking();return output;
+  lastScan={at:now(),fixtures:fixtures.length,analyzed:output.length,watching:watchlist.size};lastError=null;try{await persistTracking();}catch(e){console.warn('[TRACKING DB UNAVAILABLE - SCAN CONTINUES]',e.code||'',e.message);}return output;
  }catch(e){lastError={at:now(),message:e.message};throw e;}finally{scanning=false;}
 }
 app.get('/health',(req,res)=>res.status(ready?200:503).json({ok:ready,source:'bongdalu',engine:'AI LIVE RUNG',lastScan,lastError,db:!!pool}));
@@ -609,6 +580,6 @@ const originalPages = {'/':'dashboard.html','/dashboard':'dashboard.html','/dash
 for (const [route,file] of Object.entries(originalPages)) app.get(route,(req,res)=>res.sendFile(path.join(__dirname,file)));
 // Original HTML files remain in project root. No public/ folder required.
 
-async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan]',e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan]',e.message)),5000);}
+async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
