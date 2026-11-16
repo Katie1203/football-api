@@ -112,7 +112,7 @@ function alertView(r){
   oddsAtAlertStatus:r.decision?.overOdds==null?'CHUA_LAY_DUOC_ODDS':'DAT_ODDS',
   evaluation:resultOf(r),outcome:resultOf(r),status:r.status};
 }
-async function proxyGetPayload(p){const {data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000});if(data?.success===false|| (data?.code!==undefined && Number(data.code)!==0))throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,120));return data?.data||[];}
+async function proxyGetPayload(p){let data;try{({data}=await axios.get(`${PROXY}/wp-json/wpsport/v1/proxy`,{params:{path:p,_bdts:Date.now()},timeout:12000}));}catch(e){throw Error(`Viralmp4 request failed path=${p} status=${e.response?.status||'network'} body=${JSON.stringify(e.response?.data||e.message).slice(0,350)}`);}if(data?.success===false||(data?.code!==undefined&&Number(data.code)!==0))throw Error('Bongdalu proxy error: '+JSON.stringify(data).slice(0,350));return data?.data||[];}
 async function proxyGet(p){const payload=await proxyGetPayload(p);return payload?.results||payload?.matches||payload;}
 function rows(payload){return Array.isArray(payload)?payload:[];}
 function asText(v){return typeof v==='string'?v.trim():typeof v==='object'&&v?String(v.name||v.Name||'').trim():'';}
@@ -391,7 +391,7 @@ async function refreshViralMetadata(){
 let latestV3Odds=[];
 async function fetchFixtures(){
  await refreshViralMetadata();
- const payload=await proxyGetPayload('/v3/matches?limit=100&page=1&companyIds=2&statuses=LIVE&returnList=info&returnList=bs&lang=vi&isIncludedRelation=true');
+ const payload=await proxyGetPayload('/v3/matches?limit=50&page=1&companyIds=2&statuses=LIVE&returnList=info&returnList=bs&lang=vi&isIncludedRelation=true');
  const parsed=transformViralmp4(payload,viralCompetitionNames);
  latestV3Odds=parsed.odds;
  const all=parsed.fixtures.map(norm).filter(Boolean);
