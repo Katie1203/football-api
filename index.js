@@ -361,7 +361,7 @@ async function refreshViralMetadata(){
 let latestV3Odds=[];
 async function fetchFixtures(){
  await refreshViralMetadata();
- const payload=await proxyGetPayload('/v3/matches?limit=50&page=1&companyIds=2&statuses=LIVE&priorityCompetitionIds=jednm9whz0ryox8&priorityCompetitionIds=p4jwq2gh4xwm0ve&priorityCompetitionIds=z8yomo4h7wq0j6l&priorityCompetitionIds=56ypq3nh0xmd7oj&priorityCompetitionIds=gy0or5jhg6qwzv3&priorityCompetitionIds=vl7oqdehlyr510j&priorityCompetitionIds=4zp5rzghp5q82w1&priorityCompetitionIds=yl5ergphnzr8k0o&priorityCompetitionIds=kn54qllhg2qvy9d&priorityCompetitionIds=j1l4rjnh66nm7vx&sortMatchTime=asc&sortCompetition=desc&returnList=info&returnList=livestreams&returnList=asia&returnList=eu&returnList=bs&returnList=cr&lang=vi&isIncludedRelation=true');
+ const payload=await proxyGetPayload('/v3/matches?limit=50&page=1&companyIds=2&statuses=LIVE&returnList=info&returnList=bs&lang=vi&isIncludedRelation=true');
  const parsed=transformViralmp4(payload,viralCompetitionNames);
  latestV3Odds=parsed.odds;
  const all=parsed.fixtures.map(norm).filter(Boolean);
@@ -580,25 +580,6 @@ const originalPages = {'/':'dashboard.html','/dashboard':'dashboard.html','/dash
 for (const [route,file] of Object.entries(originalPages)) app.get(route,(req,res)=>res.sendFile(path.join(__dirname,file)));
 // Original HTML files remain in project root. No public/ folder required.
 
-async function start(){
- // Bind HTTP before database initialization so Render can observe /health while
- // transient internal DNS is recovering. No scans or writes run until init succeeds.
- app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT} (initializing PostgreSQL)`));
- let attempt=0;
- while(!ready){
-  try{await init();console.log('[POSTGRES STARTUP] connected and restored state');}
-  catch(e){
-   attempt++;
-   lastError=`PostgreSQL initialization failed (${e.code||'unknown'})`;
-   console.error(`[POSTGRES STARTUP] attempt=${attempt} code=${e.code||'unknown'} message=${e.message}`);
-   // Keep the instance alive and retry transient DNS/connectivity errors.
-   // Do not fall back to local files: that could lose persisted alerts/state.
-   await new Promise(resolve=>setTimeout(resolve,Math.min(30000,5000*attempt)));
-  }
- }
- lastError=null;
- setTimeout(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),1500);
- setInterval(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),5000);
-}
+async function start(){await init();app.listen(PORT,()=>console.log(`Bongdalu AI LIVE RUNG listening on ${PORT}`));setTimeout(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),1500);setInterval(()=>scan().catch(e=>console.error('[scan V3]',e.stack||e.message)),5000);}
 if(require.main===module)start().catch(e=>{console.error('Startup failure:',e);process.exit(1);});
 module.exports={app,scan,norm,init,fetchFixtures,verifiedDeltaMinute,verifiedOddsMinute};
